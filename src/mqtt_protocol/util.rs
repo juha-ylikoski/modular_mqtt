@@ -80,12 +80,10 @@ pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {
     let length = u16::from_be_bytes([data[0], data[1]]) as usize;
     if length == 0 {
         Ok("")
+    } else if data.len() < length + 2 {
+        Err(PacketError::MissingBytes(length + 2, data.len()))
     } else {
-        if data.len() < length + 2 {
-            Err(PacketError::MissingBytes(length + 2, data.len()))
-        } else {
-            Ok(std::str::from_utf8(&data[2..2 + length])?)
-        }
+        Ok(std::str::from_utf8(&data[2..2 + length])?)
     }
 }
 
@@ -102,12 +100,10 @@ pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
         Err(PacketError::MalformedPacket(
             "Packet bytes cannot have length of 0.",
         ))
+    } else if data.len() < length + 2 {
+        Err(PacketError::MissingBytes(length + 2, data.len()))
     } else {
-        if data.len() < length + 2 {
-            Err(PacketError::MissingBytes(length + 2, data.len()))
-        } else {
-            Ok(&data[2..2 + length])
-        }
+        Ok(&data[2..2 + length])
     }
 }
 

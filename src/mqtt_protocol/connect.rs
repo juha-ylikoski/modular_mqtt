@@ -9,9 +9,6 @@ use super::util::{extract_bytes, extract_str, write_str, PacketError, Qos};
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 struct MqttVersion3_1_1;
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
-struct MqttVersion5_0;
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -80,11 +77,13 @@ enum Flags {
     Username = 1 << 7,
 }
 impl Flags {
-    fn is_set(self, flags: u8) -> bool {
+    fn flag_set(self, flags: u8) -> bool {
         flags & (self as u8) != 0
     }
-    fn as_flag(self) -> u8 {
-        self as u8
+}
+impl From<Flags> for u8 {
+    fn from(value: Flags) -> Self {
+        value as u8
     }
 }
 
@@ -147,7 +146,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
 
         let mut next_index = 10 + 2 + client_identifier.len();
 
-        let will = if Flags::Will.is_set(flags) {
+        let will = if Flags::Will.flag_set(flags) {
             let topic = extract_str(&data[next_index..])?;
             next_index = next_index + 2 + topic.len();
             let payload = extract_bytes(&data[next_index..])?;
@@ -155,7 +154,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
             Some(MqttLastWill {
                 topic,
                 payload,
-                retain: Flags::WilLRetain.is_set(flags),
+                retain: Flags::WilLRetain.flag_set(flags),
                 qos: Qos::try_from((flags & 0b00011000) >> 3).map_err(|_| {
                     PacketError::MalformedPacket("Quality of service was not 0, 1 or 2.")
                 })?,
@@ -164,14 +163,14 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
             None
         };
 
-        let username = if Flags::Username.is_set(flags) {
+        let username = if Flags::Username.flag_set(flags) {
             let username = extract_str(&data[next_index..])?;
             next_index += 2 + username.len();
             Some(username)
         } else {
             None
         };
-        let password = if Flags::Password.is_set(flags) {
+        let password = if Flags::Password.flag_set(flags) {
             let password = extract_bytes(&data[next_index..])?;
             Some(password)
         } else {
@@ -181,7 +180,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
         Ok(Self {
             fixed_header: header,
             protocol_level: PhantomData,
-            clean_session: Flags::CleanSession.is_set(flags),
+            clean_session: Flags::CleanSession.flag_set(flags),
             keep_alive,
             username,
             password,
@@ -193,20 +192,20 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         let mut flags = 0;
         if self.username.is_some() {
-            flags |= Flags::Username.as_flag();
+            flags |= u8::from(Flags::Username);
         }
         if self.password.is_some() {
-            flags |= Flags::Password.as_flag();
+            flags |= u8::from(Flags::Password);
         }
         if let Some(will) = &self.will {
-            flags |= Flags::Will.as_flag() | (will.qos as u8) << 3;
+            flags |= u8::from(Flags::Will) | (will.qos as u8) << 3;
 
             if will.retain {
-                flags |= Flags::WilLRetain.as_flag();
+                flags |= u8::from(Flags::WilLRetain);
             }
         }
         if self.clean_session {
-            flags |= Flags::CleanSession.as_flag();
+            flags |= u8::from(Flags::CleanSession);
         }
 
         writer.write_all(&[

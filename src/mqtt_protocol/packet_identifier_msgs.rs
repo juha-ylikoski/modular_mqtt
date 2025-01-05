@@ -70,7 +70,7 @@ create_packet_type!(
 );
 create_packet_type!(
     /// A PUBREC Packet is the response to a PUBLISH Packet with QoS 2. It is the second packet of the QoS 2 protocol exchange.
-    PubReck, ControlPacketType::PubRec, test_pubreck, 80
+    PubRec, ControlPacketType::PubRec, test_pubreck, 80
 );
 create_packet_type!(
     /// A PUBREL Packet is the response to a PUBREC Packet. It is the third packet of the QoS 2 protocol exchange.

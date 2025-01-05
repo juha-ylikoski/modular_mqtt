@@ -37,7 +37,7 @@ impl Subscribe {
     /// - If `subscriptions.len() == 0`
     pub fn new(packet_identifier: u16, subscriptions: Vec<TopicSubscription>) -> Self {
         // Protocol violation if 0
-        if subscriptions.len() == 0 {
+        if subscriptions.is_empty() {
             panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
         }
         Self {

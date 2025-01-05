@@ -190,7 +190,7 @@ impl FixedHeader {
 
         while self.remaining_length != 0 {
             let byte = (self.remaining_length % 128) as u8;
-            self.remaining_length = self.remaining_length / 128;
+            self.remaining_length /= 128;
             if self.remaining_length > 0 {
                 writer.write_all(&[byte | 128])?;
             } else {

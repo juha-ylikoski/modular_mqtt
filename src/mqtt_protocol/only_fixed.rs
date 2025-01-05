@@ -11,12 +11,15 @@ macro_rules! create_ping_package {
             fixed_header: FixedHeader,
         }
 
-        impl $name {
-            pub fn new() -> Self {
+        impl Default for $name {
+            fn default() -> Self {
                 Self {
                     fixed_header: FixedHeader::new($packet_type, 0),
                 }
             }
+        }
+
+        impl $name {
             pub fn try_read(header: FixedHeader) -> Self {
                 Self {
                     fixed_header: header,
@@ -37,7 +40,7 @@ macro_rules! create_ping_package {
             fn serialize() {
                 let mut buf = Vec::new();
                 let mut writer = BufWriter::new(&mut buf);
-                let msg = $name::new();
+                let msg = $name::default();
                 msg.write_to_stream(&mut writer).unwrap();
                 drop(writer);
                 assert_eq!(&buf, &[$test_packet_type, 0]);
@@ -45,7 +48,7 @@ macro_rules! create_ping_package {
             #[test]
             fn deserialize() {
                 let msg = [$test_packet_type, 0];
-                let expected = $name::new();
+                let expected = $name::default();
                 let mut reader = BufReader::new(&msg[..]);
                 let header = FixedHeader::try_read(&mut reader).unwrap();
                 let mut data = Vec::new();
