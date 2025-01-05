@@ -15,6 +15,65 @@ pub enum PacketError {
 
     #[error("Could not read expected {0} bytes. Read only {1}")]
     MissingBytes(usize, usize),
+
+    #[error("Mqtt topic cannot contain wildcard characters '#' or '+'")]
+    InvalidMqttTopic,
+
+    #[error("Invalid Quality of service {0}.")]
+    InvalidQos(u8),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Qos {
+    AtMostOnce = 0,
+    AtLeastOnce = 1,
+    ExactlyOnce = 2,
+}
+
+impl TryFrom<u8> for Qos {
+    type Error = PacketError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Qos::AtMostOnce),
+            1 => Ok(Qos::AtLeastOnce),
+            2 => Ok(Qos::ExactlyOnce),
+            _ => Err(PacketError::InvalidQos(value)),
+        }
+    }
+}
+impl From<QosPacketIdentifier> for Qos {
+    fn from(value: QosPacketIdentifier) -> Self {
+        match value {
+            QosPacketIdentifier::AtMostOnce => Self::AtMostOnce,
+            QosPacketIdentifier::AtLeastOnce(_) => Self::AtLeastOnce,
+            QosPacketIdentifier::ExactlyOnce(_) => Self::ExactlyOnce,
+        }
+    }
+}
+
+/// Type for type safe construction of packet identifier
+#[derive(Debug, PartialEq)]
+pub enum QosPacketIdentifier {
+    AtMostOnce,
+    AtLeastOnce(u16),
+    ExactlyOnce(u16),
+}
+
+/// Mqtt topic which does not contain invalid characters
+#[derive(Debug, Clone, Copy)]
+pub struct MqttTopic<'a>(pub(crate) &'a str);
+
+impl<'a> TryFrom<&'a str> for MqttTopic<'a> {
+    type Error = PacketError;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        if value.contains('#') || value.contains('+') {
+            Err(PacketError::InvalidMqttTopic)
+        } else {
+            Ok(Self(value))
+        }
+    }
 }
 
 pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {

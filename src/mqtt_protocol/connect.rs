@@ -3,8 +3,8 @@ use std::marker::PhantomData;
 
 use crate::mqtt_protocol::fixed_header::ControlPacketType;
 
-use super::fixed_header::{FixedHeader, Qos};
-use super::util::{extract_bytes, extract_str, write_str, PacketError};
+use super::fixed_header::FixedHeader;
+use super::util::{extract_bytes, extract_str, write_str, PacketError, Qos};
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -35,6 +35,7 @@ impl<'a> MqttLastWill<'a> {
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
+/// After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet [MQTT-3.1.0-1].
 pub struct Connect<'a, V> {
     fixed_header: FixedHeader,
     // length: u16,
@@ -252,9 +253,9 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
 mod test_ser {
     use std::io::BufWriter;
 
-    use crate::mqtt_protocol::{connect::MqttLastWill, fixed_header::Qos};
+    use crate::mqtt_protocol::connect::MqttLastWill;
 
-    use super::Connect;
+    use super::*;
 
     #[test]
     fn v3() {

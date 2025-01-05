@@ -1,6 +1,8 @@
 use std::io::{BufRead, Write};
 use thiserror::Error;
 
+use super::util::Qos;
+
 #[derive(Debug, Error)]
 pub enum FixedHeaderError {
     #[error("Not enough bytes to extract FixedHeader.")]
@@ -13,26 +15,6 @@ pub enum FixedHeaderError {
     InvalidFlags(u8, ControlPacketType),
     #[error("IoError")]
     IoError(#[from] std::io::Error),
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Qos {
-    AtMostOnce = 0,
-    AtLeastOnce = 1,
-    ExactlyOnce = 2,
-}
-
-impl TryFrom<u8> for Qos {
-    type Error = FixedHeaderError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Qos::AtMostOnce),
-            1 => Ok(Qos::AtLeastOnce),
-            2 => Ok(Qos::ExactlyOnce),
-            _ => Err(FixedHeaderError::InvalidQos(value)),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -133,7 +115,8 @@ impl ControlPacketType {
             2 => verify!(Self::ConnAck),
             3 => verify!(Self::Publish {
                 dup: ((flags & 0b1000) >> 3) == 1,
-                qos: Qos::try_from((flags & 0b110) >> 1)?,
+                qos: Qos::try_from((flags & 0b110) >> 1)
+                    .map_err(|_| FixedHeaderError::InvalidQos((flags & 0b110) >> 1))?,
                 retain: (flags & 1) == 1,
             }),
             4 => verify!(Self::PubAck),
@@ -156,7 +139,7 @@ impl ControlPacketType {
 #[cfg_attr(test, derive(PartialEq))]
 pub struct FixedHeader {
     pub control_packet_type: ControlPacketType,
-    remaining_length: u64,
+    pub remaining_length: u64,
 }
 
 impl FixedHeader {
@@ -166,9 +149,6 @@ impl FixedHeader {
     ///
     /// Will panic if remaining length is 0 or larger than 268 435 455.
     pub fn new(control_packet_type: ControlPacketType, remaining_length: u64) -> Self {
-        if remaining_length == 0 {
-            panic!("Remaining length of Fixed header cannot be 0!");
-        }
         if remaining_length > 268_435_455 {
             panic!("MQTT packet payload (dynamic header + payload) 268 435 455")
         }
@@ -202,6 +182,11 @@ impl FixedHeader {
         writer.write_all(&[
             self.control_packet_type.value() << 4 | self.control_packet_type.flags()
         ])?;
+
+        if self.remaining_length == 0 {
+            writer.write_all(&[0])?;
+            return Ok(length + 1);
+        }
 
         while self.remaining_length != 0 {
             let byte = (self.remaining_length % 128) as u8;

@@ -1,3 +1,10 @@
+pub mod connack;
 pub mod connect;
 pub mod fixed_header;
+pub mod only_fixed;
+pub mod packet_identifier_msgs;
+pub mod publish;
+pub mod suback;
+pub mod subscribe;
+pub mod unsubscribe;
 pub mod util;
