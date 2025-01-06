@@ -1,7 +1,6 @@
-[package]
-name = "rust-mqtt"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "2"
+members = [
+    "mqtt_protocol",
+]
 
-[dependencies]
-thiserror = "2.0.9"
