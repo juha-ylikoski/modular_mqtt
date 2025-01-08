@@ -1,0 +1,9 @@
+[package]
+name = "mqtt_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust-mqtt = { path = "../mqtt_protocol" }
+tokio = { version = "1.42.0", features = ["full"] }
+

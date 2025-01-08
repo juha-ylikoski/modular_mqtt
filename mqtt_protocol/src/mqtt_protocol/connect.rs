@@ -8,7 +8,7 @@ use super::util::{extract_bytes, extract_str, write_str, PacketError, Qos};
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-struct MqttVersion3_1_1;
+pub struct MqttVersion3_1_1;
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -188,6 +188,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
             client_identifier,
         })
     }
+    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         let mut flags = 0;

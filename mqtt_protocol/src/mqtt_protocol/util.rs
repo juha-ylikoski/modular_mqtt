@@ -87,6 +87,7 @@ pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {
     }
 }
 
+#[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
 pub fn write_str(string: &str, writer: &mut impl Write) -> Result<usize, std::io::Error> {
     let length = string.len();
     writer.write_all(&(length as u16).to_be_bytes())?;
@@ -107,6 +108,7 @@ pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
     }
 }
 
+#[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
 pub fn write_bytes(bytes: &[u8], writer: &mut impl Write) -> Result<usize, std::io::Error> {
     let length = bytes.len();
     writer.write_all(&(length as u16).to_be_bytes())?;

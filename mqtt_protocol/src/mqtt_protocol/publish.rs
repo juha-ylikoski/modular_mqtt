@@ -84,6 +84,7 @@ impl<'a> Publish<'a> {
             payload,
         })
     }
+    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         length += write_str(self.topic, writer)?;
