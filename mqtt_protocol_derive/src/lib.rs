@@ -1,23 +1,7 @@
 use core::panic;
 use std::str::FromStr;
 
-const DEBUG_PROC_MACRO: bool = match option_env!("DEBUG_PROC_MACRO") {
-    Some(_) => true,
-    None => false,
-};
-
-use proc_macro::{Delimiter, Group, Ident, TokenStream, TokenTree};
-
-fn replace_read_exact(ident: Ident, params: Group) -> TokenStream {
-    TokenStream::from_str(&format!("{ident}.read_exact{params}.await?")).unwrap()
-}
-
-fn replace_write_all(ident: Ident, params: Group) -> TokenStream {
-    TokenStream::from_str(&format!("{ident}.write_all{params}.await?")).unwrap()
-}
-fn replace_write_to_stream(ident: Ident, params: Group) -> TokenStream {
-    TokenStream::from_str(&format!("{ident}.write_all{params}.await?")).unwrap()
-}
+use proc_macro::{Delimiter, Group, TokenStream, TokenTree};
 
 fn replace_func(func: &str, params: Group) -> TokenStream {
     TokenStream::from_str(&format!("{func}{params}.await")).unwrap()
