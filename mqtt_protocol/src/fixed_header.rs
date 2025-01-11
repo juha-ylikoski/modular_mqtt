@@ -17,8 +17,7 @@ pub enum FixedHeaderError {
     IoError(#[from] std::io::Error),
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 pub enum ControlPacketType {
     /// Client request to connect to Server
     Connect,
@@ -139,7 +138,7 @@ impl ControlPacketType {
 #[cfg_attr(test, derive(PartialEq))]
 pub struct FixedHeader {
     pub control_packet_type: ControlPacketType,
-    pub remaining_length: u64,
+    pub remaining_length: usize,
 }
 
 impl FixedHeader {
@@ -148,7 +147,7 @@ impl FixedHeader {
     /// # Panics
     ///
     /// Will panic if remaining length is 0 or larger than 268 435 455.
-    pub fn new(control_packet_type: ControlPacketType, remaining_length: u64) -> Self {
+    pub fn new(control_packet_type: ControlPacketType, remaining_length: usize) -> Self {
         if remaining_length > 268_435_455 {
             panic!("MQTT packet payload (dynamic header + payload) 268 435 455")
         }
@@ -163,14 +162,15 @@ impl FixedHeader {
         let mut buf = [0u8; 1];
         reader.read_exact(&mut buf)?;
         let control_packet_type = ControlPacketType::try_from_byte(buf[0])?;
+        println!("type: {control_packet_type:?}");
 
         // // Algorith based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
         let mut multiplier = 1;
-        let mut remaining_length: u64 = 0;
+        let mut remaining_length = 0;
         loop {
             reader.read_exact(&mut buf)?;
             let byte = buf[0];
-            remaining_length += ((byte & 127) * multiplier) as u64;
+            remaining_length += ((byte & 127) * multiplier) as usize;
             multiplier *= 128;
             if byte & 128 == 0 {
                 break;

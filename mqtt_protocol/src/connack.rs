@@ -1,10 +1,9 @@
 use std::io::Write;
 
 use super::fixed_header::FixedHeader;
-use crate::mqtt_protocol::util::PacketError;
+use crate::util::PacketError;
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 pub enum ConnectRc {
     /// Connection accepted
     Accepted = 0,
@@ -48,9 +47,9 @@ impl TryFrom<u8> for ConnectRc {
 #[cfg_attr(test, derive(PartialEq))]
 /// The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client. The first packet sent from the Server to the Client MUST be a CONNACK Packet [MQTT-3.2.0-1].
 pub struct ConnAck {
-    fixed_header: FixedHeader,
-    session_present: bool,
-    connect_rc: ConnectRc,
+    pub fixed_header: FixedHeader,
+    pub session_present: bool,
+    pub connect_rc: ConnectRc,
 }
 
 impl ConnAck {
@@ -82,6 +81,7 @@ impl ConnAck {
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let length = self.fixed_header.write_to_stream(writer)?;
         writer.write_all(&[self.session_present as u8, self.connect_rc.into()])?;
+        writer.flush()?;
         Ok(length + 2)
     }
 }

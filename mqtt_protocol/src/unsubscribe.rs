@@ -1,8 +1,8 @@
 use std::io::Write;
 
-use crate::mqtt_protocol::util::PacketError;
+use crate::util::PacketError;
 
-use super::{
+use crate::{
     fixed_header::{ControlPacketType, FixedHeader},
     util::{extract_str, write_str, MqttTopic},
 };
@@ -21,8 +21,7 @@ impl Unsubscribe {
         Self {
             fixed_header: FixedHeader::new(
                 ControlPacketType::Unsubscribe,
-                2 + (topics.len() as u64 * 2)
-                    + topics.iter().map(|topic| topic.0.len() as u64).sum::<u64>(),
+                2 + topics.len() * 2 + topics.iter().map(|topic| topic.0.len()).sum::<usize>(),
             ),
             packet_identifier,
             topics: topics
@@ -39,7 +38,7 @@ impl Unsubscribe {
         while remaining > 0 {
             let topic = extract_str(&data[index..])?;
             index += 2 + topic.len();
-            remaining -= 2 + topic.len() as u64;
+            remaining -= 2 + topic.len();
             topics.push(topic.to_string());
         }
         Ok(Self {
@@ -60,7 +59,7 @@ impl Unsubscribe {
             write_str(&topic, writer)?;
             length += topic.len() + 2;
         }
-
+        writer.flush()?;
         Ok(length)
     }
 }

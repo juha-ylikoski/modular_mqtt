@@ -21,6 +21,9 @@ pub enum PacketError {
 
     #[error("Invalid Quality of service {0}.")]
     InvalidQos(u8),
+
+    #[error("Invalid fixed header read from stream: {0}")]
+    InvalidFixedHeader(#[from] crate::FixedHeaderError),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -119,7 +122,7 @@ pub fn write_bytes(bytes: &[u8], writer: &mut impl Write) -> Result<usize, std::
 mod test {
     use std::io::BufWriter;
 
-    use crate::mqtt_protocol::util::extract_str;
+    use crate::util::extract_str;
 
     use super::*;
 

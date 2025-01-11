@@ -28,15 +28,10 @@ fn process_3_len(stream: TokenStream) -> TokenStream {
                 let replacement = match func.to_string().as_str() {
                     "read_exact" => replace_func("read_exact", params.clone()),
                     "write_all" => replace_func("write_all", params.clone()),
+                    "flush" => replace_func("flush", params.clone()),
                     "write_to_stream" => replace_func("write_to_stream_async", params.clone()),
-                    "write_str" => replace_func(
-                        "crate::mqtt_protocol::util::write_str_async",
-                        params.clone(),
-                    ),
-                    "write_bytes" => replace_func(
-                        "crate::mqtt_protocol::util::write_bytes_async",
-                        params.clone(),
-                    ),
+                    "write_str" => replace_func("crate::util::write_str_async", params.clone()),
+                    "write_bytes" => replace_func("crate::util::write_bytes_async", params.clone()),
                     _ => {
                         new_stream.extend(TokenStream::from(t0.clone()));
                         continue;

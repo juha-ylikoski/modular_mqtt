@@ -32,6 +32,7 @@ macro_rules! create_packet_type {
                     ((self.packet_identifier & 0xff00) >> 8) as u8,
                     (self.packet_identifier & 0xff) as u8,
                 ])?;
+                writer.flush()?;
                 Ok(len + 2)
             }
         }

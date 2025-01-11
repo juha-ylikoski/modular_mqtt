@@ -1,7 +1,7 @@
 use core::panic;
 use std::io::Write;
 
-use crate::mqtt_protocol::util::PacketError;
+use crate::util::PacketError;
 
 use super::{
     fixed_header::FixedHeader,
@@ -45,8 +45,8 @@ impl Subscribe {
                 super::fixed_header::ControlPacketType::Subscribe,
                 2 + subscriptions
                     .iter()
-                    .map(|sub| sub.topic.len() as u64 + 3)
-                    .sum::<u64>(),
+                    .map(|sub| sub.topic.len() + 3)
+                    .sum::<usize>(),
             ),
             packet_identifier,
             subscriptions,
@@ -73,7 +73,7 @@ impl Subscribe {
             let qos = data[index + topic.len() + 2];
             let qos = Qos::try_from(qos)?;
             subscriptions.push(TopicSubscription::new(topic.to_string(), qos));
-            remaining -= 2 + (topic.len() as u64) + 1;
+            remaining -= 2 + topic.len() + 1;
             index += 2 + topic.len() + 1;
         }
 
@@ -95,6 +95,7 @@ impl Subscribe {
             length += write_str(&sub.topic, writer)? + 1;
             writer.write_all(&[sub.qos as u8])?;
         }
+        writer.flush()?;
         Ok(length)
     }
 }

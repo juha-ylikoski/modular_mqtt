@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::marker::PhantomData;
 
-use crate::mqtt_protocol::fixed_header::ControlPacketType;
+use crate::fixed_header::ControlPacketType;
 
 use super::fixed_header::FixedHeader;
 use super::util::{extract_bytes, extract_str, write_str, PacketError, Qos};
@@ -108,7 +108,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
             if let Some(password) = &password {
                 len += password.len() + 2;
             }
-            len as u64
+            len
         };
         let fixed_header = FixedHeader::new(
             ControlPacketType::Connect,
@@ -245,6 +245,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
             writer.write_all(password)?;
             length += 2 + pl_len;
         }
+        writer.flush()?;
         Ok(length)
     }
 }
@@ -253,7 +254,7 @@ impl<'a> Connect<'a, MqttVersion3_1_1> {
 mod test_ser {
     use std::io::BufWriter;
 
-    use crate::mqtt_protocol::connect::MqttLastWill;
+    use crate::connect::MqttLastWill;
 
     use super::*;
 

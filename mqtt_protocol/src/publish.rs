@@ -50,7 +50,7 @@ impl<'a> Publish<'a> {
                     qos: qos.into(),
                     retain,
                 },
-                remaining_length as u64,
+                remaining_length,
             ),
             topic,
             packet_identifier,
@@ -95,6 +95,7 @@ impl<'a> Publish<'a> {
             ])?;
             length += 2;
         }
+        writer.flush()?;
         Ok(length + write_bytes(self.payload, writer)?)
     }
 }

@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::mqtt_protocol::util::PacketError;
+use crate::util::PacketError;
 
 use super::fixed_header::{ControlPacketType, FixedHeader};
 
@@ -46,10 +46,7 @@ pub struct SubAck {
 impl SubAck {
     pub fn new(packet_identifier: u16, return_codes: Vec<SubRc>) -> Self {
         Self {
-            fixed_header: FixedHeader::new(
-                ControlPacketType::SubAck,
-                2 + return_codes.len() as u64,
-            ),
+            fixed_header: FixedHeader::new(ControlPacketType::SubAck, 2 + return_codes.len()),
             packet_identifier,
             return_codes,
         }
@@ -83,6 +80,7 @@ impl SubAck {
             length += 1;
         }
 
+        writer.flush()?;
         Ok(length)
     }
 }

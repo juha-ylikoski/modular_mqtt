@@ -1,6 +1,7 @@
 use std::io::Write;
 
-use super::fixed_header::{ControlPacketType, FixedHeader};
+use crate::fixed_header::{ControlPacketType, FixedHeader};
+use crate::util::PacketError;
 
 macro_rules! create_ping_package {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
@@ -20,14 +21,22 @@ macro_rules! create_ping_package {
         }
 
         impl $name {
-            pub fn try_read(header: FixedHeader) -> Self {
-                Self {
-                    fixed_header: header,
+            pub fn try_read(header: FixedHeader) -> Result<Self, PacketError> {
+                if header.control_packet_type == $packet_type {
+                    Ok(Self {
+                        fixed_header: header,
+                    })
+                } else {
+                    Err(PacketError::MalformedPacket(
+                        "Invalid packet type when trying to create packet.",
+                    ))
                 }
             }
             #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
-            pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-                let len = self.fixed_header.write_to_stream(writer)?;
+            pub fn write_to_stream(writer: &mut impl Write) -> Result<usize, std::io::Error> {
+                let fixed_header = FixedHeader::new($packet_type, 0);
+                let len = fixed_header.write_to_stream(writer)?;
+                writer.flush()?;
                 Ok(len)
             }
         }
@@ -42,8 +51,7 @@ macro_rules! create_ping_package {
             fn serialize() {
                 let mut buf = Vec::new();
                 let mut writer = BufWriter::new(&mut buf);
-                let msg = $name::default();
-                msg.write_to_stream(&mut writer).unwrap();
+                $name::write_to_stream(&mut writer).unwrap();
                 drop(writer);
                 assert_eq!(&buf, &[$test_packet_type, 0]);
             }
@@ -55,7 +63,7 @@ macro_rules! create_ping_package {
                 let header = FixedHeader::try_read(&mut reader).unwrap();
                 let mut data = Vec::new();
                 reader.read_to_end(&mut data).unwrap();
-                assert_eq!($name::try_read(header), expected);
+                assert_eq!($name::try_read(header).unwrap(), expected);
             }
         }
     };
