@@ -59,7 +59,10 @@ impl<'a> Publish<'a> {
     }
     pub fn try_read(header: FixedHeader, data: &'a [u8]) -> Result<Self, PacketError> {
         if data.len() < 2 {
-            return Err(PacketError::MissingBytes(2, data.len()));
+            return Err(PacketError::MissingBytes {
+                expected: 2,
+                got: data.len(),
+            });
         }
         let topic = extract_str(data)?;
         let (_, qos, _) = match header.control_packet_type {
@@ -75,7 +78,7 @@ impl<'a> Publish<'a> {
             None
         };
 
-        let payload = extract_bytes(&data[pos..])?;
+        let payload = &data[pos..];
 
         Ok(Self {
             fixed_header: header,
@@ -84,7 +87,6 @@ impl<'a> Publish<'a> {
             payload,
         })
     }
-    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         length += write_str(self.topic, writer)?;
@@ -95,8 +97,11 @@ impl<'a> Publish<'a> {
             ])?;
             length += 2;
         }
+        length += self.payload.len();
+        writer.write_all(self.payload)?;
         writer.flush()?;
-        Ok(length + write_bytes(self.payload, writer)?)
+
+        Ok(length)
     }
 }
 
@@ -122,9 +127,27 @@ mod test {
         assert_eq!(
             &buf,
             &[
-                48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', 0, 7, b'p', b'a', b'y', b'l', b'o',
-                b'a', b'd'
+                48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a',
+                b'd'
             ]
+        );
+    }
+    #[test]
+    fn serialize2() {
+        let msg = Publish::new(
+            false,
+            QosPacketIdentifier::AtMostOnce,
+            false,
+            "foo2".try_into().unwrap(),
+            b"foo",
+        );
+        let mut buf = Vec::new();
+        let mut writer = BufWriter::new(&mut buf);
+        msg.write_to_stream(&mut writer).unwrap();
+        drop(writer);
+        assert_eq!(
+            &buf,
+            &[48, 9, 0, 4, b'f', b'o', b'o', b'2', b'f', b'o', b'o']
         );
     }
     #[test]
@@ -154,8 +177,6 @@ mod test {
                 b'c',
                 0,
                 42,
-                0,
-                7,
                 b'p',
                 b'a',
                 b'y',
@@ -191,8 +212,6 @@ mod test {
                 b'p',
                 b'i',
                 b'c',
-                0,
-                7,
                 b'p',
                 b'a',
                 b'y',
@@ -228,8 +247,6 @@ mod test {
                 b'p',
                 b'i',
                 b'c',
-                0,
-                7,
                 b'p',
                 b'a',
                 b'y',
@@ -250,8 +267,7 @@ mod test {
             b"payload",
         );
         let msg = [
-            48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', 0, 7, b'p', b'a', b'y', b'l', b'o', b'a',
-            b'd',
+            48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut reader = BufReader::new(&msg[..]);
         let header = FixedHeader::try_read(&mut reader).unwrap();
@@ -280,8 +296,6 @@ mod test {
             b'c',
             0,
             42,
-            0,
-            7,
             b'p',
             b'a',
             b'y',
@@ -315,8 +329,6 @@ mod test {
             b'p',
             b'i',
             b'c',
-            0,
-            7,
             b'p',
             b'a',
             b'y',
@@ -350,8 +362,6 @@ mod test {
             b'p',
             b'i',
             b'c',
-            0,
-            7,
             b'p',
             b'a',
             b'y',

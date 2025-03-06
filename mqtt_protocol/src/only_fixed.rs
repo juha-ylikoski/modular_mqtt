@@ -32,7 +32,6 @@ macro_rules! create_ping_package {
                     ))
                 }
             }
-            #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
             pub fn write_to_stream(writer: &mut impl Write) -> Result<usize, std::io::Error> {
                 let fixed_header = FixedHeader::new($packet_type, 0);
                 let len = fixed_header.write_to_stream(writer)?;

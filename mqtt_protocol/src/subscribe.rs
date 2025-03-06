@@ -55,7 +55,10 @@ impl Subscribe {
 
     pub fn try_read(header: FixedHeader, data: &[u8]) -> Result<Self, PacketError> {
         if data.len() < 2 {
-            return Err(PacketError::MissingBytes(2, data.len()));
+            return Err(PacketError::MissingBytes {
+                expected: 2,
+                got: data.len(),
+            });
         }
         let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
         let mut remaining = header.remaining_length - 2;
@@ -83,7 +86,6 @@ impl Subscribe {
             subscriptions,
         })
     }
-    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         writer.write_all(&[

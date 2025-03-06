@@ -62,7 +62,10 @@ impl ConnAck {
     }
     pub fn try_read(header: FixedHeader, data: &[u8]) -> Result<Self, PacketError> {
         if data.len() < 2 {
-            return Err(PacketError::MissingBytes(2, data.len()));
+            return Err(PacketError::MissingBytes {
+                expected: 2,
+                got: data.len(),
+            });
         }
         let flags = data[0];
         let connect_rc = data[1].try_into()?;
@@ -77,7 +80,6 @@ impl ConnAck {
             connect_rc,
         })
     }
-    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let length = self.fixed_header.write_to_stream(writer)?;
         writer.write_all(&[self.session_present as u8, self.connect_rc.into()])?;

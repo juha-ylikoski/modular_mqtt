@@ -25,7 +25,6 @@ macro_rules! create_packet_type {
                     packet_identifier: u16::from_be_bytes([data[0], data[1]]),
                 }
             }
-            #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
             pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
                 let len = self.fixed_header.write_to_stream(writer)?;
                 writer.write_all(&[

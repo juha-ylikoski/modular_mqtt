@@ -157,7 +157,6 @@ impl FixedHeader {
         }
     }
 
-    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn try_read(reader: &mut impl Read) -> Result<Self, FixedHeaderError> {
         let mut buf = [0u8; 1];
         reader.read_exact(&mut buf)?;
@@ -179,7 +178,6 @@ impl FixedHeader {
         Ok(Self::new(control_packet_type, remaining_length))
     }
 
-    #[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
     pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = 1;
         writer.write_all(&[

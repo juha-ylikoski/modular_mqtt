@@ -13,8 +13,8 @@ pub enum PacketError {
     #[error("Was unable to extract utf8 string from packet")]
     Utf8Error(#[from] std::str::Utf8Error),
 
-    #[error("Could not read expected {0} bytes. Read only {1}")]
-    MissingBytes(usize, usize),
+    #[error("Could not read expected {expected} bytes. Read only {got}")]
+    MissingBytes { expected: usize, got: usize },
 
     #[error("Mqtt topic cannot contain wildcard characters '#' or '+'")]
     InvalidMqttTopic,
@@ -84,13 +84,15 @@ pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {
     if length == 0 {
         Ok("")
     } else if data.len() < length + 2 {
-        Err(PacketError::MissingBytes(length + 2, data.len()))
+        Err(PacketError::MissingBytes {
+            expected: length + 2,
+            got: data.len(),
+        })
     } else {
         Ok(std::str::from_utf8(&data[2..2 + length])?)
     }
 }
 
-#[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
 pub fn write_str(string: &str, writer: &mut impl Write) -> Result<usize, std::io::Error> {
     let length = string.len();
     writer.write_all(&(length as u16).to_be_bytes())?;
@@ -105,13 +107,15 @@ pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
             "Packet bytes cannot have length of 0.",
         ))
     } else if data.len() < length + 2 {
-        Err(PacketError::MissingBytes(length + 2, data.len()))
+        Err(PacketError::MissingBytes {
+            expected: length + 2,
+            got: data.len(),
+        })
     } else {
         Ok(&data[2..2 + length])
     }
 }
 
-#[cfg_attr(feature = "async", mqtt_protocol_derive::impl_async)]
 pub fn write_bytes(bytes: &[u8], writer: &mut impl Write) -> Result<usize, std::io::Error> {
     let length = bytes.len();
     writer.write_all(&(length as u16).to_be_bytes())?;
@@ -172,7 +176,7 @@ mod test {
         let buf = [0, 100, b'f'];
         if let Err(e) = extract_str(&buf[..]) {
             match e {
-                PacketError::MissingBytes(_, _) => (),
+                PacketError::MissingBytes { .. } => (),
                 _ => panic!("Failed to detect bad input data!"),
             }
         } else {
@@ -224,7 +228,7 @@ mod test {
         let buf = [0, 100, b'f'];
         if let Err(e) = extract_bytes(&buf[..]) {
             match e {
-                PacketError::MissingBytes(_, _) => (),
+                PacketError::MissingBytes { .. } => (),
                 _ => panic!("Failed to detect bad input data!"),
             }
         } else {
