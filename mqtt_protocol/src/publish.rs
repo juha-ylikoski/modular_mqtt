@@ -1,21 +1,30 @@
 use std::io::Write;
 
+use crate::ControlPacketType;
+
 use super::{
     fixed_header::{self, FixedHeader},
-    util::{
-        extract_bytes, extract_str, write_bytes, write_str, MqttTopic, PacketError, Qos,
-        QosPacketIdentifier,
-    },
+    util::{extract_str, write_str, MqttTopic, PacketError, Qos, QosPacketIdentifier},
 };
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct Publish<'a> {
-    fixed_header: FixedHeader,
-    topic: &'a str,
-    packet_identifier: Option<u16>,
-    payload: &'a [u8],
+    pub fixed_header: FixedHeader,
+    pub topic: &'a str,
+    pub packet_identifier: Option<u16>,
+    pub payload: &'a [u8],
+}
+
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
+/// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
+pub struct ReceivedMessage {
+    pub flags: u8,
+    pub topic: String,
+    pub packet_identifier: Option<u16>,
+    pub payload: Vec<u8>,
 }
 
 impl<'a> Publish<'a> {
@@ -23,10 +32,10 @@ impl<'a> Publish<'a> {
         dup: bool,
         qos: QosPacketIdentifier,
         retain: bool,
-        topic: MqttTopic<'a>,
+        topic: &'a MqttTopic,
         payload: &'a [u8],
     ) -> Self {
-        let topic = topic.0;
+        let topic = topic.0.as_str();
         let packet_identifier = match &qos {
             QosPacketIdentifier::AtMostOnce => None,
             QosPacketIdentifier::AtLeastOnce(id) => Some(*id),
@@ -57,36 +66,7 @@ impl<'a> Publish<'a> {
             payload,
         }
     }
-    pub fn try_read(header: FixedHeader, data: &'a [u8]) -> Result<Self, PacketError> {
-        if data.len() < 2 {
-            return Err(PacketError::MissingBytes {
-                expected: 2,
-                got: data.len(),
-            });
-        }
-        let topic = extract_str(data)?;
-        let (_, qos, _) = match header.control_packet_type {
-            fixed_header::ControlPacketType::Publish { dup, qos, retain } => (dup, qos, retain),
-            _ => panic!("Library had internal error. This is bug!"),
-        };
-        let mut pos = 2 + topic.len();
-        let packet_identifier = if qos != Qos::AtMostOnce {
-            let id = Some(u16::from_be_bytes([data[pos], data[pos + 1]]));
-            pos += 2;
-            id
-        } else {
-            None
-        };
 
-        let payload = &data[pos..];
-
-        Ok(Self {
-            fixed_header: header,
-            topic,
-            packet_identifier,
-            payload,
-        })
-    }
     pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = self.fixed_header.write_to_stream(writer)?;
         length += write_str(self.topic, writer)?;
@@ -98,10 +78,58 @@ impl<'a> Publish<'a> {
             length += 2;
         }
         length += self.payload.len();
-        writer.write_all(self.payload)?;
+        writer.write_all(&self.payload)?;
         writer.flush()?;
 
         Ok(length)
+    }
+}
+
+impl ReceivedMessage {
+    pub fn try_read(header: FixedHeader, mut data: Vec<u8>) -> Result<Self, PacketError> {
+        let flags = header.control_packet_type.flags();
+        if data.len() < 2 {
+            return Err(PacketError::MissingBytes {
+                expected: 2,
+                got: data.len(),
+            });
+        }
+        let topic = extract_str(&data[..])?.to_string();
+        let mut pos = 2 + topic.len();
+
+        let (_, qos, _) = match header.control_packet_type {
+            fixed_header::ControlPacketType::Publish { dup, qos, retain } => (dup, qos, retain),
+            _ => panic!("Library had internal error. This is bug!"),
+        };
+
+        let packet_identifier = if qos != Qos::AtMostOnce {
+            let id = Some(u16::from_be_bytes([data[pos], data[pos + 1]]));
+            pos += 2;
+            id
+        } else {
+            None
+        };
+
+        // Split data before to be able to do split_off which requires &mut
+        data.drain(0..pos);
+        let payload = data;
+
+        Ok(Self {
+            flags,
+            topic,
+            packet_identifier,
+            payload,
+        })
+    }
+    pub fn dup(&self) -> bool {
+        ControlPacketType::flags_dup(self.flags)
+    }
+    pub fn retain(&self) -> bool {
+        ControlPacketType::flags_retain(self.flags)
+    }
+    pub fn qos(&self) -> Qos {
+        ControlPacketType::flags_qos(self.flags)
+            .expect("Internal flags were not what they were supposed to be. This is a bug.")
     }
 }
 
@@ -113,11 +141,12 @@ mod test {
 
     #[test]
     fn serialize() {
+        let topic = MqttTopic::try_from("topic").unwrap();
         let msg = Publish::new(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
-            "topic".try_into().unwrap(),
+            &topic,
             b"payload",
         );
         let mut buf = Vec::new();
@@ -134,11 +163,12 @@ mod test {
     }
     #[test]
     fn serialize2() {
+        let topic = MqttTopic::try_from("foo2").unwrap();
         let msg = Publish::new(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
-            "foo2".try_into().unwrap(),
+            &topic,
             b"foo",
         );
         let mut buf = Vec::new();
@@ -152,11 +182,12 @@ mod test {
     }
     #[test]
     fn serialize_qos() {
+        let topic = MqttTopic::try_from("topic").unwrap();
         let msg = Publish::new(
             false,
             QosPacketIdentifier::ExactlyOnce(42),
             false,
-            "topic".try_into().unwrap(),
+            &topic,
             b"payload",
         );
         let mut buf = Vec::new();
@@ -189,11 +220,12 @@ mod test {
     }
     #[test]
     fn serialize_dup() {
+        let topic = MqttTopic::try_from("topic").unwrap();
         let msg = Publish::new(
             true,
             QosPacketIdentifier::AtMostOnce,
             false,
-            "topic".try_into().unwrap(),
+            &topic,
             b"payload",
         );
         let mut buf = Vec::new();
@@ -224,11 +256,12 @@ mod test {
     }
     #[test]
     fn serialize_retain() {
+        let topic = MqttTopic::try_from("topic").unwrap();
         let msg = Publish::new(
             false,
             QosPacketIdentifier::AtMostOnce,
             true,
-            "topic".try_into().unwrap(),
+            &topic,
             b"payload",
         );
         let mut buf = Vec::new();
@@ -259,13 +292,17 @@ mod test {
     }
     #[test]
     fn deserialize() {
-        let expected = Publish::new(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
-            "topic".try_into().unwrap(),
-            b"payload",
-        );
+        let expected = ReceivedMessage {
+            flags: ControlPacketType::Publish {
+                dup: false,
+                qos: Qos::AtMostOnce,
+                retain: false,
+            }
+            .flags(),
+            topic: "topic".to_string(),
+            packet_identifier: None,
+            payload: b"payload".to_vec(),
+        };
         let msg = [
             48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
@@ -273,17 +310,21 @@ mod test {
         let header = FixedHeader::try_read(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Publish::try_read(header, &data[..]).unwrap(), expected);
+        assert_eq!(ReceivedMessage::try_read(header, data).unwrap(), expected);
     }
     #[test]
     fn deserialize_qos() {
-        let expected = Publish::new(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
-            "topic".try_into().unwrap(),
-            b"payload",
-        );
+        let expected = ReceivedMessage {
+            flags: ControlPacketType::Publish {
+                dup: false,
+                qos: Qos::ExactlyOnce,
+                retain: false,
+            }
+            .flags(),
+            topic: "topic".to_string(),
+            packet_identifier: Some(42),
+            payload: b"payload".to_vec(),
+        };
         let msg = [
             48 | 2 << 1,
             16,
@@ -308,17 +349,21 @@ mod test {
         let header = FixedHeader::try_read(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Publish::try_read(header, &data[..]).unwrap(), expected);
+        assert_eq!(ReceivedMessage::try_read(header, data).unwrap(), expected);
     }
     #[test]
     fn deserialize_dup() {
-        let expected = Publish::new(
-            true,
-            QosPacketIdentifier::AtMostOnce,
-            false,
-            "topic".try_into().unwrap(),
-            b"payload",
-        );
+        let expected = ReceivedMessage {
+            flags: ControlPacketType::Publish {
+                dup: true,
+                qos: Qos::AtMostOnce,
+                retain: false,
+            }
+            .flags(),
+            topic: "topic".to_string(),
+            packet_identifier: None,
+            payload: b"payload".to_vec(),
+        };
         let msg = [
             48 | 1 << 3,
             14,
@@ -341,17 +386,21 @@ mod test {
         let header = FixedHeader::try_read(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Publish::try_read(header, &data[..]).unwrap(), expected);
+        assert_eq!(ReceivedMessage::try_read(header, data).unwrap(), expected);
     }
     #[test]
     fn deserialize_retain() {
-        let expected = Publish::new(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            true,
-            "topic".try_into().unwrap(),
-            b"payload",
-        );
+        let expected = ReceivedMessage {
+            flags: ControlPacketType::Publish {
+                dup: false,
+                qos: Qos::AtMostOnce,
+                retain: true,
+            }
+            .flags(),
+            topic: "topic".to_string(),
+            packet_identifier: None,
+            payload: b"payload".to_vec(),
+        };
         let msg = [
             48 | 1,
             14,
@@ -374,6 +423,6 @@ mod test {
         let header = FixedHeader::try_read(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Publish::try_read(header, &data[..]).unwrap(), expected);
+        assert_eq!(ReceivedMessage::try_read(header, data).unwrap(), expected);
     }
 }

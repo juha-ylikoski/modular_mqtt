@@ -1,5 +1,9 @@
-use rust_mqtt_protocol::{ConnectRc, FixedHeaderError, PacketError};
+use std::sync::Arc;
+
+use rust_mqtt_protocol::{ConnectRc, FixedHeaderError, PacketError, ReceivedMessage, SubAck};
 use thiserror::Error;
+
+use crate::util::InflightMessage;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -11,6 +15,16 @@ pub enum ClientError {
     IoError(#[from] std::io::Error),
     #[error("Invalid fixed header received: {0}")]
     FixedHeaderError(#[from] FixedHeaderError),
+    #[error("Did not receive response from server")]
+    Timeout,
+    #[error("Internal channel error with subacks")]
+    SendSubackError(#[from] std::sync::mpsc::SendError<SubAck>),
+    #[error("Internal channel error with subacks")]
+    RecvSubackError(#[from] std::sync::mpsc::RecvError),
+    #[error("Internal channel error with subacks")]
+    SendInflightError(#[from] std::sync::mpsc::SendError<(u16, Arc<InflightMessage>)>),
+    #[error("Internal channel error with subacks")]
+    SendReceivedPublishError(#[from] std::sync::mpsc::SendError<ReceivedMessage>),
 }
 
 #[derive(Debug, Error)]

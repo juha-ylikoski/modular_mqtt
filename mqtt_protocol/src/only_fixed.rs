@@ -9,6 +9,7 @@ macro_rules! create_ping_package {
         #[cfg_attr(test, derive(PartialEq))]
         #[doc = $doc]
         pub struct $name {
+            #[allow(unused)]
             fixed_header: FixedHeader,
         }
 

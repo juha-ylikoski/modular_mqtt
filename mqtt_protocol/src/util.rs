@@ -64,17 +64,17 @@ pub enum QosPacketIdentifier {
 }
 
 /// Mqtt topic which does not contain invalid characters
-#[derive(Debug, Clone, Copy)]
-pub struct MqttTopic<'a>(pub(crate) &'a str);
+#[derive(Debug, Clone)]
+pub struct MqttTopic(pub(crate) String);
 
-impl<'a> TryFrom<&'a str> for MqttTopic<'a> {
+impl<'a> TryFrom<&'a str> for MqttTopic {
     type Error = PacketError;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         if value.contains('#') || value.contains('+') {
             Err(PacketError::InvalidMqttTopic)
         } else {
-            Ok(Self(value))
+            Ok(Self(value.to_string()))
         }
     }
 }
@@ -116,12 +116,6 @@ pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
     }
 }
 
-pub fn write_bytes(bytes: &[u8], writer: &mut impl Write) -> Result<usize, std::io::Error> {
-    let length = bytes.len();
-    writer.write_all(&(length as u16).to_be_bytes())?;
-    writer.write_all(bytes)?;
-    Ok(length + 2)
-}
 #[cfg(test)]
 mod test {
     use std::io::BufWriter;
@@ -182,45 +176,6 @@ mod test {
         } else {
             panic!("Should not get here");
         }
-    }
-
-    #[test]
-    fn serialize_bytes() {
-        let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        assert_eq!(write_bytes(&b"1234"[..], &mut writer).unwrap(), 6);
-        drop(writer);
-        assert_eq!(&buf, &[0, 4, b'1', b'2', b'3', b'4']);
-    }
-    #[test]
-    fn serialize_bytes_long() {
-        let input = [b'f'; 1000];
-        let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        assert_eq!(write_bytes(&input[..], &mut writer).unwrap(), 1002);
-        drop(writer);
-
-        let mut expected = [b'f'; 1002];
-        expected[0] = 0x03;
-        expected[1] = 0xe8;
-        assert_eq!(&buf, &expected);
-    }
-    #[test]
-    fn deserialize_bytes() {
-        let buf = [0, 3, b'f', b'o', b'o'];
-        let out = extract_bytes(&buf[..]).unwrap();
-        assert_eq!(out.len(), 3);
-        assert_eq!(out, b"foo");
-    }
-    #[test]
-    fn deserialize_bytes_long() {
-        let mut buf = [b'f'; 1002];
-        buf[0] = 0x03;
-        buf[1] = 0xe8;
-        let expected = [b'f'; 1000];
-        let out = extract_bytes(&buf[..]).unwrap();
-        assert_eq!(out.len(), 1000);
-        assert_eq!(out, expected);
     }
 
     #[test]

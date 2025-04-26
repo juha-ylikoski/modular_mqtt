@@ -3,7 +3,7 @@ pub use connect::{Connect, MqttLastWill};
 pub use fixed_header::{ControlPacketType, FixedHeader, FixedHeaderError};
 pub use only_fixed::{Disconnect, PingReq, PingResp};
 pub use packet_identifier_msgs::{PubAck, PubComp, PubRec, PubRel, UnsubscribeAck};
-pub use publish::Publish;
+pub use publish::{Publish, ReceivedMessage};
 pub use suback::SubAck;
 pub use subscribe::{Subscribe, TopicSubscription};
 pub use unsubscribe::Unsubscribe;

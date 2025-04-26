@@ -94,6 +94,16 @@ impl ControlPacketType {
             ControlPacketType::Disconnect => 0,
         }
     }
+    pub fn flags_dup(flags: u8) -> bool {
+        ((flags & 0b1000) >> 3) == 1
+    }
+    pub fn flags_qos(flags: u8) -> Result<Qos, FixedHeaderError> {
+        Qos::try_from((flags & 0b110) >> 1)
+            .map_err(|_| FixedHeaderError::InvalidQos((flags & 0b110) >> 1))
+    }
+    pub fn flags_retain(flags: u8) -> bool {
+        (flags & 1) == 1
+    }
     pub fn try_from_byte(byte: u8) -> Result<Self, FixedHeaderError> {
         let packet_type = (byte & 0b11110000) >> 4;
         let flags = byte & 0b1111;
@@ -113,10 +123,9 @@ impl ControlPacketType {
             1 => verify!(Self::Connect),
             2 => verify!(Self::ConnAck),
             3 => verify!(Self::Publish {
-                dup: ((flags & 0b1000) >> 3) == 1,
-                qos: Qos::try_from((flags & 0b110) >> 1)
-                    .map_err(|_| FixedHeaderError::InvalidQos((flags & 0b110) >> 1))?,
-                retain: (flags & 1) == 1,
+                dup: Self::flags_dup(flags),
+                qos: Self::flags_qos(flags)?,
+                retain: Self::flags_retain(flags),
             }),
             4 => verify!(Self::PubAck),
             5 => verify!(Self::PubRec),

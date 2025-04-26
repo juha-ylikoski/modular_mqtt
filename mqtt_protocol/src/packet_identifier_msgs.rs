@@ -8,8 +8,8 @@ macro_rules! create_packet_type {
         #[cfg_attr(test, derive(PartialEq))]
         #[doc = $doc]
         pub struct $name {
-            fixed_header: FixedHeader,
-            packet_identifier: u16,
+            pub fixed_header: FixedHeader,
+            pub packet_identifier: u16,
         }
 
         impl $name {
