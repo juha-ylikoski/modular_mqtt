@@ -37,4 +37,6 @@ pub enum ConnectError {
     IoError(#[from] std::io::Error),
     #[error("Mqtt broker returned non zero return code {0:?}")]
     ConnectFailed(ConnectRc),
+    #[error("Could not write to stream")]
+    WriteError,
 }

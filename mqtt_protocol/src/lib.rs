@@ -1,5 +1,5 @@
 pub use connack::{ConnAck, ConnectRc};
-pub use connect::{Connect, MqttLastWill};
+pub use connect::{Connect, MqttLastWill, MqttVersion3_1_1};
 pub use fixed_header::{ControlPacketType, FixedHeader, FixedHeaderError};
 pub use only_fixed::{Disconnect, PingReq, PingResp};
 pub use packet_identifier_msgs::{PubAck, PubComp, PubRec, PubRel, UnsubscribeAck};

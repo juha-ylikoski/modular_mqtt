@@ -7,8 +7,7 @@ use super::{
     util::{extract_str, write_str, MqttTopic, PacketError, Qos, QosPacketIdentifier},
 };
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct Publish<'a> {
     pub fixed_header: FixedHeader,
@@ -17,8 +16,7 @@ pub struct Publish<'a> {
     pub payload: &'a [u8],
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct ReceivedMessage {
     pub flags: u8,

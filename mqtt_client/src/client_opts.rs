@@ -8,7 +8,6 @@ pub struct LastWill {
 }
 
 pub struct ClientOpts {
-    pub broker: String,
     pub client_id: String,
     pub keep_alive: u16,
     pub clean_session: bool,

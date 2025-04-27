@@ -143,8 +143,7 @@ impl ControlPacketType {
     }
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 pub struct FixedHeader {
     pub control_packet_type: ControlPacketType,
     pub remaining_length: usize,
@@ -170,7 +169,6 @@ impl FixedHeader {
         let mut buf = [0u8; 1];
         reader.read_exact(&mut buf)?;
         let control_packet_type = ControlPacketType::try_from_byte(buf[0])?;
-        println!("type: {control_packet_type:?}");
 
         // // Algorith based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
         let mut multiplier = 1;

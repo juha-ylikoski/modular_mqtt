@@ -34,8 +34,7 @@ impl SubRc {
     }
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
 pub struct SubAck {
     fixed_header: FixedHeader,

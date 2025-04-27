@@ -5,7 +5,7 @@ use rust_mqtt_protocol::{
 };
 use std::{
     collections::HashMap,
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read},
     net::TcpStream,
     sync::{mpsc, Arc, RwLock},
     time::{Duration, SystemTime},
@@ -15,10 +15,10 @@ use tracing::instrument;
 use crate::{
     client_opts::ClientOpts,
     error::{ClientError, ConnectError},
+    sync_connection::SyncStream,
     util::{buf_with_size, InflightMessage, InflightMessageState, Message},
+    RESENT_INTERVAL,
 };
-
-const RESENT_INTERVAL: Duration = Duration::from_secs(10);
 
 pub trait MqttClient {
     fn subscribe(&mut self, topics: Vec<String>, qos: Qos) -> Result<SubAck, ClientError>;
@@ -30,29 +30,34 @@ enum ReadFinished {
     TimedOut,
 }
 
-pub struct SyncClient {
+pub struct SyncClient<S: SyncStream> {
     #[allow(unused)]
     opts: Arc<ClientOpts>,
     next_packet_identifier: Arc<std::sync::atomic::AtomicU16>,
-    writer: TcpStream,
+    writer: S,
     #[allow(unused)]
     backend: Arc<std::thread::JoinHandle<Result<(), ClientError>>>,
     msg_ch: mpsc::Receiver<ReceivedMessage>,
     suback_ch: mpsc::Receiver<SubAck>,
     inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage>)>,
 }
-struct SyncClientBackend {
+struct SyncClientBackend<S: SyncStream> {
     #[allow(unused)]
     opts: Arc<ClientOpts>,
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
+    reader: BufReader<S>,
+    writer: S,
     msg_ch: mpsc::Sender<ReceivedMessage>,
     suback_ch: mpsc::Sender<SubAck>,
     inflight_msgs: HashMap<u16, Arc<InflightMessage>>,
     inflight_ch: mpsc::Receiver<(u16, Arc<InflightMessage>)>,
 }
-
-impl SyncClient {
+impl SyncClient<TcpStream> {
+    pub fn connect(opts: ClientOpts, broker: String) -> Result<Self, ConnectError> {
+        let stream = TcpStream::connect(&broker)?;
+        Self::connect_stream(stream, opts)
+    }
+}
+impl<S: SyncStream + 'static> SyncClient<S> {
     pub fn stream(&self) -> &mpsc::Receiver<ReceivedMessage> {
         &self.msg_ch
     }
@@ -60,9 +65,11 @@ impl SyncClient {
         self.next_packet_identifier
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
-    fn handle_connack(reader: &mut BufReader<TcpStream>) -> Result<ConnAck, ConnectError> {
-        let header = FixedHeader::try_read(reader)
-            .map_err(|e| ConnectError::ProtocolError(PacketError::from(e)))?;
+    fn handle_connack(reader: &mut BufReader<S>) -> Result<ConnAck, ConnectError> {
+        let header = FixedHeader::try_read(reader).map_err(|e| match e {
+            FixedHeaderError::IoError(error) => ConnectError::IoError(error),
+            _ => ConnectError::ProtocolError(PacketError::from(e)),
+        })?;
 
         tracing::trace!("Got fixed header: {header:?}");
         let header = match &header.control_packet_type {
@@ -86,10 +93,9 @@ impl SyncClient {
     }
 
     #[instrument(skip_all)]
-    pub fn connect(opts: ClientOpts) -> Result<Self, ConnectError> {
+    pub fn connect_stream(mut stream: S, opts: ClientOpts) -> Result<Self, ConnectError> {
         let opts = Arc::new(opts);
 
-        let mut stream = TcpStream::connect(&opts.broker)?;
         stream
             .set_read_timeout(Some(Duration::from_secs(opts.keep_alive.into())))
             .unwrap();
@@ -110,7 +116,8 @@ impl SyncClient {
             opts.password.as_deref(),
         );
         tracing::trace!("Sending Connect: {msg:?}");
-        msg.write_to_stream(&mut stream).unwrap();
+        msg.write_to_stream(&mut stream)
+            .map_err(|_| crate::error::ConnectError::WriteError)?;
 
         let connack = Self::handle_connack(&mut reader)?;
 
@@ -119,18 +126,16 @@ impl SyncClient {
         if connack.connect_rc == ConnectRc::Accepted {
             let bg_opts = opts.clone();
             let bg_stream = stream.try_clone()?;
-            let backend = Arc::new(std::thread::spawn(|| {
-                SyncClientBackend {
-                    opts: bg_opts,
-                    reader,
-                    writer: bg_stream,
-                    msg_ch: msg_sender,
-                    suback_ch: sub_sender,
-                    inflight_msgs: HashMap::new(),
-                    inflight_ch: inflight_receiver,
-                }
-                .bg_thread()
-            }));
+            let be = SyncClientBackend {
+                opts: bg_opts,
+                reader,
+                writer: bg_stream,
+                msg_ch: msg_sender,
+                suback_ch: sub_sender,
+                inflight_msgs: HashMap::new(),
+                inflight_ch: inflight_receiver,
+            };
+            let backend = Arc::new(std::thread::spawn(|| be.bg_thread()));
             let client = Self {
                 opts,
                 writer: stream,
@@ -147,7 +152,7 @@ impl SyncClient {
     }
 }
 
-impl SyncClientBackend {
+impl<S: SyncStream> SyncClientBackend<S> {
     fn read_next_msg(&mut self) -> Result<(FixedHeader, Vec<u8>), FixedHeaderError> {
         let header = FixedHeader::try_read(&mut self.reader)?;
         let mut buf = buf_with_size(header.remaining_length);
@@ -183,7 +188,7 @@ impl SyncClientBackend {
         }
     }
     fn resend_msg(
-        writer: &mut TcpStream,
+        writer: &mut S,
         packet_identifier: u16,
         msg: &Message,
     ) -> Result<(), std::io::Error> {
@@ -192,10 +197,7 @@ impl SyncClientBackend {
         writer.flush().unwrap();
         Ok(())
     }
-    fn resend_pubrell(
-        writer: &mut TcpStream,
-        packet_identifier: u16,
-    ) -> Result<(), std::io::Error> {
+    fn resend_pubrell(writer: &mut S, packet_identifier: u16) -> Result<(), std::io::Error> {
         let packet = PubRel::new(packet_identifier);
         packet.write_to_stream(writer)?;
         writer.flush().unwrap();
@@ -348,7 +350,7 @@ impl SyncClientBackend {
     }
 }
 
-impl MqttClient for SyncClient {
+impl<S: SyncStream + 'static> MqttClient for SyncClient<S> {
     fn subscribe(&mut self, topics: Vec<String>, qos: Qos) -> Result<SubAck, ClientError> {
         let subs = topics
             .into_iter()
@@ -370,6 +372,7 @@ impl MqttClient for SyncClient {
             );
         }
         let packet = msg.packet(false, packet_identifier);
+        tracing::debug!("Sending message: {msg:?}");
         packet.write_to_stream(&mut self.writer)?;
         let mut inflight = None;
         if let Some(packet_identifier) = packet_identifier {

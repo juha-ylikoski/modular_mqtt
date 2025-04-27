@@ -43,8 +43,7 @@ impl TryFrom<u8> for ConnectRc {
     }
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client. The first packet sent from the Server to the Client MUST be a CONNACK Packet [MQTT-3.2.0-1].
 pub struct ConnAck {
     pub fixed_header: FixedHeader,

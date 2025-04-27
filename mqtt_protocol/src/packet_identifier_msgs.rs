@@ -4,8 +4,7 @@ use super::fixed_header::{ControlPacketType, FixedHeader};
 
 macro_rules! create_packet_type {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
-        #[derive(Debug)]
-        #[cfg_attr(test, derive(PartialEq))]
+        #[derive(Debug, PartialEq)]
         #[doc = $doc]
         pub struct $name {
             pub fixed_header: FixedHeader,

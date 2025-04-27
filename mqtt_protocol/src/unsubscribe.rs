@@ -7,8 +7,7 @@ use crate::{
     util::{extract_str, write_str, MqttTopic},
 };
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// An UNSUBSCRIBE Packet is sent by the Client to the Server, to unsubscribe from topics.
 pub struct Unsubscribe {
     fixed_header: FixedHeader,

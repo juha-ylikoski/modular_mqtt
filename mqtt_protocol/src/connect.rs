@@ -6,12 +6,10 @@ use crate::fixed_header::ControlPacketType;
 use super::fixed_header::FixedHeader;
 use super::util::{extract_bytes, extract_str, write_str, PacketError, Qos};
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 pub struct MqttVersion3_1_1;
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 pub struct MqttLastWill<'a> {
     topic: &'a str,
     payload: &'a [u8],
@@ -30,8 +28,7 @@ impl<'a> MqttLastWill<'a> {
     }
 }
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, PartialEq)]
 /// After a Network Connection is established by a Client to a Server, the first Packet sent from the Client to the Server MUST be a CONNECT Packet [MQTT-3.1.0-1].
 pub struct Connect<'a, V> {
     fixed_header: FixedHeader,
@@ -68,7 +65,7 @@ pub struct Connect<'a, V> {
     password: Option<&'a [u8]>,
 }
 
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(PartialEq)]
 enum Flags {
     CleanSession = 1 << 1,
     Will = 1 << 2,

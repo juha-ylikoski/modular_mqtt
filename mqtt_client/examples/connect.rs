@@ -8,14 +8,16 @@ async fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    SyncClient::connect(ClientOpts {
-        broker: "127.0.0.1:1883".to_string(),
-        client_id: "client-id".to_string(),
-        keep_alive: 15,
-        clean_session: true,
-        will: None,
-        username: None,
-        password: None,
-    })
+    SyncClient::connect(
+        ClientOpts {
+            client_id: "client-id".to_string(),
+            keep_alive: 15,
+            clean_session: true,
+            will: None,
+            username: None,
+            password: None,
+        },
+        "127.0.0.1:1883".to_string(),
+    )
     .expect("Connection failed");
 }
