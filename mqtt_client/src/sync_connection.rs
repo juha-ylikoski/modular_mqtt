@@ -17,9 +17,9 @@ pub trait SyncStream: Read + Write + Sized + Send {
 
 impl SyncStream for std::net::TcpStream {
     fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), std::io::Error> {
-        TcpStream::set_read_timeout(&self, dur)
+        TcpStream::set_read_timeout(self, dur)
     }
     fn try_clone(&self) -> Result<Self, std::io::Error> {
-        TcpStream::try_clone(&self)
+        TcpStream::try_clone(self)
     }
 }

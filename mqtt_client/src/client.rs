@@ -110,7 +110,7 @@ impl<S: SyncStream + 'static> SyncClient<S> {
             opts.keep_alive,
             &opts.client_id,
             opts.will.as_ref().map(|will| {
-                MqttLastWill::new(&will.topic, &will.payload, will.retain, will.qos.clone())
+                MqttLastWill::new(&will.topic, &will.payload, will.retain, will.qos)
             }),
             opts.username.as_deref(),
             opts.password.as_deref(),

@@ -76,7 +76,7 @@ impl<'a> Publish<'a> {
             length += 2;
         }
         length += self.payload.len();
-        writer.write_all(&self.payload)?;
+        writer.write_all(self.payload)?;
         writer.flush()?;
 
         Ok(length)

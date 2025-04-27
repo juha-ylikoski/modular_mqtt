@@ -1,43 +1,15 @@
 use std::{
-    sync::{Arc, Condvar, Mutex, RwLock},
-    time::{Duration, SystemTime},
+    sync::RwLock,
+    time::SystemTime,
 };
 
-use rust_mqtt_protocol::{
-    MqttTopic, Publish, Qos, QosPacketIdentifier,
-};
+use rust_mqtt_protocol::{MqttTopic, Publish, Qos, QosPacketIdentifier};
 
+#[allow(clippy::uninit_vec)]
 pub fn buf_with_size(n: usize) -> Vec<u8> {
     let mut vec: Vec<u8> = Vec::with_capacity(n);
     unsafe { vec.set_len(n) };
     vec
-}
-
-#[derive(Clone)]
-pub struct Event(Arc<(Mutex<bool>, Condvar)>);
-
-impl Event {
-    pub fn new() -> Self {
-        Self(Arc::new((Mutex::new(false), Condvar::new())))
-    }
-    pub fn notify(self) {
-        let (lock, cvar) = &*self.0;
-        let mut done = lock.lock().unwrap();
-        *done = true;
-        cvar.notify_one();
-    }
-    pub fn wait_timeout(self, duration: Duration) {
-        // Ref https://doc.rust-lang.org/nightly/std/sync/struct.Condvar.html#method.wait_timeout
-        let (lock, cvar) = &*self.0;
-        let mut done = lock.lock().unwrap();
-        loop {
-            let result = cvar.wait_timeout(done, duration).unwrap();
-            done = result.0;
-            if *done == true {
-                break;
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
