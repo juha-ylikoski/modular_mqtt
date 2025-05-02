@@ -21,6 +21,7 @@ async fn main() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: mqtt_client::client_opts::OnDisconnectBehavior::Panic,
         },
         "127.0.0.1:1883".to_string(),
     )
@@ -28,7 +29,7 @@ async fn main() {
 
     tracing::info!("Subscribing!");
     let suback = client
-        .subscribe(vec!["qos0".to_string()], Qos::AtMostOnce)
+        .subscribe(vec!["qos0".try_into().unwrap()], Qos::AtMostOnce)
         .unwrap();
     tracing::info!("Got SubAck {suback:?}");
 

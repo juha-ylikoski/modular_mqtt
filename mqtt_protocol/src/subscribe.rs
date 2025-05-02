@@ -1,7 +1,7 @@
 use core::panic;
 use std::io::Write;
 
-use crate::util::PacketError;
+use crate::{util::PacketError, MqttTopic};
 
 use super::{
     fixed_header::FixedHeader,
@@ -10,12 +10,12 @@ use super::{
 
 #[derive(Debug, PartialEq)]
 pub struct TopicSubscription {
-    topic: String,
+    topic: MqttTopic,
     qos: Qos,
 }
 
 impl TopicSubscription {
-    pub fn new(topic: String, qos: Qos) -> Self {
+    pub fn new(topic: MqttTopic, qos: Qos) -> Self {
         Self { topic, qos }
     }
 }
@@ -43,7 +43,7 @@ impl Subscribe {
                 super::fixed_header::ControlPacketType::Subscribe,
                 2 + subscriptions
                     .iter()
-                    .map(|sub| sub.topic.len() + 3)
+                    .map(|sub| sub.topic.0.len() + 3)
                     .sum::<usize>(),
             ),
             packet_identifier,
@@ -73,7 +73,7 @@ impl Subscribe {
             let topic = extract_str(&data[index..])?;
             let qos = data[index + topic.len() + 2];
             let qos = Qos::try_from(qos)?;
-            subscriptions.push(TopicSubscription::new(topic.to_string(), qos));
+            subscriptions.push(TopicSubscription::new(MqttTopic::try_from(topic)?, qos));
             remaining -= 2 + topic.len() + 1;
             index += 2 + topic.len() + 1;
         }
@@ -92,7 +92,7 @@ impl Subscribe {
         ])?;
         length += 2;
         for sub in self.subscriptions {
-            length += write_str(&sub.topic, writer)? + 1;
+            length += write_str(&sub.topic.0, writer)? + 1;
             writer.write_all(&[sub.qos as u8])?;
         }
         writer.flush()?;
@@ -112,8 +112,8 @@ mod test {
         let msg = Subscribe::new(
             42,
             vec![
-                TopicSubscription::new("topic1".to_string(), Qos::ExactlyOnce),
-                TopicSubscription::new("topic2".to_string(), Qos::AtMostOnce),
+                TopicSubscription::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
+                TopicSubscription::new(MqttTopic::try_from("topic2").unwrap(), Qos::AtMostOnce),
             ],
         );
         msg.write_to_stream(&mut writer).unwrap();
@@ -175,8 +175,8 @@ mod test {
         let expected = Subscribe::new(
             42,
             vec![
-                TopicSubscription::new("topic1".to_string(), Qos::ExactlyOnce),
-                TopicSubscription::new("topic2".to_string(), Qos::AtMostOnce),
+                TopicSubscription::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
+                TopicSubscription::new(MqttTopic::try_from("topic2").unwrap(), Qos::AtMostOnce),
             ],
         );
         let mut reader = BufReader::new(&msg[..]);

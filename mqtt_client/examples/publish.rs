@@ -21,6 +21,7 @@ async fn main() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: mqtt_client::client_opts::OnDisconnectBehavior::Panic,
         },
         "127.0.0.1:1883".to_string(),
     )

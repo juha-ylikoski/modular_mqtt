@@ -1,11 +1,10 @@
 use rust_mqtt_protocol::{
     ConnAck, Connect, ConnectRc, ControlPacketType, FixedHeader, FixedHeaderError, MqttLastWill,
-    PacketError, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Qos, ReceivedMessage, SubAck,
-    Subscribe, TopicSubscription,
+    MqttTopic, PacketError, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Qos,
+    ReceivedMessage, SubAck, Subscribe, TopicSubscription, Unsubscribe, UnsubscribeAck,
 };
 use std::{
     collections::HashMap,
-    fmt::write,
     io::{BufReader, Read},
     net::TcpStream,
     sync::{mpsc, Arc, RwLock},
@@ -14,7 +13,7 @@ use std::{
 use tracing::instrument;
 
 use crate::{
-    client_opts::ClientOpts,
+    client_opts::{ClientOpts, OnDisconnectBehavior},
     error::{ClientError, ConnectError},
     sync_connection::SyncStream,
     util::{buf_with_size, InflightMessage, InflightMessageState, Message},
@@ -22,8 +21,10 @@ use crate::{
 };
 
 pub trait MqttClient {
-    fn subscribe(&mut self, topics: Vec<String>, qos: Qos) -> Result<SubAck, ClientError>;
+    fn subscribe(&mut self, topics: Vec<MqttTopic>, qos: Qos) -> Result<SubAck, ClientError>;
+    fn unsubscribe(&mut self, topics: Vec<MqttTopic>) -> Result<UnsubscribeAck, ClientError>;
     fn publish(&mut self, msg: Message) -> Result<Option<Arc<InflightMessage>>, ClientError>;
+    fn online(&self) -> bool;
 }
 
 enum ReadFinished {
@@ -40,7 +41,9 @@ pub struct SyncClient<S: SyncStream> {
     backend: Arc<std::thread::JoinHandle<Result<(), ClientError>>>,
     msg_ch: mpsc::Receiver<ReceivedMessage>,
     suback_ch: mpsc::Receiver<SubAck>,
+    unsuback_ch: mpsc::Receiver<UnsubscribeAck>,
     inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage>)>,
+    online: Arc<RwLock<bool>>,
 }
 struct SyncClientBackend<S: SyncStream> {
     #[allow(unused)]
@@ -49,8 +52,10 @@ struct SyncClientBackend<S: SyncStream> {
     writer: S,
     msg_ch: mpsc::Sender<ReceivedMessage>,
     suback_ch: mpsc::Sender<SubAck>,
+    unsuback_ch: mpsc::Sender<UnsubscribeAck>,
     inflight_msgs: HashMap<u16, Arc<InflightMessage>>,
     inflight_ch: mpsc::Receiver<(u16, Arc<InflightMessage>)>,
+    online: Arc<RwLock<bool>>,
 }
 impl SyncClient<TcpStream> {
     pub fn connect(opts: ClientOpts, broker: String) -> Result<Self, ConnectError> {
@@ -59,7 +64,13 @@ impl SyncClient<TcpStream> {
     }
 }
 impl<S: SyncStream + 'static> SyncClient<S> {
+    fn assert_online(&self) {
+        if !*self.online.read().unwrap() {
+            panic!("Connection to mqtt broker was disconnect. Cannot proceed.");
+        }
+    }
     pub fn stream(&self) -> &mpsc::Receiver<ReceivedMessage> {
+        self.assert_online();
         &self.msg_ch
     }
     fn next_packet_identifier(&self) -> u16 {
@@ -104,6 +115,7 @@ impl<S: SyncStream + 'static> SyncClient<S> {
         let mut reader = BufReader::new(stream.try_clone()?);
         let (msg_sender, msg_receiver) = mpsc::channel();
         let (sub_sender, sub_receiver) = mpsc::channel();
+        let (unsub_sender, unsub_receiver) = mpsc::channel();
         let (inflight_sender, inflight_receiver) = mpsc::channel();
 
         let msg = Connect::new_v3(
@@ -124,6 +136,8 @@ impl<S: SyncStream + 'static> SyncClient<S> {
 
         tracing::debug!("Got ConnAck: {connack:?}");
 
+        let online = Arc::new(RwLock::new(true));
+
         if connack.connect_rc == ConnectRc::Accepted {
             let bg_opts = opts.clone();
             let bg_stream = stream.try_clone()?;
@@ -133,8 +147,10 @@ impl<S: SyncStream + 'static> SyncClient<S> {
                 writer: bg_stream,
                 msg_ch: msg_sender,
                 suback_ch: sub_sender,
+                unsuback_ch: unsub_sender,
                 inflight_msgs: HashMap::new(),
                 inflight_ch: inflight_receiver,
+                online: online.clone(),
             };
             let backend = Arc::new(std::thread::spawn(|| be.bg_thread()));
             let client = Self {
@@ -144,7 +160,9 @@ impl<S: SyncStream + 'static> SyncClient<S> {
                 backend,
                 msg_ch: msg_receiver,
                 suback_ch: sub_receiver,
+                unsuback_ch: unsub_receiver,
                 inflight_ch: inflight_sender,
+                online,
             };
             Ok(client)
         } else {
@@ -269,7 +287,12 @@ impl<S: SyncStream> SyncClientBackend<S> {
                 self.suback_ch.send(suback)?;
                 Ok(())
             }
-            ControlPacketType::UnsubscribeAck => todo!(),
+            ControlPacketType::UnsubscribeAck => {
+                let unsuback = UnsubscribeAck::try_read(fixed_header, &payload);
+                tracing::debug!("Received unsuback: {unsuback:?}");
+                self.unsuback_ch.send(unsuback)?;
+                Ok(())
+            }
             ControlPacketType::Publish { .. } => {
                 let msg = ReceivedMessage::try_read(fixed_header, payload)?;
                 tracing::debug!("Received msg: {:?}", msg);
@@ -336,7 +359,12 @@ impl<S: SyncStream> SyncClientBackend<S> {
                 Ok(())
             }
 
-            ControlPacketType::Disconnect => todo!(),
+            ControlPacketType::Disconnect => {
+                *self.online.write().unwrap() = false;
+                match self.opts.on_disconnect {
+                    OnDisconnectBehavior::Panic => panic!("MQTT broker sent disconnect!"),
+                }
+            }
 
             // Packet types which should never be received by client
             ControlPacketType::PubRel => Err(ClientError::UnexpectedPacket(
@@ -362,7 +390,8 @@ impl<S: SyncStream> SyncClientBackend<S> {
 }
 
 impl<S: SyncStream + 'static> MqttClient for SyncClient<S> {
-    fn subscribe(&mut self, topics: Vec<String>, qos: Qos) -> Result<SubAck, ClientError> {
+    fn subscribe(&mut self, topics: Vec<MqttTopic>, qos: Qos) -> Result<SubAck, ClientError> {
+        self.assert_online();
         let subs = topics
             .into_iter()
             .map(|topic| TopicSubscription::new(topic, qos))
@@ -374,7 +403,18 @@ impl<S: SyncStream + 'static> MqttClient for SyncClient<S> {
         let suback = self.suback_ch.recv()?;
         Ok(suback)
     }
+    fn unsubscribe(&mut self, topics: Vec<MqttTopic>) -> Result<UnsubscribeAck, ClientError> {
+        self.assert_online();
+        let msg = Unsubscribe::new(self.next_packet_identifier(), topics);
+        tracing::debug!("Sending unsubscribe: {msg:?}");
+
+        msg.write_to_stream(&mut self.writer)?;
+        let suback = self.unsuback_ch.recv()?;
+        Ok(suback)
+    }
+
     fn publish(&mut self, msg: Message) -> Result<Option<Arc<InflightMessage>>, ClientError> {
+        self.assert_online();
         let mut packet_identifier = None;
         if msg.qos != Qos::AtMostOnce {
             packet_identifier = Some(
@@ -407,5 +447,8 @@ impl<S: SyncStream + 'static> MqttClient for SyncClient<S> {
         }
         self.writer.flush().unwrap();
         Ok(inflight)
+    }
+    fn online(&self) -> bool {
+        *self.online.read().unwrap()
     }
 }

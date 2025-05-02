@@ -4,7 +4,7 @@ use std::{net::TcpListener, time::Duration};
 
 use mqtt_client::{
     client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client_opts::{ClientOpts, OnDisconnectBehavior},
     util::Message,
 };
 use ntest::timeout;
@@ -50,6 +50,7 @@ fn publish_qos0() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -118,6 +119,7 @@ fn publish_qos1() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -196,6 +198,7 @@ fn publish_qos2() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -297,6 +300,7 @@ fn publish_resend_qos1() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -407,6 +411,7 @@ fn publish_resend_pub_qos2() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -517,6 +522,7 @@ fn publish_resend_pubrel_qos2() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )

@@ -64,7 +64,7 @@ pub enum QosPacketIdentifier {
 }
 
 /// Mqtt topic which does not contain invalid characters
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MqttTopic(pub(crate) String);
 
 impl<'a> TryFrom<&'a str> for MqttTopic {

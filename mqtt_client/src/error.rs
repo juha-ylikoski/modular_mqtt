@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use rust_mqtt_protocol::{ConnectRc, FixedHeaderError, PacketError, ReceivedMessage, SubAck};
+use rust_mqtt_protocol::{
+    ConnectRc, FixedHeaderError, PacketError, ReceivedMessage, SubAck, UnsubscribeAck,
+};
 use thiserror::Error;
 
 use crate::util::InflightMessage;
@@ -19,8 +21,10 @@ pub enum ClientError {
     Timeout,
     #[error("Internal channel error with subacks")]
     SendSubackError(#[from] std::sync::mpsc::SendError<SubAck>),
-    #[error("Internal channel error with subacks")]
-    RecvSubackError(#[from] std::sync::mpsc::RecvError),
+    #[error("Internal channel error with unsubacks")]
+    SendUnsubackError(#[from] std::sync::mpsc::SendError<UnsubscribeAck>),
+    #[error("Internal channel error with channels")]
+    InternalChannelError(#[from] std::sync::mpsc::RecvError),
     #[error("Internal channel error with subacks")]
     SendInflightError(#[from] std::sync::mpsc::SendError<(u16, Arc<InflightMessage>)>),
     #[error("Internal channel error with subacks")]

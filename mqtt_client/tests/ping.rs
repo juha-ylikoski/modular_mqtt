@@ -2,7 +2,10 @@ mod util;
 
 use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use mqtt_client::{
+    client::SyncClient,
+    client_opts::{ClientOpts, OnDisconnectBehavior},
+};
 use ntest::timeout;
 
 #[test]
@@ -42,6 +45,7 @@ fn ping_sequence() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )

@@ -1,10 +1,15 @@
 mod util;
 
-use std::net::TcpListener;
+use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use mqtt_client::client::MqttClient;
+use mqtt_client::util::Message;
+use mqtt_client::{
+    client::SyncClient,
+    client_opts::{ClientOpts, OnDisconnectBehavior},
+};
 use ntest::timeout;
-use rust_mqtt_protocol::MqttLastWill;
+use rust_mqtt_protocol::{MqttLastWill, Qos};
 
 #[test]
 #[timeout(5000)]
@@ -18,6 +23,7 @@ fn connect_no_server() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         "127.0.0.1:1234".to_string(),
     ) {
@@ -57,6 +63,7 @@ fn connect() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -99,6 +106,8 @@ fn connect_username_password() {
             will: None,
             username: Some("username".to_string()),
             password: Some(b"password".to_vec()),
+
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -151,6 +160,7 @@ fn connect_last_will() {
             }),
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     )
@@ -186,6 +196,7 @@ fn connect_refused() {
             will: None,
             username: None,
             password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
         },
         addr.to_string(),
     ) {
@@ -198,4 +209,51 @@ fn connect_refused() {
         },
     }
     handle.join().unwrap();
+}
+
+#[test]
+#[timeout(5000)]
+#[should_panic]
+fn disconnect() {
+    util::init_logging();
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _addr) = server.accept().unwrap();
+        let (header, data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        assert_eq!(
+            connect,
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+        );
+        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
+            .write_to_stream(&mut stream)
+            .unwrap();
+        rust_mqtt_protocol::Disconnect::write_to_stream(&mut stream).unwrap();
+    });
+
+    let mut client = SyncClient::connect(
+        ClientOpts {
+            client_id: "client-id".to_string(),
+            keep_alive: 1,
+            clean_session: true,
+            will: None,
+            username: None,
+            password: None,
+            on_disconnect: OnDisconnectBehavior::Panic,
+        },
+        addr.to_string(),
+    )
+    .unwrap();
+    handle.join().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(client.online(), false);
+    client
+        .publish(Message::new(
+            "foo".try_into().unwrap(),
+            b"bar",
+            Qos::AtMostOnce,
+        ))
+        .unwrap();
 }
