@@ -5,6 +5,7 @@ use rust_mqtt_protocol::{
 };
 use std::{
     collections::HashMap,
+    fmt::write,
     io::{BufReader, Read},
     net::TcpStream,
     sync::{mpsc, Arc, RwLock},
@@ -109,9 +110,9 @@ impl<S: SyncStream + 'static> SyncClient<S> {
             opts.clean_session,
             opts.keep_alive,
             &opts.client_id,
-            opts.will.as_ref().map(|will| {
-                MqttLastWill::new(&will.topic, &will.payload, will.retain, will.qos)
-            }),
+            opts.will
+                .as_ref()
+                .map(|will| MqttLastWill::new(&will.topic, &will.payload, will.retain, will.qos)),
             opts.username.as_deref(),
             opts.password.as_deref(),
         );
@@ -207,18 +208,27 @@ impl<S: SyncStream> SyncClientBackend<S> {
     fn check_resend_msgs(&mut self) -> Result<(), std::io::Error> {
         let time = SystemTime::now();
         for (packet_identifier, msg) in self.inflight_msgs.iter() {
-            match *msg.state.read().unwrap() {
-                InflightMessageState::PubAck(sent_time)
-                | InflightMessageState::PubRec(sent_time) => {
+            let state = msg.state.read().unwrap().clone();
+            match state {
+                InflightMessageState::PubAck(sent_time) => {
                     if time.duration_since(sent_time).unwrap() > RESENT_INTERVAL {
                         tracing::warn!("Resending packet with identifier {}", packet_identifier);
                         Self::resend_msg(&mut self.writer, *packet_identifier, &msg.msg)?;
+                        *msg.state.write().unwrap() = InflightMessageState::PubAck(time);
+                    }
+                }
+                InflightMessageState::PubRec(sent_time) => {
+                    if time.duration_since(sent_time).unwrap() > RESENT_INTERVAL {
+                        tracing::warn!("Resending packet with identifier {}", packet_identifier);
+                        Self::resend_msg(&mut self.writer, *packet_identifier, &msg.msg)?;
+                        *msg.state.write().unwrap() = InflightMessageState::PubRec(time);
                     }
                 }
                 InflightMessageState::PubComp(sent_time) => {
                     if time.duration_since(sent_time).unwrap() > RESENT_INTERVAL {
                         tracing::warn!("Resending PubRel with identifier {}", packet_identifier);
                         Self::resend_pubrell(&mut self.writer, *packet_identifier)?;
+                        *msg.state.write().unwrap() = InflightMessageState::PubComp(time);
                     }
                 }
                 InflightMessageState::Sent => (),
@@ -307,20 +317,21 @@ impl<S: SyncStream> SyncClientBackend<S> {
                 Ok(())
             }
             ControlPacketType::PubComp => {
-                let puback = PubComp::try_read(fixed_header, &payload);
-                if let Some(inflight) = self.inflight_msgs.remove(&puback.packet_identifier) {
+                let pub_comp = PubComp::try_read(fixed_header, &payload);
+                tracing::trace!("Received PubComp: {pub_comp:?}");
+                if let Some(inflight) = self.inflight_msgs.remove(&pub_comp.packet_identifier) {
                     if matches!(
                         *inflight.state.read().unwrap(),
                         InflightMessageState::PubComp(_)
                     ) {
-                        tracing::debug!("Received PubComp for mid {}", puback.packet_identifier);
+                        tracing::debug!("Received PubComp for mid {}", pub_comp.packet_identifier);
                         *inflight.state.write().unwrap() = InflightMessageState::Sent;
                         return Ok(());
                     }
                 }
                 tracing::warn!(
                     "Received unexpected PubComp for mid {}.",
-                    puback.packet_identifier
+                    pub_comp.packet_identifier
                 );
                 Ok(())
             }
@@ -380,10 +391,12 @@ impl<S: SyncStream + 'static> MqttClient for SyncClient<S> {
                 Qos::AtMostOnce => panic!("This is a bug!"),
                 Qos::AtLeastOnce => InflightMessage {
                     state: RwLock::new(InflightMessageState::PubAck(SystemTime::now())),
+                    packet_identifier,
                     msg,
                 },
                 Qos::ExactlyOnce => InflightMessage {
                     state: RwLock::new(InflightMessageState::PubRec(SystemTime::now())),
+                    packet_identifier,
                     msg,
                 },
             });

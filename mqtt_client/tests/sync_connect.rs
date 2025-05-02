@@ -3,9 +3,11 @@ mod util;
 use std::net::TcpListener;
 
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use ntest::timeout;
 use rust_mqtt_protocol::MqttLastWill;
 
 #[test]
+#[timeout(5000)]
 fn connect_no_server() {
     util::init_logging();
     match SyncClient::connect(
@@ -28,6 +30,7 @@ fn connect_no_server() {
 }
 
 #[test]
+#[timeout(5000)]
 fn connect() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -62,6 +65,7 @@ fn connect() {
 }
 
 #[test]
+#[timeout(5000)]
 fn connect_username_password() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -103,6 +107,7 @@ fn connect_username_password() {
 }
 
 #[test]
+#[timeout(5000)]
 fn connect_last_will() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -154,6 +159,7 @@ fn connect_last_will() {
 }
 
 #[test]
+#[timeout(5000)]
 fn connect_refused() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();

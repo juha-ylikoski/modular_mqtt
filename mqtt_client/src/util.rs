@@ -1,7 +1,4 @@
-use std::{
-    sync::RwLock,
-    time::SystemTime,
-};
+use std::{sync::RwLock, time::SystemTime};
 
 use rust_mqtt_protocol::{MqttTopic, Publish, Qos, QosPacketIdentifier};
 
@@ -45,7 +42,7 @@ impl Message {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InflightMessageState {
     PubAck(SystemTime),
     PubRec(SystemTime),
@@ -56,6 +53,7 @@ pub enum InflightMessageState {
 #[derive(Debug)]
 pub struct InflightMessage {
     pub state: RwLock<InflightMessageState>,
+    pub packet_identifier: u16,
     pub msg: Message,
 }
 
@@ -67,5 +65,8 @@ impl InflightMessage {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
     }
 }

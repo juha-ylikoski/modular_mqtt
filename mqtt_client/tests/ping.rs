@@ -3,8 +3,10 @@ mod util;
 use std::{net::TcpListener, time::Duration};
 
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use ntest::timeout;
 
 #[test]
+#[timeout(5000)]
 fn ping_sequence() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
