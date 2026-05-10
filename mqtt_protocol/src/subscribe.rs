@@ -98,6 +98,14 @@ impl Subscribe {
         writer.flush()?;
         Ok(length)
     }
+
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
+
+    pub fn subscriptions(&self) -> &[TopicSubscription] {
+        &self.subscriptions
+    }
 }
 #[cfg(test)]
 mod test {
@@ -180,7 +188,7 @@ mod test {
             ],
         );
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Subscribe::try_read(header, &data[..]).unwrap(), expected);

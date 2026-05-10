@@ -1,4 +1,4 @@
-mod util;
+use crate::util;
 
 use std::{net::TcpListener, time::Duration};
 
@@ -9,11 +9,12 @@ use mqtt_client::{
 use ntest::timeout;
 
 #[test]
-#[timeout(5000)]
+#[timeout(10000)]
 fn ping_sequence() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -35,9 +36,10 @@ fn ping_sequence() {
         assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
 
         rust_mqtt_protocol::PingResp::write_to_stream(&mut stream).unwrap();
+        rx_close.recv().unwrap();
     });
 
-    SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 2,
@@ -50,5 +52,9 @@ fn ping_sequence() {
         addr.to_string(),
     )
     .unwrap();
+
+    std::thread::sleep(Duration::from_millis(4100));
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
     handle.join().unwrap();
 }

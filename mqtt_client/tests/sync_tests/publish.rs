@@ -1,9 +1,9 @@
-mod util;
+use crate::util;
 
-use std::{net::TcpListener, time::Duration};
+use std::net::TcpListener;
 
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
+    client::SyncClient,
     client_opts::{ClientOpts, OnDisconnectBehavior},
     util::Message,
 };
@@ -11,11 +11,12 @@ use ntest::timeout;
 use rust_mqtt_protocol::{ControlPacketType, FixedHeader, MqttTopic};
 
 #[test]
-#[timeout(1000)]
+#[timeout(5000)]
 fn publish_qos0() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -40,9 +41,10 @@ fn publish_qos0() {
                 payload: b"payload".to_vec()
             }
         );
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -63,16 +65,19 @@ fn publish_qos0() {
         ))
         .unwrap()
         .is_none());
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
 
 #[test]
-#[timeout(1000)]
+#[timeout(5000)]
 fn publish_qos1() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
     let (send, recv) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -109,9 +114,10 @@ fn publish_qos1() {
         rust_mqtt_protocol::PubAck::new(recv_msg.packet_identifier.unwrap())
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -133,17 +139,21 @@ fn publish_qos1() {
         .unwrap()
         .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    handle.join().unwrap();
     msg.wait_until_delivered();
+
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
 }
 
 #[test]
-#[timeout(1000)]
+#[timeout(5000)]
 fn publish_qos2() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
     let (send, recv) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -180,7 +190,7 @@ fn publish_qos2() {
             .unwrap();
 
         let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
         assert_eq!(
             pub_rel,
             rust_mqtt_protocol::PubRel::new(expected_packet_identifier)
@@ -188,9 +198,10 @@ fn publish_qos2() {
         rust_mqtt_protocol::PubComp::new(recv_pub.packet_identifier.unwrap())
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -212,18 +223,22 @@ fn publish_qos2() {
         .unwrap()
         .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    handle.join().unwrap();
     msg.wait_until_delivered();
+
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
 }
 
 #[test]
-#[timeout(100000)]
+#[timeout(15000)]
 fn publish_resend_qos1() {
     util::init_logging();
 
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
     let (send, recv) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -289,10 +304,10 @@ fn publish_resend_qos1() {
         rust_mqtt_protocol::PubAck::new(recv_pub2.packet_identifier.unwrap())
             .write_to_stream(&mut stream)
             .unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -314,17 +329,21 @@ fn publish_resend_qos1() {
         .unwrap()
         .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    handle.join().unwrap();
     msg.wait_until_delivered();
+
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
 }
 
 #[test]
-#[timeout(100000)]
+#[timeout(15000)]
 fn publish_resend_pub_qos2() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
     let (send, recv) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -356,6 +375,7 @@ fn publish_resend_pub_qos2() {
                 payload: b"payload".to_vec()
             }
         );
+        tracing::info!("HERE");
         let (header, data) = loop {
             let (header, data) = util::read_packet(&mut stream);
             match &header.control_packet_type {
@@ -372,6 +392,7 @@ fn publish_resend_pub_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
+        tracing::info!("HERE 2");
         let recv_pub2 = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
         assert_eq!(
             recv_pub2,
@@ -393,7 +414,7 @@ fn publish_resend_pub_qos2() {
             .unwrap();
 
         let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
         assert_eq!(
             pub_rel,
             rust_mqtt_protocol::PubRel::new(expected_packet_identifier)
@@ -401,9 +422,10 @@ fn publish_resend_pub_qos2() {
         rust_mqtt_protocol::PubComp::new(recv_pub2.packet_identifier.unwrap())
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -425,17 +447,21 @@ fn publish_resend_pub_qos2() {
         .unwrap()
         .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    handle.join().unwrap();
     msg.wait_until_delivered();
+
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
 }
 
 #[test]
-#[timeout(100000)]
+#[timeout(15000)]
 fn publish_resend_pubrel_qos2() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
     let (send, recv) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -473,7 +499,7 @@ fn publish_resend_pubrel_qos2() {
             .unwrap();
 
         let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
         assert_eq!(
             recv_msg.packet_identifier.unwrap(),
             pub_rel.packet_identifier
@@ -499,7 +525,7 @@ fn publish_resend_pubrel_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
-        let pub_rel2 = rust_mqtt_protocol::PubRel::try_read(header, &data);
+        let pub_rel2 = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
         assert_eq!(
             pub_rel2,
             rust_mqtt_protocol::PubRel {
@@ -507,14 +533,13 @@ fn publish_resend_pubrel_qos2() {
                 packet_identifier: pub_rel2.packet_identifier,
             }
         );
-        println!("write");
         rust_mqtt_protocol::PubComp::new(expected_packet_identifier)
             .write_to_stream(&mut stream)
             .unwrap();
-        println!("DONE");
+        rx_close.recv().unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -536,6 +561,9 @@ fn publish_resend_pubrel_qos2() {
         .unwrap()
         .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    handle.join().unwrap();
     msg.wait_until_delivered();
+
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
 }

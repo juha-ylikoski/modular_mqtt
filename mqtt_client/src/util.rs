@@ -26,7 +26,7 @@ impl Message {
             qos,
         }
     }
-    pub fn packet(&self, dup: bool, id: Option<u16>) -> Publish {
+    pub fn packet(&self, dup: bool, id: Option<u16>) -> Publish<'_> {
         let qos = match self.qos {
             Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
             Qos::AtLeastOnce => {

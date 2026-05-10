@@ -1,8 +1,4 @@
-use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
-    util::Message,
-};
+use mqtt_client::{client::SyncClient, client_opts::ClientOpts, util::Message};
 use rust_mqtt_protocol::Qos;
 use tracing::{dispatcher::set_global_default, Level};
 
@@ -13,9 +9,9 @@ async fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
-            client_id: "client-id".to_string(),
+            client_id: "client-id-pub".to_string(),
             keep_alive: 15,
             clean_session: true,
             will: None,
@@ -63,4 +59,5 @@ async fn main() {
     tracing::info!("Published!");
     inflight.wait_until_delivered();
     tracing::info!("Broker received!");
+    client.disconnect().unwrap();
 }

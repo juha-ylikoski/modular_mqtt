@@ -4,7 +4,7 @@ pub use fixed_header::{ControlPacketType, FixedHeader, FixedHeaderError};
 pub use only_fixed::{Disconnect, PingReq, PingResp};
 pub use packet_identifier_msgs::{PubAck, PubComp, PubRec, PubRel, UnsubscribeAck};
 pub use publish::{Publish, ReceivedMessage};
-pub use suback::SubAck;
+pub use suback::{SubAck, SubRc};
 pub use subscribe::{Subscribe, TopicSubscription};
 pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, PacketError, Qos, QosPacketIdentifier};

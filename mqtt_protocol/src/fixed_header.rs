@@ -1,23 +1,44 @@
-use std::io::{Read, Write};
-use thiserror::Error;
+use std::{
+    fmt::Display,
+    io::{Read, Write},
+};
 
 use super::util::Qos;
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum FixedHeaderError {
-    #[error("Not enough bytes to extract FixedHeader.")]
     NotEnoughBytes,
-    #[error("ControlPacketType had reserved value {0}.")]
     ReservedControlPacketType(u8),
-    #[error("Invalid Quality of service {0}.")]
     InvalidQos(u8),
-    #[error("Flags did not follow specification {0} for type {1:?}.")]
     InvalidFlags(u8, ControlPacketType),
-    #[error("IoError")]
-    IoError(#[from] std::io::Error),
+    IoError(std::io::Error),
 }
 
-#[derive(Debug, PartialEq)]
+impl Display for FixedHeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FixedHeaderError::NotEnoughBytes => {
+                f.write_str("Not enough bytes to extract FixedHeader.")
+            }
+            FixedHeaderError::ReservedControlPacketType(r#type) => {
+                f.write_fmt(format_args!("ControlPacketType had reserved value {type}."))
+            }
+            FixedHeaderError::InvalidQos(qos) => {
+                f.write_fmt(format_args!("Invalid Quality of service {qos}."))
+            }
+            FixedHeaderError::InvalidFlags(flags, control_packet_type) => {
+                f.write_fmt(format_args!(
+                    "Flags did not follow specification {flags} for type {control_packet_type:?}."
+                ))
+            }
+            Self::IoError(error) => f.write_fmt(format_args!("Got io error {error}")),
+        }
+    }
+}
+
+impl std::error::Error for FixedHeaderError {}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ControlPacketType {
     /// Client request to connect to Server
     Connect,
@@ -157,7 +178,7 @@ impl FixedHeader {
     /// Will panic if remaining length is 0 or larger than 268 435 455.
     pub fn new(control_packet_type: ControlPacketType, remaining_length: usize) -> Self {
         if remaining_length > 268_435_455 {
-            panic!("MQTT packet payload (dynamic header + payload) 268 435 455")
+            panic!("MQTT packet payload (dynamic header + payload) > 268 435 455")
         }
         Self {
             control_packet_type,
@@ -165,24 +186,51 @@ impl FixedHeader {
         }
     }
 
-    pub fn try_read(reader: &mut impl Read) -> Result<Self, FixedHeaderError> {
-        let mut buf = [0u8; 1];
-        reader.read_exact(&mut buf)?;
-        let control_packet_type = ControlPacketType::try_from_byte(buf[0])?;
+    fn parse(packet: &[u8]) -> Result<Self, FixedHeaderError> {
+        let packet_len = packet.len();
+        if packet_len < 2 {
+            return Err(FixedHeaderError::NotEnoughBytes);
+        }
+        let control_packet_type = ControlPacketType::try_from_byte(packet[0])?;
 
-        // // Algorith based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
+        // // Algorithm based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
         let mut multiplier = 1;
         let mut remaining_length = 0;
+        let mut i = 1;
         loop {
-            reader.read_exact(&mut buf)?;
-            let byte = buf[0];
+            if packet_len < i {
+                return Err(FixedHeaderError::NotEnoughBytes);
+            }
+            let byte = packet[i];
             remaining_length += ((byte & 127) * multiplier) as usize;
             multiplier *= 128;
             if byte & 128 == 0 {
                 break;
             }
+            i += 1;
         }
         Ok(Self::new(control_packet_type, remaining_length))
+    }
+
+    pub fn try_read_sync(reader: &mut impl Read) -> Result<Self, FixedHeaderError> {
+        let mut buf = [0u8; 5];
+        let mut i = 2;
+        reader
+            .read_exact(&mut buf[0..i])
+            .map_err(FixedHeaderError::IoError)?;
+        loop {
+            // TODO make sure this is never out of bounds
+            match Self::parse(&buf[0..i]) {
+                Ok(packet) => return Ok(packet),
+                Err(FixedHeaderError::NotEnoughBytes) => {
+                    reader
+                        .read_exact(&mut buf[i..i + 1])
+                        .map_err(FixedHeaderError::IoError)?;
+                    i += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
@@ -342,7 +390,7 @@ mod test {
     fn deserialize_header() {
         fn cmp(input: &[u8], expected: FixedHeader) {
             let mut reader = BufReader::new(input);
-            let header = FixedHeader::try_read(&mut reader).unwrap();
+            let header = FixedHeader::try_read_sync(&mut reader).unwrap();
             assert_eq!(header, expected);
         }
 

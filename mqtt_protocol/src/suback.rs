@@ -37,9 +37,9 @@ impl SubRc {
 #[derive(Debug, PartialEq)]
 /// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
 pub struct SubAck {
-    fixed_header: FixedHeader,
-    packet_identifier: u16,
-    return_codes: Vec<SubRc>,
+    pub fixed_header: FixedHeader,
+    pub packet_identifier: u16,
+    pub return_codes: Vec<SubRc>,
 }
 
 impl SubAck {
@@ -110,7 +110,7 @@ mod test {
             vec![SubRc::SuccessQos0, SubRc::SuccessQos1, SubRc::Failure],
         );
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(SubAck::try_read(header, &data[..]).unwrap(), expected);

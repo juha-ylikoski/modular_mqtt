@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = [ "mqtt_client",
-    "mqtt_protocol", "mqtt_protocol_derive",
+members = [ 
+    "mqtt_client",
+    "mqtt_protocol"
 ]
 

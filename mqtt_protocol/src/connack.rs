@@ -127,7 +127,7 @@ mod test {
         let msg = [32, 2, 0, 0];
         let expected = ConnAck::new(false, ConnectRc::Accepted);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(ConnAck::try_read(header, &data[..]).unwrap(), expected);
@@ -138,7 +138,7 @@ mod test {
         let msg = [32, 2, 1, 0];
         let expected = ConnAck::new(true, ConnectRc::Accepted);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(ConnAck::try_read(header, &data[..]).unwrap(), expected);
@@ -148,7 +148,7 @@ mod test {
         let msg = [32, 2, 0, 4];
         let expected = ConnAck::new(false, ConnectRc::BadUsernamePassword);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(ConnAck::try_read(header, &data[..]).unwrap(), expected);

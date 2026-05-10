@@ -580,7 +580,7 @@ mod test_de {
         ];
         let expected = Connect::new_v3(false, 0, "client", None, None, None);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -646,7 +646,7 @@ mod test_de {
             None,
         );
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -693,7 +693,7 @@ mod test_de {
         ];
         let expected = Connect::new_v3(false, 0, "client", None, Some("username"), None);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -740,7 +740,7 @@ mod test_de {
         ];
         let expected = Connect::new_v3(false, 0, "client", None, None, Some(b"password"));
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -805,7 +805,7 @@ mod test_de {
             Some(b"password"),
         );
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -841,7 +841,7 @@ mod test_de {
         ];
         let expected = Connect::new_v3(true, 0, "client", None, None, None);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);
@@ -857,7 +857,7 @@ mod test_de {
         ];
         let expected = Connect::new_v3(false, 1800, "client", None, None, None);
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Connect::try_read(header, &data[..]).unwrap(), expected);

@@ -1,30 +1,41 @@
 use std::io::Write;
 
-use thiserror::Error;
-
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum PacketError {
-    #[error("Received packet was malformed: {0}")]
     MalformedPacket(&'static str),
-
-    #[error("IoError")]
-    IoError(#[from] std::io::Error),
-
-    #[error("Was unable to extract utf8 string from packet")]
-    Utf8Error(#[from] std::str::Utf8Error),
-
-    #[error("Could not read expected {expected} bytes. Read only {got}")]
+    Utf8Error(std::str::Utf8Error),
     MissingBytes { expected: usize, got: usize },
-
-    #[error("Mqtt topic cannot contain wildcard characters '#' or '+'")]
     InvalidMqttTopic,
-
-    #[error("Invalid Quality of service {0}.")]
     InvalidQos(u8),
-
-    #[error("Invalid fixed header read from stream: {0}")]
-    InvalidFixedHeader(#[from] crate::FixedHeaderError),
+    InvalidFixedHeader(super::FixedHeaderError),
 }
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PacketError::MalformedPacket(packet) => {
+                f.write_fmt(format_args!("Received packet was malformed: {packet}"))
+            }
+            PacketError::Utf8Error(utf8_error) => f.write_fmt(format_args!(
+                "Was unable to extract utf8 string from packet: {utf8_error}"
+            )),
+            PacketError::MissingBytes { expected, got } => f.write_fmt(format_args!(
+                "Could not read expected {expected} bytes. Read only {got}"
+            )),
+            PacketError::InvalidMqttTopic => {
+                f.write_str("Mqtt topic cannot contain wildcard characters '#' or '+'")
+            }
+            PacketError::InvalidQos(qos) => {
+                f.write_fmt(format_args!("Invalid Quality of service {qos}."))
+            }
+            PacketError::InvalidFixedHeader(error) => f.write_fmt(format_args!(
+                "Invalid fixed header read from stream: {error}"
+            )),
+        }
+    }
+}
+
+impl std::error::Error for PacketError {}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Qos {
@@ -89,7 +100,7 @@ pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {
             got: data.len(),
         })
     } else {
-        Ok(std::str::from_utf8(&data[2..2 + length])?)
+        std::str::from_utf8(&data[2..2 + length]).map_err(PacketError::Utf8Error)
     }
 }
 
@@ -120,7 +131,7 @@ pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
 mod test {
     use std::io::BufWriter;
 
-    use crate::util::extract_str;
+    use super::extract_str;
 
     use super::*;
 

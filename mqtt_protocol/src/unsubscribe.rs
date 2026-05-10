@@ -30,6 +30,12 @@ impl Unsubscribe {
         }
     }
     pub fn try_read(header: FixedHeader, data: &[u8]) -> Result<Self, PacketError> {
+        if data.len() < 4 {
+            return Err(PacketError::MissingBytes {
+                expected: 4,
+                got: data.len(),
+            });
+        }
         let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
         let mut remaining = header.remaining_length - 2;
         let mut index = 2;
@@ -133,7 +139,7 @@ mod test {
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
         );
         let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read(&mut reader).unwrap();
+        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         assert_eq!(Unsubscribe::try_read(header, &data[..]).unwrap(), expected);

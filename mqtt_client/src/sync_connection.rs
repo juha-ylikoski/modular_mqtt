@@ -1,25 +1,61 @@
 use std::{
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     net::TcpStream,
     time::Duration,
 };
 
-pub trait SyncStream: Read + Write + Sized + Send {
-    /// Sets the read timeout to the timeout specified.
-    ///
-    /// Expects this method to behave like [https://doc.rust-lang.org/std/net/struct.TcpStream.html#method.try_clone]
-    fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), std::io::Error>;
-    /// Creates a new independently owned handle to the underlying socket.
-    ///
-    /// Expects this method to behave like [https://doc.rust-lang.org/std/net/struct.TcpStream.html#method.try_clone]
-    fn try_clone(&self) -> Result<Self, std::io::Error>;
+pub enum SyncReader {
+    Tcp(BufReader<TcpStream>),
+    Disconnected,
 }
 
-impl SyncStream for std::net::TcpStream {
-    fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), std::io::Error> {
-        TcpStream::set_read_timeout(self, dur)
+pub enum SyncWriter {
+    Tcp(TcpStream),
+    Disconnected,
+}
+
+impl Read for SyncReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            SyncReader::Tcp(reader) => reader.read(buf),
+            SyncReader::Disconnected => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Client disconnected",
+            )),
+        }
     }
-    fn try_clone(&self) -> Result<Self, std::io::Error> {
-        TcpStream::try_clone(self)
+}
+
+impl SyncReader {
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), std::io::Error> {
+        match self {
+            SyncReader::Tcp(reader) => reader.get_ref().set_read_timeout(dur),
+            SyncReader::Disconnected => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Client disconnected",
+            )),
+        }
+    }
+}
+
+impl Write for SyncWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            SyncWriter::Tcp(tcp_stream) => tcp_stream.write(buf),
+            SyncWriter::Disconnected => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Client disconnected",
+            )),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            SyncWriter::Tcp(tcp_stream) => tcp_stream.flush(),
+            SyncWriter::Disconnected => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Client disconnected",
+            )),
+        }
     }
 }

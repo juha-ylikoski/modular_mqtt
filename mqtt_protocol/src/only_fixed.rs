@@ -59,7 +59,7 @@ macro_rules! create_ping_package {
                 let msg = [$test_packet_type, 0];
                 let expected = $name::default();
                 let mut reader = BufReader::new(&msg[..]);
-                let header = FixedHeader::try_read(&mut reader).unwrap();
+                let header = FixedHeader::try_read_sync(&mut reader).unwrap();
                 let mut data = Vec::new();
                 reader.read_to_end(&mut data).unwrap();
                 assert_eq!($name::try_read(header).unwrap(), expected);

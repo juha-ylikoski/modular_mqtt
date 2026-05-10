@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 rand = "0.8.5"
-rust-mqtt-protocol = { path = "../mqtt_protocol",features=["async"] }
+rust-mqtt-protocol = { path = "../mqtt_protocol" }
 thiserror = "2.0.11"
 tokio = { version = "1.42.0", features = ["full"] }
 tracing = "0.1.41"
@@ -13,5 +13,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [dev-dependencies]
 ntest = "0.9.3"
+testcontainers = { version = "0.27.3", features = ["blocking"] }
+testcontainers-modules = { version = "0.15.0", features = ["mosquitto"] }
 
 

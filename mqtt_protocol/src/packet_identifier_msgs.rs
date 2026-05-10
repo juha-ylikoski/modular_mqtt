@@ -18,11 +18,20 @@ macro_rules! create_packet_type {
                     packet_identifier,
                 }
             }
-            pub fn try_read(header: FixedHeader, data: &[u8]) -> Self {
-                Self {
+            pub fn try_read(
+                header: FixedHeader,
+                data: &[u8],
+            ) -> Result<Self, crate::util::PacketError> {
+                if data.len() < 2 {
+                    return Err(crate::util::PacketError::MissingBytes {
+                        expected: 2,
+                        got: data.len(),
+                    });
+                }
+                Ok(Self {
                     fixed_header: header,
                     packet_identifier: u16::from_be_bytes([data[0], data[1]]),
-                }
+                })
             }
             pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
                 let len = self.fixed_header.write_to_stream(writer)?;
@@ -55,10 +64,10 @@ macro_rules! create_packet_type {
                 let msg = [$test_packet_type, 2, 0, 42];
                 let expected = $name::new(42);
                 let mut reader = BufReader::new(&msg[..]);
-                let header = FixedHeader::try_read(&mut reader).unwrap();
+                let header = FixedHeader::try_read_sync(&mut reader).unwrap();
                 let mut data = Vec::new();
                 reader.read_to_end(&mut data).unwrap();
-                assert_eq!($name::try_read(header, &data[..]), expected);
+                assert_eq!($name::try_read(header, &data[..]).unwrap(), expected);
             }
         }
     };

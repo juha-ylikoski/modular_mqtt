@@ -1,8 +1,7 @@
-mod util;
+use crate::util;
 
 use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::client::MqttClient;
 use mqtt_client::util::Message;
 use mqtt_client::{
     client::SyncClient,
@@ -15,7 +14,7 @@ use rust_mqtt_protocol::{MqttLastWill, Qos};
 #[timeout(5000)]
 fn connect_no_server() {
     util::init_logging();
-    match SyncClient::connect(
+    match SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -41,6 +40,7 @@ fn connect() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -53,9 +53,10 @@ fn connect() {
         rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -68,6 +69,8 @@ fn connect() {
         addr.to_string(),
     )
     .unwrap();
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
 
@@ -77,6 +80,7 @@ fn connect_username_password() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -96,9 +100,10 @@ fn connect_username_password() {
         rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -112,6 +117,9 @@ fn connect_username_password() {
         addr.to_string(),
     )
     .unwrap();
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
+
     handle.join().unwrap();
 }
 
@@ -121,6 +129,7 @@ fn connect_last_will() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
@@ -145,9 +154,10 @@ fn connect_last_will() {
         rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
             .write_to_stream(&mut stream)
             .unwrap();
+        rx_close.recv().unwrap();
     });
 
-    SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -165,6 +175,8 @@ fn connect_last_will() {
         addr.to_string(),
     )
     .unwrap();
+    client.disconnect().unwrap();
+    tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
 
@@ -188,7 +200,7 @@ fn connect_refused() {
             .unwrap();
     });
 
-    match SyncClient::connect(
+    match SyncClient::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -233,7 +245,7 @@ fn disconnect() {
         rust_mqtt_protocol::Disconnect::write_to_stream(&mut stream).unwrap();
     });
 
-    let mut client = SyncClient::connect(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
