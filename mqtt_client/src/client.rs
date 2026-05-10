@@ -27,6 +27,7 @@ enum ReadFinished {
 
 type BackendThread = Option<std::thread::JoinHandle<Result<(), ClientError>>>;
 
+#[derive(Clone)]
 pub struct SyncClient {
     #[allow(unused)]
     opts: Arc<ClientOpts>,
@@ -34,9 +35,9 @@ pub struct SyncClient {
     writer: Arc<Mutex<SyncWriter>>,
     #[allow(unused)]
     backend: Arc<std::sync::Mutex<BackendThread>>,
-    msg_ch: mpsc::Receiver<ReceivedMessage>,
-    suback_ch: mpsc::Receiver<SubAck>,
-    unsuback_ch: mpsc::Receiver<UnsubscribeAck>,
+    msg_ch: Arc<mpsc::Receiver<ReceivedMessage>>,
+    suback_ch: Arc<mpsc::Receiver<SubAck>>,
+    unsuback_ch: Arc<mpsc::Receiver<UnsubscribeAck>>,
     inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage>)>,
     online: Arc<RwLock<bool>>,
     kill_bg_thread: Arc<Mutex<bool>>,
@@ -166,9 +167,9 @@ impl SyncClient {
                 writer,
                 next_packet_identifier: Arc::new(std::sync::atomic::AtomicU16::new(1)),
                 backend,
-                msg_ch: msg_receiver,
-                suback_ch: sub_receiver,
-                unsuback_ch: unsub_receiver,
+                msg_ch: Arc::new(msg_receiver),
+                suback_ch: Arc::new(sub_receiver),
+                unsuback_ch: Arc::new(unsub_receiver),
                 inflight_ch: inflight_sender,
                 online,
                 kill_bg_thread: killer,
