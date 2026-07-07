@@ -3,6 +3,8 @@ use std::{
     io::{Read, Write},
 };
 
+use crate::{Error, MalformedPacket};
+
 use super::util::Qos;
 
 #[derive(Debug)]
@@ -75,6 +77,8 @@ pub enum ControlPacketType {
     PingResp,
     /// Client is disconnecting
     Disconnect,
+    /// Authentication exchange
+    Auth,
 }
 impl ControlPacketType {
     pub fn value(&self) -> u8 {
@@ -93,6 +97,7 @@ impl ControlPacketType {
             Self::PingReq => 12,
             Self::PingResp => 13,
             Self::Disconnect => 14,
+            Self::Auth => 15,
         }
     }
     pub fn flags(&self) -> u8 {
@@ -113,19 +118,20 @@ impl ControlPacketType {
             ControlPacketType::PingReq => 0,
             ControlPacketType::PingResp => 0,
             ControlPacketType::Disconnect => 0,
+            ControlPacketType::Auth => 0,
         }
     }
     pub fn flags_dup(flags: u8) -> bool {
         ((flags & 0b1000) >> 3) == 1
     }
-    pub fn flags_qos(flags: u8) -> Result<Qos, FixedHeaderError> {
+    pub fn flags_qos(flags: u8) -> Result<Qos, Error> {
         Qos::try_from((flags & 0b110) >> 1)
-            .map_err(|_| FixedHeaderError::InvalidQos((flags & 0b110) >> 1))
+            .map_err(|_| MalformedPacket::InvalidQos((flags & 0b110) >> 1).into())
     }
     pub fn flags_retain(flags: u8) -> bool {
         (flags & 1) == 1
     }
-    pub fn try_from_byte(byte: u8) -> Result<Self, FixedHeaderError> {
+    pub fn try_from_byte(byte: u8) -> Result<Self, Error> {
         let packet_type = (byte & 0b11110000) >> 4;
         let flags = byte & 0b1111;
 
@@ -133,7 +139,7 @@ impl ControlPacketType {
             ($packet_type:expr) => {{
                 let t = $packet_type;
                 if $packet_type.flags() != flags {
-                    Err(FixedHeaderError::InvalidFlags(flags, t))
+                    Err(MalformedPacket::InvalidFlags(flags, t).into())
                 } else {
                     Ok(t)
                 }
@@ -159,7 +165,8 @@ impl ControlPacketType {
             12 => verify!(Self::PingReq),
             13 => verify!(Self::PingResp),
             14 => verify!(Self::Disconnect),
-            _ => Err(FixedHeaderError::ReservedControlPacketType(packet_type)),
+            15 => verify!(Self::Auth),
+            _ => Err(MalformedPacket::new("ControlPacketType had reserved value")),
         }
     }
 }
@@ -186,46 +193,30 @@ impl FixedHeader {
         }
     }
 
-    fn parse(packet: &[u8]) -> Result<Self, FixedHeaderError> {
+    fn parse(packet: &[u8]) -> Result<Self, Error> {
         let packet_len = packet.len();
         if packet_len < 2 {
-            return Err(FixedHeaderError::NotEnoughBytes);
+            return Err(Error::NotEnoughData);
         }
         let control_packet_type = ControlPacketType::try_from_byte(packet[0])?;
 
-        // // Algorithm based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
-        let mut multiplier = 1;
-        let mut remaining_length = 0;
-        let mut i = 1;
-        loop {
-            if packet_len < i {
-                return Err(FixedHeaderError::NotEnoughBytes);
-            }
-            let byte = packet[i];
-            remaining_length += ((byte & 127) * multiplier) as usize;
-            multiplier *= 128;
-            if byte & 128 == 0 {
-                break;
-            }
-            i += 1;
-        }
-        Ok(Self::new(control_packet_type, remaining_length))
+        let (_, remaining_length) = crate::util::read_variable_len_int(&packet[1..])?;
+
+        Ok(Self::new(control_packet_type, remaining_length as usize))
     }
 
-    pub fn try_read_sync(reader: &mut impl Read) -> Result<Self, FixedHeaderError> {
+    pub fn try_read_sync(reader: &mut impl Read) -> Result<Self, Error> {
         let mut buf = [0u8; 5];
         let mut i = 2;
-        reader
-            .read_exact(&mut buf[0..i])
-            .map_err(FixedHeaderError::IoError)?;
+        reader.read_exact(&mut buf[0..i]).map_err(Error::IoError)?;
         loop {
             // TODO make sure this is never out of bounds
             match Self::parse(&buf[0..i]) {
                 Ok(packet) => return Ok(packet),
-                Err(FixedHeaderError::NotEnoughBytes) => {
+                Err(Error::NotEnoughData) => {
                     reader
                         .read_exact(&mut buf[i..i + 1])
-                        .map_err(FixedHeaderError::IoError)?;
+                        .map_err(Error::IoError)?;
                     i += 1;
                 }
                 Err(e) => return Err(e),
@@ -233,27 +224,13 @@ impl FixedHeader {
         }
     }
 
-    pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    pub fn write_to_stream(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = 1;
         writer.write_all(&[
             self.control_packet_type.value() << 4 | self.control_packet_type.flags()
         ])?;
 
-        if self.remaining_length == 0 {
-            writer.write_all(&[0])?;
-            return Ok(length + 1);
-        }
-
-        while self.remaining_length != 0 {
-            let byte = (self.remaining_length % 128) as u8;
-            self.remaining_length /= 128;
-            if self.remaining_length > 0 {
-                writer.write_all(&[byte | 128])?;
-            } else {
-                writer.write_all(&[byte])?;
-            }
-            length += 1;
-        }
+        length += crate::util::write_variable_len_int(self.remaining_length as u64, writer)?;
 
         Ok(length)
     }

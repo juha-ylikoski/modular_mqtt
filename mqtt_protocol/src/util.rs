@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use crate::{Error, MalformedPacket};
+
 #[derive(Debug)]
 pub enum PacketError {
     MalformedPacket(&'static str),
@@ -37,22 +39,23 @@ impl std::fmt::Display for PacketError {
 
 impl std::error::Error for PacketError {}
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub enum Qos {
+    #[default]
     AtMostOnce = 0,
     AtLeastOnce = 1,
     ExactlyOnce = 2,
 }
 
 impl TryFrom<u8> for Qos {
-    type Error = PacketError;
+    type Error = Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Qos::AtMostOnce),
             1 => Ok(Qos::AtLeastOnce),
             2 => Ok(Qos::ExactlyOnce),
-            _ => Err(PacketError::InvalidQos(value)),
+            _ => Err(MalformedPacket::InvalidQos(value).into()),
         }
     }
 }
@@ -79,28 +82,28 @@ pub enum QosPacketIdentifier {
 pub struct MqttTopic(pub(crate) String);
 
 impl<'a> TryFrom<&'a str> for MqttTopic {
-    type Error = PacketError;
+    type Error = Error;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         if value.contains('#') || value.contains('+') {
-            Err(PacketError::InvalidMqttTopic)
+            Err(MalformedPacket::InvalidMqttTopic.into())
         } else {
             Ok(Self(value.to_string()))
         }
     }
 }
 
-pub fn extract_str(data: &[u8]) -> Result<&str, PacketError> {
+pub fn extract_str(data: &[u8]) -> Result<&str, Error> {
+    if data.len() < 2 {
+        return Err(MalformedPacket::new("Packet too short to read string"));
+    }
     let length = u16::from_be_bytes([data[0], data[1]]) as usize;
     if length == 0 {
         Ok("")
     } else if data.len() < length + 2 {
-        Err(PacketError::MissingBytes {
-            expected: length + 2,
-            got: data.len(),
-        })
+        Err(MalformedPacket::new("Packet too short to read string"))
     } else {
-        std::str::from_utf8(&data[2..2 + length]).map_err(PacketError::Utf8Error)
+        std::str::from_utf8(&data[2..2 + length]).map_err(|e| MalformedPacket::Utf8Error(e).into())
     }
 }
 
@@ -111,20 +114,78 @@ pub fn write_str(string: &str, writer: &mut impl Write) -> Result<usize, std::io
     Ok(length + 2)
 }
 
-pub fn extract_bytes(data: &[u8]) -> Result<&[u8], PacketError> {
+pub fn extract_bytes(data: &[u8]) -> Result<&[u8], Error> {
     let length = u16::from_be_bytes([data[0], data[1]]) as usize;
     if length == 0 {
-        Err(PacketError::MalformedPacket(
+        Err(MalformedPacket::new(
             "Packet bytes cannot have length of 0.",
         ))
     } else if data.len() < length + 2 {
-        Err(PacketError::MissingBytes {
-            expected: length + 2,
-            got: data.len(),
-        })
+        Err(MalformedPacket::new("Packet too short to read bytes"))
     } else {
         Ok(&data[2..2 + length])
     }
+}
+
+/// Write mqtt variable length integer
+pub fn write_variable_len_int(
+    mut value: u64,
+    writer: &mut impl Write,
+) -> Result<usize, std::io::Error> {
+    let mut length = 0;
+    if value == 0 {
+        writer.write_all(&[0])?;
+        return Ok(1);
+    }
+
+    while value != 0 {
+        let byte = (value % 128) as u8;
+        value /= 128;
+        if value > 0 {
+            writer.write_all(&[byte | 128])?;
+        } else {
+            writer.write_all(&[byte])?;
+        }
+        length += 1;
+    }
+    Ok(length)
+}
+
+/// Write mqtt variable length integer
+pub fn variable_len_int_size(mut value: usize) -> usize {
+    let mut length = 0;
+    if value == 0 {
+        return 1;
+    }
+
+    while value != 0 {
+        value /= 128;
+        length += 1;
+    }
+    length
+}
+
+/// Read mqtt variable length integer
+///
+/// Algorithm based on http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718023
+pub fn read_variable_len_int(packet: &[u8]) -> Result<(usize, u64), crate::Error> {
+    let packet_len = packet.len();
+    let mut multiplier: u64 = 1;
+    let mut value = 0;
+    let mut i = 0;
+    loop {
+        if packet_len <= i {
+            return Err(Error::NotEnoughData);
+        }
+        let byte = packet[i];
+        value += (byte & 127) as u64 * multiplier;
+        multiplier *= 128;
+        i += 1;
+        if byte & 128 == 0 {
+            break;
+        }
+    }
+    Ok((i, value))
 }
 
 #[cfg(test)]
@@ -181,7 +242,7 @@ mod test {
         let buf = [0, 100, b'f'];
         if let Err(e) = extract_str(&buf[..]) {
             match e {
-                PacketError::MissingBytes { .. } => (),
+                Error::MalformedPacket(_) => (),
                 _ => panic!("Failed to detect bad input data!"),
             }
         } else {
@@ -194,7 +255,7 @@ mod test {
         let buf = [0, 100, b'f'];
         if let Err(e) = extract_bytes(&buf[..]) {
             match e {
-                PacketError::MissingBytes { .. } => (),
+                Error::MalformedPacket(_) => (),
                 _ => panic!("Failed to detect bad input data!"),
             }
         } else {

@@ -82,8 +82,3 @@ create_ping_package!(
     test_pingresp,
     208
 );
-
-create_ping_package!(
-    /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
-    Disconnect, ControlPacketType::Disconnect, test_disconnect, 224
-);
