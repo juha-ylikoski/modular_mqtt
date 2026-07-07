@@ -3,7 +3,7 @@ use std::{io::Write, marker::PhantomData};
 use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     ControlPacketType, Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, PayloadFormat, Property,
-    PropertyIdentifier, ReceivedUserProperty, UserProperty,
+    PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -63,7 +63,7 @@ pub struct Properties<'a> {
     /// The value of the Correlation Data only has meaning to the sender of the Request Message
     /// and receiver of the Response Message.
     correlation_data: &'a [u8],
-    user_property: &'a [UserProperty<'a>],
+    user_property: Vec<UserProperty>,
     /// The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if
     /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
     /// if the publication is the result of a match to more than one subscription, in this case their
@@ -126,7 +126,7 @@ pub struct ReceivedProperties {
     /// The value of the Correlation Data only has meaning to the sender of the Request Message
     /// and receiver of the Response Message.
     correlation_data: Vec<u8>,
-    user_property: Vec<ReceivedUserProperty>,
+    user_property: Vec<UserProperty>,
     /// The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if
     /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
     /// if the publication is the result of a match to more than one subscription, in this case their
@@ -217,7 +217,6 @@ impl<'a, V> Publish<'a, V> {
         if let Some(properties) = self.properties.as_ref() {
             let mut length = 0;
             let properties_len = self.properties_len();
-            println!("properties len: {properties_len}");
             length += write_variable_len_int(properties_len as u64, writer)?;
 
             fn add_subscription_identifier(
@@ -407,12 +406,12 @@ impl<'a> Publish<'a, MqttV5_0_0> {
         self.properties.as_ref().unwrap().correlation_data
     }
 
-    pub fn set_user_property(mut self, user_property: &'a [UserProperty<'a>]) -> Self {
+    pub fn set_user_property(mut self, user_property: Vec<UserProperty>) -> Self {
         self.properties.as_mut().unwrap().user_property = user_property;
         self
     }
-    pub fn user_property(&self) -> &[UserProperty<'a>] {
-        self.properties.as_ref().unwrap().user_property
+    pub fn user_property(&self) -> &[UserProperty] {
+        &self.properties.as_ref().unwrap().user_property
     }
 
     pub fn set_subscription_identifier(mut self, value: u64) -> Self {
@@ -519,13 +518,11 @@ impl ReceivedMessage<MqttV5_0_0> {
     }
 
     fn read_property(&mut self, data: &[u8]) -> Result<usize, Error> {
-        println!("self: {self:#?}");
         let (i, property_identifier) = read_variable_len_int(data)?;
         let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
 
         let properties = self.properties.as_mut().unwrap();
 
-        println!("property: {property_identifier:?}");
         match property_identifier {
             PropertyIdentifier::PayloadFormatIndicator => {
                 if properties.payload_format.is_some() {
@@ -592,9 +589,7 @@ impl ReceivedMessage<MqttV5_0_0> {
                 let key = extract_str(&data[i..])?.to_string();
                 let value = extract_str(&data[i + 2 + key.len()..])?.to_string();
                 let len = 2 + key.len() + 2 + value.len();
-                properties
-                    .user_property
-                    .push(ReceivedUserProperty { key, value });
+                properties.user_property.push(UserProperty { key, value });
                 Ok(len)
             }
             PropertyIdentifier::SubscriptionIdentifier => {
@@ -688,7 +683,7 @@ impl ReceivedMessage<MqttV5_0_0> {
         self.properties.as_ref().unwrap().correlation_data.as_ref()
     }
 
-    pub fn user_property(&self) -> &[ReceivedUserProperty] {
+    pub fn user_property(&self) -> &[UserProperty] {
         self.properties.as_ref().unwrap().user_property.as_ref()
     }
 
@@ -1309,14 +1304,14 @@ mod test_v5 {
         .set_topic_alias(11)
         .set_response_topic("response")
         .set_correlation_data(b"badcafee")
-        .set_user_property(&[
+        .set_user_property(vec![
             UserProperty {
-                key: "property0",
-                value: "value0",
+                key: "property0".to_string(),
+                value: "value0".to_string(),
             },
             UserProperty {
-                key: "property1",
-                value: "value1",
+                key: "property1".to_string(),
+                value: "value1".to_string(),
             },
         ])
         .set_subscription_identifier(12)
@@ -1377,11 +1372,11 @@ mod test_v5 {
         expected.properties.as_mut().unwrap().response_topic = Some("response".to_string());
         expected.properties.as_mut().unwrap().correlation_data = b"badcafee".to_vec();
         expected.properties.as_mut().unwrap().user_property = vec![
-            ReceivedUserProperty {
+            UserProperty {
                 key: "property0".to_string(),
                 value: "value0".to_string(),
             },
-            ReceivedUserProperty {
+            UserProperty {
                 key: "property1".to_string(),
                 value: "value1".to_string(),
             },

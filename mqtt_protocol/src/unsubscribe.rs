@@ -3,8 +3,7 @@ use std::marker::PhantomData;
 
 use crate::util::{read_variable_len_int, variable_len_int_size, write_variable_len_int};
 use crate::{
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier,
-    ReceivedUserProperty,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
 };
 
 use crate::{
@@ -19,7 +18,7 @@ pub enum UnsubscribeOptions<V> {
     },
     V5 {
         protocol_level: PhantomData<V>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     },
 }
 
@@ -42,7 +41,6 @@ impl<V> Unsubscribe<V> {
         length += 2;
 
         if let UnsubscribeOptions::V5 { user_property, .. } = self.options {
-            let user_property: &[ReceivedUserProperty] = user_property.as_ref();
             let properties_len = user_property.property_len();
             length += write_variable_len_int(properties_len as u64, writer)?;
             length += user_property.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
@@ -102,10 +100,9 @@ impl Unsubscribe<MqttV5_0_0> {
     pub fn new_v5(
         packet_identifier: u16,
         topics: Vec<MqttTopic>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     ) -> Self {
-        let _user_property: &[ReceivedUserProperty] = &user_property;
-        let properties_len = _user_property.property_len();
+        let properties_len = user_property.property_len();
         Self {
             fixed_header: FixedHeader::new(
                 ControlPacketType::Unsubscribe,
@@ -134,7 +131,7 @@ impl Unsubscribe<MqttV5_0_0> {
         let properties_len = properties_len as usize;
 
         let mut index = 2 + property_length_length;
-        let mut user_property: Vec<ReceivedUserProperty> = Vec::new();
+        let mut user_property: Vec<UserProperty> = Vec::new();
         while index - 2 - property_length_length < properties_len {
             let (i, property_identifier) = read_variable_len_int(&data[index..])?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
@@ -142,7 +139,7 @@ impl Unsubscribe<MqttV5_0_0> {
                 let key = extract_str(&data[index + i..])?.to_string();
                 let value = extract_str(&data[index + i + 2 + key.len()..])?.to_string();
                 index += i + 2 + key.len() + 2 + value.len();
-                user_property.push(ReceivedUserProperty { key, value });
+                user_property.push(UserProperty { key, value });
             } else {
                 return Err(MalformedPacket::new(
                     "Received unexpected property for connect",
@@ -302,7 +299,7 @@ mod test_v5 {
         let msg = Unsubscribe::new_v5(
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
@@ -447,7 +444,7 @@ mod test_v5 {
         let expected = Unsubscribe::new_v5(
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],

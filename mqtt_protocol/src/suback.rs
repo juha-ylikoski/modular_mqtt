@@ -2,8 +2,7 @@ use std::{io::Write, marker::PhantomData};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier,
-    ReceivedUserProperty,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
 };
 
 use super::fixed_header::{ControlPacketType, FixedHeader};
@@ -108,7 +107,7 @@ pub enum SubAckData<V> {
         reason: Option<String>,
         /// UTF-8 String Pair. This property can be used to provide additional
         /// diagnostic or other information
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     },
 }
 
@@ -142,7 +141,6 @@ impl<V> SubAck<V> {
                 user_property,
                 ..
             } => {
-                let user_property: &[ReceivedUserProperty] = &user_property;
                 let reason: Option<&str> = reason.as_deref();
                 let property_len = user_property.property_len() + reason.property_len();
                 length += write_variable_len_int(property_len as u64, writer)?;
@@ -196,11 +194,10 @@ impl SubAck<MqttV5_0_0> {
         packet_identifier: u16,
         return_codes: Vec<SubRcV5>,
         reason: Option<String>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     ) -> Self {
-        let _user_property: &[ReceivedUserProperty] = &user_property;
         let _reason: Option<&str> = reason.as_deref();
-        let property_len = _user_property.property_len() + _reason.property_len();
+        let property_len = user_property.property_len() + _reason.property_len();
         Self {
             fixed_header: FixedHeader::new(
                 ControlPacketType::SubAck,
@@ -247,7 +244,7 @@ impl SubAck<MqttV5_0_0> {
                     let key = extract_str(property_value)?.to_string();
                     let value = extract_str(&property_value[2 + key.len()..])?.to_string();
                     let len = 2 + key.len() + 2 + value.len();
-                    let property = ReceivedUserProperty { key, value };
+                    let property = UserProperty { key, value };
                     user_property.push(property);
                     i += len;
                     index += len;
@@ -342,7 +339,7 @@ mod test_v5 {
             42,
             vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".to_string(),
                 value: "value1".to_string(),
             }],
@@ -400,7 +397,7 @@ mod test_v5 {
                 SubRcV5::Failure,
             ],
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".to_string(),
                 value: "value1".to_string(),
             }],

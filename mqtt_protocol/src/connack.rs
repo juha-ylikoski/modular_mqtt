@@ -182,7 +182,7 @@ pub struct ConnAck<'a, V> {
     reason: Option<&'a str>,
     /// UTF-8 String Pair. This property can be used to provide additional information to the Client
     /// including diagnostic information
-    user_property: Vec<UserProperty<'a>>,
+    user_property: Vec<UserProperty>,
     /// this byte declares whether the Server supports Wildcard Subscriptions. A value is 0 means
     /// that Wildcard Subscriptions are not supported
     wildcard_subscription_available: Option<bool>,
@@ -219,7 +219,6 @@ impl<'a, V> ConnAck<'a, V> {
     fn re_calculate_fixed_header_length(&mut self) {
         let v5 = matches!(self.connect_rc, ConnectRc::V5(_));
         if v5 {
-            let user_properties: &[UserProperty] = self.user_property.as_ref();
             let properties_length = self.session_expiry_interval.property_len()
                 + self.receive_maximum.property_len()
                 + self.maximum_qos.property_len()
@@ -228,7 +227,7 @@ impl<'a, V> ConnAck<'a, V> {
                 + self.client_identifier.property_len()
                 + self.topic_alias_maximum.property_len()
                 + self.reason.property_len()
-                + user_properties.property_len()
+                + self.user_property.property_len()
                 + self.wildcard_subscription_available.property_len()
                 + self.subscription_identifiers_available.property_len()
                 + self.shared_subscription_available.property_len()
@@ -248,7 +247,6 @@ impl<'a, V> ConnAck<'a, V> {
         writer.write_all(&[self.session_present as u8, self.connect_rc.into()])?;
         length += 2;
         if v5 {
-            let user_properties: &[UserProperty] = self.user_property.as_ref();
             let properties_length = self.session_expiry_interval.property_len()
                 + self.receive_maximum.property_len()
                 + self.maximum_qos.property_len()
@@ -257,7 +255,7 @@ impl<'a, V> ConnAck<'a, V> {
                 + self.client_identifier.property_len()
                 + self.topic_alias_maximum.property_len()
                 + self.reason.property_len()
-                + user_properties.property_len()
+                + self.user_property.property_len()
                 + self.wildcard_subscription_available.property_len()
                 + self.subscription_identifiers_available.property_len()
                 + self.shared_subscription_available.property_len()
@@ -289,7 +287,9 @@ impl<'a, V> ConnAck<'a, V> {
                     .topic_alias_maximum
                     .serialize(PropertyIdentifier::TopicAliasMaximum, writer)?
                 + self.reason.serialize(PropertyIdentifier::Reason, writer)?
-                + user_properties.serialize(PropertyIdentifier::UserProperty, writer)?
+                + self
+                    .user_property
+                    .serialize(PropertyIdentifier::UserProperty, writer)?
                 + self
                     .wildcard_subscription_available
                     .serialize(PropertyIdentifier::WildcardSubscriptionAvailable, writer)?
@@ -512,7 +512,10 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
             PropertyIdentifier::UserProperty => {
                 let key = extract_str(data)?;
                 let value = extract_str(&data[2 + key.len()..])?;
-                let property = UserProperty { key, value };
+                let property = UserProperty {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                };
                 self.user_property.push(property);
                 Ok(2 + key.len() + 2 + value.len())
             }
@@ -655,8 +658,6 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
             return Err(Error::NotEnoughData);
         }
 
-        println!("Read properties!");
-
         while i < data.len() {
             i += connack.read_property(&data[i..])?;
         }
@@ -720,11 +721,11 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
     pub fn reason(&self) -> Option<&'a str> {
         self.reason
     }
-    pub fn set_user_property(mut self, value: Vec<UserProperty<'a>>) -> Self {
+    pub fn set_user_property(mut self, value: Vec<UserProperty>) -> Self {
         self.user_property = value;
         self
     }
-    pub fn user_property(&self) -> &[UserProperty<'a>] {
+    pub fn user_property(&self) -> &[UserProperty] {
         &self.user_property
     }
     pub fn set_wildcard_subscription_available(mut self, value: bool) -> Self {
@@ -903,12 +904,12 @@ mod test_v5 {
             .set_reason("arbitrary")
             .set_user_property(vec![
                 UserProperty {
-                    key: "property0",
-                    value: "value0",
+                    key: "property0".to_string(),
+                    value: "value0".to_string(),
                 },
                 UserProperty {
-                    key: "property1",
-                    value: "value1",
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
                 },
             ])
             .set_wildcard_subscription_available(true)
@@ -1062,12 +1063,12 @@ mod test_v5 {
             .set_reason("arbitrary")
             .set_user_property(vec![
                 UserProperty {
-                    key: "property0",
-                    value: "value0",
+                    key: "property0".to_string(),
+                    value: "value0".to_string(),
                 },
                 UserProperty {
-                    key: "property1",
-                    value: "value1",
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
                 },
             ])
             .set_wildcard_subscription_available(true)

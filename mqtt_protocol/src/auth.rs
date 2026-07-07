@@ -5,8 +5,7 @@ use crate::{
         extract_bytes, extract_str, read_variable_len_int, variable_len_int_size,
         write_variable_len_int,
     },
-    Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property, PropertyIdentifier,
-    ReceivedUserProperty,
+    Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, PartialEq)]
@@ -44,7 +43,7 @@ pub struct Auth<V> {
     auth_data: Vec<u8>,
     /// Followed by the UTF-8 Encoded String representing the reason for the disconnect. This Reason String is human readable, designed for diagnostics and SHOULD NOT be parsed by the receiver.
     reason: Option<String>,
-    user_property: Vec<ReceivedUserProperty>,
+    user_property: Vec<UserProperty>,
 }
 
 impl Auth<MqttV5_0_0> {
@@ -56,18 +55,19 @@ impl Auth<MqttV5_0_0> {
         let method = self.method.as_deref();
         let reason = self.reason.as_deref();
         let auth_data: &[u8] = &self.auth_data;
-        let user_property: &[ReceivedUserProperty] = &self.user_property;
         let properties_len = method.property_len()
             + auth_data.property_len()
             + reason.property_len()
-            + user_property.property_len();
+            + self.user_property.property_len();
 
         len += write_variable_len_int(properties_len as u64, writer)?;
 
         len += method.serialize(PropertyIdentifier::AuthenticationMethod, writer)?
             + auth_data.serialize(PropertyIdentifier::AuthenticationData, writer)?
             + reason.serialize(PropertyIdentifier::Reason, writer)?
-            + user_property.serialize(PropertyIdentifier::UserProperty, writer)?;
+            + self
+                .user_property
+                .serialize(PropertyIdentifier::UserProperty, writer)?;
 
         Ok(len)
     }
@@ -77,15 +77,14 @@ impl Auth<MqttV5_0_0> {
         method: Option<String>,
         auth_data: Option<Vec<u8>>,
         reason: Option<String>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     ) -> Self {
         let _method = method.as_deref();
         let _reason = reason.as_deref();
-        let _user_property: &[ReceivedUserProperty] = &user_property;
         let properties_len = _method.property_len()
             + auth_data.property_len()
             + _reason.property_len()
-            + _user_property.property_len();
+            + user_property.property_len();
         let remaining_length = 1 + variable_len_int_size(properties_len) + properties_len;
         Self {
             fixed_header: FixedHeader::new(crate::ControlPacketType::Auth, remaining_length),
@@ -156,7 +155,7 @@ impl Auth<MqttV5_0_0> {
                     let key = extract_str(property_value)?.to_string();
                     let value = extract_str(&property_value[2 + key.len()..])?.to_string();
                     let len = 2 + key.len() + 2 + value.len();
-                    let property = ReceivedUserProperty { key, value };
+                    let property = UserProperty { key, value };
                     user_property.push(property);
                     i += len;
                     index += len;
@@ -206,7 +205,7 @@ mod test_v5 {
             Some("method".to_string()),
             Some(vec![1, 2, 3, 4]),
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".to_string(),
                 value: "value1".to_string(),
             }],
@@ -274,7 +273,7 @@ mod test_v5 {
             Some("method".to_string()),
             Some(vec![1, 2, 3, 4]),
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".to_string(),
                 value: "value1".to_string(),
             }],

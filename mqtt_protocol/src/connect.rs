@@ -42,7 +42,7 @@ pub struct MqttLastWill<'a> {
     /// The Correlation Data is used by the sender of the Request Message to identify which request the Response Message is for when it is received
     /// The value of the Correlation Data only has meaning to the sender of the Request Message and receiver of the Response Message.
     correlation_data: &'a [u8],
-    user_property: Vec<UserProperty<'a>>,
+    user_property: Vec<UserProperty>,
 }
 
 impl<'a> MqttLastWill<'a> {
@@ -108,28 +108,26 @@ impl<'a> MqttLastWill<'a> {
         self.correlation_data
     }
 
-    pub fn set_user_property(mut self, user_property: Vec<UserProperty<'a>>) -> Self {
+    pub fn set_user_property(mut self, user_property: Vec<UserProperty>) -> Self {
         self.user_property = user_property;
         self
     }
-    pub fn user_property(&self) -> &[UserProperty<'a>] {
+    pub fn user_property(&self) -> &[UserProperty] {
         &self.user_property
     }
 
     pub fn properties_len(&self) -> usize {
-        let user_properties: &[UserProperty<'_>] = &self.user_property;
         self.delay_interval.property_len()
             + self.payload_format.property_len()
             + self.message_expiry_interval.property_len()
             + self.content_type.property_len()
             + self.response_topic.property_len()
             + self.correlation_data.property_len()
-            + user_properties.property_len()
+            + self.user_property.property_len()
     }
 
     pub fn write_properties(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
         let mut length = 0;
-        let user_properties: &[UserProperty<'_>] = &self.user_property;
         let properties_len = self.properties_len();
         length += crate::util::write_variable_len_int(properties_len as u64, writer)?;
 
@@ -151,7 +149,9 @@ impl<'a> MqttLastWill<'a> {
             + self
                 .correlation_data
                 .serialize(PropertyIdentifier::CorrelationData, writer)?
-            + user_properties.serialize(PropertyIdentifier::UserProperty, writer)?;
+            + self
+                .user_property
+                .serialize(PropertyIdentifier::UserProperty, writer)?;
 
         Ok(length)
     }
@@ -246,7 +246,10 @@ impl<'a> MqttLastWill<'a> {
                     let key = extract_str(&properties[i..])?;
                     let value = extract_str(&properties[i + 2 + key.len()..])?;
                     let len = 2 + key.len() + 2 + value.len();
-                    self.user_property.push(UserProperty { key, value });
+                    self.user_property.push(UserProperty {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
                     Ok(len)
                 }
                 _ => Err(MalformedPacket::new(
@@ -349,7 +352,7 @@ pub struct Connect<'a> {
     /// a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT
     pub request_problem_information: Option<bool>,
     /// The User Property is allowed to appear multiple times to represent multiple name, value pairs. The same name is allowed to appear more than once.
-    pub user_property: Vec<UserProperty<'a>>,
+    pub user_property: Vec<UserProperty>,
     /// If Authentication Method is absent, extended authentication is not performed
     pub authentication_method: Option<&'a str>,
     /// Binary Data containing authentication data
@@ -460,7 +463,10 @@ impl<'a> Connect<'a> {
             PropertyIdentifier::UserProperty => {
                 let key = extract_str(data)?;
                 let value = extract_str(&data[2 + key.len()..])?;
-                let property = UserProperty { key, value };
+                let property = UserProperty {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                };
                 self.user_property.push(property);
                 Ok(2 + key.len() + 2 + value.len())
             }
@@ -829,7 +835,7 @@ impl<'a> Connect<'a> {
         self
     }
 
-    pub fn set_user_property(mut self, user_property: Vec<UserProperty<'a>>) -> Self {
+    pub fn set_user_property(mut self, user_property: Vec<UserProperty>) -> Self {
         self.user_property = user_property;
         self
     }
@@ -845,7 +851,6 @@ impl<'a> Connect<'a> {
     }
 
     fn write_properties(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let user_properties: &[UserProperty<'_>] = self.user_property.as_ref();
         let len = self
             .session_expiry_interval
             .serialize(PropertyIdentifier::SessionExpiryInterval, writer)?
@@ -864,7 +869,9 @@ impl<'a> Connect<'a> {
             + self
                 .request_problem_information
                 .serialize(PropertyIdentifier::RequestProblemInformation, writer)?
-            + user_properties.serialize(PropertyIdentifier::UserProperty, writer)?
+            + self
+                .user_property
+                .serialize(PropertyIdentifier::UserProperty, writer)?
             + self
                 .authentication_method
                 .serialize(PropertyIdentifier::AuthenticationMethod, writer)?
@@ -876,14 +883,13 @@ impl<'a> Connect<'a> {
     }
 
     fn properties_len(&self) -> usize {
-        let user_properties: &[UserProperty] = self.user_property.as_ref();
         self.session_expiry_interval.property_len()
             + self.receive_maximum.property_len()
             + self.maximum_packet_size.property_len()
             + self.topic_alias_maximum.property_len()
             + self.request_response_information.property_len()
             + self.request_problem_information.property_len()
-            + user_properties.property_len()
+            + self.user_property.property_len()
             + self.authentication_method.property_len()
             + self.authentication_data.property_len()
     }
@@ -936,7 +942,7 @@ impl<'a> Connect<'a> {
     pub fn request_problem_information(&self) -> bool {
         self.request_problem_information.unwrap_or(true)
     }
-    pub fn user_property(&self) -> &[UserProperty<'_>] {
+    pub fn user_property(&self) -> &[UserProperty] {
         &self.user_property
     }
     pub fn authentication_method(&self) -> Option<&str> {
@@ -1384,12 +1390,12 @@ mod test_ser_v5 {
                     .set_correlation_data(b"badcafee")
                     .set_user_property(vec![
                         UserProperty {
-                            key: "property0",
-                            value: "value0",
+                            key: "property0".to_string(),
+                            value: "value0".to_string(),
                         },
                         UserProperty {
-                            key: "property1",
-                            value: "value1",
+                            key: "property1".to_string(),
+                            value: "value1".to_string(),
                         },
                     ]),
             ),
@@ -1790,12 +1796,12 @@ mod test_ser_v5 {
             .set_request_problem_information(true)
             .set_user_property(vec![
                 UserProperty {
-                    key: "property0",
-                    value: "value0",
+                    key: "property0".to_string(),
+                    value: "value0".to_string(),
                 },
                 UserProperty {
-                    key: "property1",
-                    value: "value1",
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
                 },
             ])
             .set_authentication_method("auth")
@@ -2387,12 +2393,12 @@ mod test_de_v5 {
                     .set_correlation_data(b"badcafee")
                     .set_user_property(vec![
                         UserProperty {
-                            key: "property0",
-                            value: "value0",
+                            key: "property0".to_string(),
+                            value: "value0".to_string(),
                         },
                         UserProperty {
-                            key: "property1",
-                            value: "value1",
+                            key: "property1".to_string(),
+                            value: "value1".to_string(),
                         },
                     ]),
             ),
@@ -2670,12 +2676,12 @@ mod test_de_v5 {
             .set_request_problem_information(true)
             .set_user_property(vec![
                 UserProperty {
-                    key: "property0",
-                    value: "value0",
+                    key: "property0".to_string(),
+                    value: "value0".to_string(),
                 },
                 UserProperty {
-                    key: "property1",
-                    value: "value1",
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
                 },
             ])
             .set_authentication_method("auth")

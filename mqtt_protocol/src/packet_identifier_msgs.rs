@@ -3,7 +3,7 @@ use std::{io::Write, marker::PhantomData};
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
-    PropertyIdentifier, ReceivedUserProperty,
+    PropertyIdentifier, UserProperty,
 };
 
 trait ReasonCode: TryFrom<u8> {
@@ -143,7 +143,7 @@ enum PubAckData<V, R> {
         reason: Option<String>,
         /// UTF-8 String Pair. This property can be used to provide additional
         /// diagnostic or other information
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     },
 }
 
@@ -166,10 +166,7 @@ where
                 reason,
                 user_property,
                 ..
-            } => {
-                let user_properties: &[ReceivedUserProperty] = user_property.as_ref();
-                reason.as_deref().property_len() + user_properties.property_len()
-            }
+            } => reason.as_deref().property_len() + user_property.property_len(),
         }
     }
     fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
@@ -192,8 +189,7 @@ where
                 reason
                     .as_deref()
                     .serialize(crate::PropertyIdentifier::Reason, writer)?;
-                let properties: &[ReceivedUserProperty] = user_property.as_ref();
-                properties.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
+                user_property.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
 
                 len + 2 + 1 + property_len_int_size + property_len
             }
@@ -226,7 +222,7 @@ where
         packet_identifier: u16,
         reason_code: R,
         reason: Option<String>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     ) -> Self {
         let mut msg = PubAckType {
             fixed_header: FixedHeader::new(packet_type, 0),
@@ -279,7 +275,7 @@ where
                     let key = extract_str(property_value)?.to_string();
                     let value = extract_str(&property_value[2 + key.len()..])?.to_string();
                     let len = 2 + key.len() + 2 + value.len();
-                    let property = ReceivedUserProperty { key, value };
+                    let property = UserProperty { key, value };
                     user_property.push(property);
                     Ok(len)
                 }
@@ -331,7 +327,7 @@ macro_rules! create_pub_ack_type {
                 packet_identifier: u16,
                 reason_code: $reason_code,
                 reason: Option<String>,
-                user_property: Vec<ReceivedUserProperty>,
+                user_property: Vec<UserProperty>,
             ) -> Self {
                 Self(PubAckType::new_v5(
                     ControlPacketType::$control_packet_type,
@@ -474,7 +470,7 @@ macro_rules! make_tests {
                         42,
                         <$reason_type>::$reason_code,
                         None,
-                        vec![ReceivedUserProperty {
+                        vec![UserProperty {
                             key: "key".to_string(),
                             value: "value".to_string(),
                         }],
@@ -581,7 +577,7 @@ macro_rules! make_tests {
                         42,
                         <$reason_type>::$reason_code,
                         None,
-                        vec![ReceivedUserProperty {
+                        vec![UserProperty {
                             key: "key".to_string(),
                             value: "value".to_string(),
                         }],

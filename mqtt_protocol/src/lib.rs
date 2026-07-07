@@ -58,7 +58,7 @@ pub enum MqttPackage<'a, V> {
     PingResp(PingResp),
     Disconnect(Disconnect<V>),
     /// Mqtt V5 specific packet
-    Auth(),
+    Auth(Auth<V>),
 }
 
 #[derive(Debug)]
@@ -168,13 +168,7 @@ pub enum PayloadFormat {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct UserProperty<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct ReceivedUserProperty {
+pub struct UserProperty {
     pub key: String,
     pub value: String,
 }
@@ -278,7 +272,7 @@ impl Property for Option<u64> {
     }
     fn property_len(&self) -> usize {
         if self.is_some() {
-            5
+            9
         } else {
             0
         }
@@ -302,7 +296,8 @@ impl Property for Option<bool> {
         }
     }
 }
-impl<'a> Property for &'a [UserProperty<'a>] {
+
+impl Property for Vec<UserProperty> {
     fn serialize(
         &self,
         identifier: crate::PropertyIdentifier,
@@ -311,35 +306,7 @@ impl<'a> Property for &'a [UserProperty<'a>] {
         let identifier = identifier as u8;
         if !self.is_empty() {
             let mut len = 0;
-            for property in *self {
-                writer.write_all(&[identifier])?;
-                len += 1
-                    + crate::util::write_str(property.key, writer)?
-                    + crate::util::write_str(property.value, writer)?;
-            }
-            Ok(len)
-        } else {
-            Ok(0)
-        }
-    }
-    fn property_len(&self) -> usize {
-        let mut len = 0;
-        for property in *self {
-            len += 1 + 2 + property.key.len() + 2 + property.value.len();
-        }
-        len
-    }
-}
-impl Property for &[ReceivedUserProperty] {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
-        let identifier = identifier as u8;
-        if !self.is_empty() {
-            let mut len = 0;
-            for property in *self {
+            for property in self {
                 writer.write_all(&[identifier])?;
                 len += 1
                     + crate::util::write_str(property.key.as_str(), writer)?
@@ -352,7 +319,7 @@ impl Property for &[ReceivedUserProperty] {
     }
     fn property_len(&self) -> usize {
         let mut len = 0;
-        for property in *self {
+        for property in self {
             len += 1 + 2 + property.key.len() + 2 + property.value.len();
         }
         len

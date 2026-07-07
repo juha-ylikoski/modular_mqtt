@@ -4,7 +4,7 @@ use std::{io::Write, marker::PhantomData};
 use crate::{
     util::{read_variable_len_int, variable_len_int_size, write_variable_len_int},
     Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier,
-    ReceivedUserProperty,
+    UserProperty,
 };
 
 use super::{
@@ -127,7 +127,7 @@ pub enum SubscribeOptions<V> {
         /// Integer representing the identifier of the subscription. The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if the Subscription Identifier has a value of
         /// The Subscription Identifier is associated with any subscription created or modified as the result of this SUBSCRIBE packet. If there is a Subscription Identifier, it is stored with the subscription. If this property is not specified, then the absence of a Subscription Identifier is stored with the subscription.
         subscription_identifier: Option<u64>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     },
 }
 
@@ -156,7 +156,6 @@ impl<V> Subscribe<V> {
             ..
         } = self.options
         {
-            let user_property: &[ReceivedUserProperty] = user_property.as_ref();
             let properties_len = subscription_identifier
                 .map(|v| variable_len_int_size(v as usize) + 1)
                 .unwrap_or_default()
@@ -266,17 +265,16 @@ impl Subscribe<MqttV5_0_0> {
         packet_identifier: u16,
         subscriptions: Vec<TopicSubscription>,
         subscription_identifier: Option<u64>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
     ) -> Self {
         // Protocol violation if 0
         if subscriptions.is_empty() {
             panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
         }
-        let _user_property: &[ReceivedUserProperty] = &user_property;
         let properties_len = subscription_identifier
             .map(|id| 1 + variable_len_int_size(id as usize))
             .unwrap_or_default()
-            + _user_property.property_len();
+            + user_property.property_len();
         Self {
             fixed_header: FixedHeader::new(
                 super::fixed_header::ControlPacketType::Subscribe,
@@ -307,7 +305,7 @@ impl Subscribe<MqttV5_0_0> {
         let payload_start = index + properties_len as usize;
 
         let mut subscription_identifier: Option<u64> = None;
-        let mut user_property: Vec<ReceivedUserProperty> = Vec::new();
+        let mut user_property: Vec<UserProperty> = Vec::new();
 
         while index < payload_start {
             let (i, property_identifier) = read_variable_len_int(&data[index..])?;
@@ -327,7 +325,7 @@ impl Subscribe<MqttV5_0_0> {
                     let key = extract_str(&data[index + i..])?.to_string();
                     let value = extract_str(&data[index + i + 2 + key.len()..])?.to_string();
                     index += i + 2 + key.len() + 2 + value.len();
-                    user_property.push(ReceivedUserProperty { key, value });
+                    user_property.push(UserProperty { key, value });
                 }
                 _ => {
                     return Err(MalformedPacket::new(
@@ -545,7 +543,7 @@ mod test_v5 {
                 ),
             ],
             Some(42),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
@@ -792,7 +790,7 @@ mod test_v5 {
                 ),
             ],
             Some(42),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],

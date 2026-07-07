@@ -3,7 +3,7 @@ use std::{io::Write, marker::PhantomData};
 use crate::{
     util::{extract_str, read_variable_len_int, write_variable_len_int},
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
-    PropertyIdentifier, ReceivedUserProperty,
+    PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, PartialEq)]
@@ -125,7 +125,7 @@ pub enum DisconnectData<V> {
         session_expiry_interval: Option<u32>,
         /// Followed by the UTF-8 Encoded String representing the reason for the disconnect. This Reason String is human readable, designed for diagnostics and SHOULD NOT be parsed by the receiver.
         reason: Option<String>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
         /// Followed by a UTF-8 Encoded String which can be used by the Client to identify another Server to use. It is a Protocol Error to include the Server Reference more than once.
         /// The Server sends DISCONNECT including a Server Reference and Reason Code 0x9C (Use another server) or 0x9D (Server moved) as described in section 4.13.
         server_reference: Option<String>,
@@ -156,7 +156,6 @@ impl<V> Disconnect<V> {
             len += 1;
 
             let reason = reason.as_deref();
-            let user_property: &[ReceivedUserProperty] = &user_property;
             let server_reference = server_reference.as_deref();
 
             let properties_len = session_expiry_interval.property_len()
@@ -205,16 +204,15 @@ impl Disconnect<MqttV5_0_0> {
         reason_code: DisconnectReasonCode,
         session_expiry_interval: Option<u32>,
         reason: Option<String>,
-        user_property: Vec<ReceivedUserProperty>,
+        user_property: Vec<UserProperty>,
         server_reference: Option<String>,
     ) -> Self {
         let _reason = reason.as_deref();
-        let _user_property: &[ReceivedUserProperty] = &user_property;
         let _server_reference = server_reference.as_deref();
 
         let properties_len = session_expiry_interval.property_len()
             + _reason.property_len()
-            + _user_property.property_len()
+            + user_property.property_len()
             + _server_reference.property_len();
         Self {
             fixed_header: FixedHeader::new(ControlPacketType::Disconnect, 1 + properties_len),
@@ -276,7 +274,7 @@ impl Disconnect<MqttV5_0_0> {
                 PropertyIdentifier::UserProperty => {
                     let key = extract_str(property_value)?;
                     let value = extract_str(&property_value[2 + key.len()..])?;
-                    let property = ReceivedUserProperty {
+                    let property = UserProperty {
                         key: key.to_string(),
                         value: value.to_string(),
                     };
@@ -374,7 +372,7 @@ mod disconnect_v5 {
             DisconnectReasonCode::MalformedPacket,
             Some(123),
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
@@ -451,7 +449,7 @@ mod disconnect_v5 {
             DisconnectReasonCode::MalformedPacket,
             Some(123),
             Some("reason".to_string()),
-            vec![ReceivedUserProperty {
+            vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
