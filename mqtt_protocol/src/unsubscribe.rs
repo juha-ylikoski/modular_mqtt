@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::marker::PhantomData;
 
+use bytes::{Buf, Bytes};
+
 use crate::util::{read_variable_len_int, variable_len_int_size, write_variable_len_int};
 use crate::{
     Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
@@ -71,18 +73,11 @@ impl Unsubscribe<MqttV3_1_1> {
             },
         }
     }
-    pub fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 4 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
-        let mut remaining = header.remaining_length - 2;
-        let mut index = 2;
+    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
         let mut topics = Vec::new();
-        while remaining > 0 {
-            let topic = extract_str(&data[index..])?;
-            index += 2 + topic.len();
-            remaining -= 2 + topic.len();
+        while data.has_remaining() {
+            let topic = extract_str(data)?;
             topics.push(topic.to_string());
         }
         Ok(Self {
@@ -122,23 +117,23 @@ impl Unsubscribe<MqttV5_0_0> {
             },
         }
     }
-    pub fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 4 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
-        let (property_length_length, properties_len) = read_variable_len_int(&data[2..])?;
-        let properties_len = properties_len as usize;
+    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
+        let properties_len = read_variable_len_int(data)? as usize;
 
-        let mut index = 2 + property_length_length;
         let mut user_property: Vec<UserProperty> = Vec::new();
-        while index - 2 - property_length_length < properties_len {
-            let (i, property_identifier) = read_variable_len_int(&data[index..])?;
+
+        if data.remaining() < properties_len {
+            return Err(MalformedPacket::new("Packet too short to read property"));
+        }
+        let end_properties = data.remaining() - properties_len;
+
+        while data.remaining() > end_properties {
+            let property_identifier = read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             if property_identifier == PropertyIdentifier::UserProperty {
-                let key = extract_str(&data[index + i..])?.to_string();
-                let value = extract_str(&data[index + i + 2 + key.len()..])?.to_string();
-                index += i + 2 + key.len() + 2 + value.len();
+                let key = extract_str(data)?.to_string();
+                let value = extract_str(data)?.to_string();
                 user_property.push(UserProperty { key, value });
             } else {
                 return Err(MalformedPacket::new(
@@ -147,12 +142,9 @@ impl Unsubscribe<MqttV5_0_0> {
             }
         }
 
-        let mut remaining = header.remaining_length - 2 - property_length_length - properties_len;
         let mut topics = Vec::new();
-        while remaining > 0 {
-            let topic = extract_str(&data[index..])?;
-            index += 2 + topic.len();
-            remaining -= 2 + topic.len();
+        while data.has_remaining() {
+            let topic = extract_str(data)?;
             topics.push(topic.to_string());
         }
         Ok(Self {
@@ -170,6 +162,8 @@ impl Unsubscribe<MqttV5_0_0> {
 #[cfg(test)]
 mod test_v3 {
     use std::io::{BufReader, BufWriter, Read};
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -237,12 +231,10 @@ mod test_v3 {
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
-            Unsubscribe::try_read_v3(header, &data[..]).unwrap(),
+            Unsubscribe::try_read_v3(header, &mut body).unwrap(),
             expected
         );
     }
@@ -251,6 +243,8 @@ mod test_v3 {
 #[cfg(test)]
 mod test_v5 {
     use std::io::{BufReader, BufWriter, Read};
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -385,12 +379,10 @@ mod test_v5 {
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
             vec![],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
-            Unsubscribe::try_read_v5(header, &data[..]).unwrap(),
+            Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected
         );
     }
@@ -449,12 +441,10 @@ mod test_v5 {
                 value: "value1".into(),
             }],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
-            Unsubscribe::try_read_v5(header, &data[..]).unwrap(),
+            Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected
         );
     }

@@ -1,7 +1,10 @@
 use std::io::Write;
 
+use bytes::Buf;
+use bytes::Bytes;
+
 use crate::fixed_header::{ControlPacketType, FixedHeader};
-use crate::util::PacketError;
+use crate::{Error, MalformedPacket};
 
 macro_rules! create_ping_package {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
@@ -21,15 +24,13 @@ macro_rules! create_ping_package {
         }
 
         impl $name {
-            pub fn try_read(header: FixedHeader) -> Result<Self, PacketError> {
-                if header.control_packet_type == $packet_type {
+            pub fn try_read(header: FixedHeader, buf: &mut Bytes) -> Result<Self, Error> {
+                if buf.has_remaining() {
+                    Err(MalformedPacket::new("Ping packet contained trailing bytes"))
+                } else {
                     Ok(Self {
                         fixed_header: header,
                     })
-                } else {
-                    Err(PacketError::MalformedPacket(
-                        "Invalid packet type when trying to create packet.",
-                    ))
                 }
             }
             pub fn write_to_stream(writer: &mut impl Write) -> Result<usize, std::io::Error> {
@@ -42,7 +43,8 @@ macro_rules! create_ping_package {
 
         #[cfg(test)]
         mod $test_mod {
-            use std::io::{BufReader, BufWriter, Read};
+            use bytes::BytesMut;
+            use std::io::BufWriter;
 
             use super::*;
 
@@ -58,11 +60,9 @@ macro_rules! create_ping_package {
             fn deserialize() {
                 let msg = [$test_packet_type, 0];
                 let expected = $name::default();
-                let mut reader = BufReader::new(&msg[..]);
-                let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-                let mut data = Vec::new();
-                reader.read_to_end(&mut data).unwrap();
-                assert_eq!($name::try_read(header).unwrap(), expected);
+                let mut reader = BytesMut::from(&msg[..]);
+                let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                assert_eq!($name::try_read(header, &mut body).unwrap(), expected);
             }
         }
     };

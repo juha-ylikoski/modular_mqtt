@@ -1,5 +1,7 @@
 use std::{io::Write, marker::PhantomData};
 
+use bytes::{Buf, Bytes};
+
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
@@ -141,7 +143,6 @@ impl<V> SubAck<V> {
                 user_property,
                 ..
             } => {
-                let reason: Option<&str> = reason.as_deref();
                 let property_len = user_property.property_len() + reason.property_len();
                 length += write_variable_len_int(property_len as u64, writer)?;
                 length += reason.serialize(PropertyIdentifier::Reason, writer)?
@@ -168,15 +169,11 @@ impl SubAck<MqttV3_1_1> {
             },
         }
     }
-    pub fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
-        let mut remaining = header.remaining_length - 2;
-        let mut index = 2;
+    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
         let mut return_codes = Vec::new();
-        while remaining > 0 {
-            return_codes.push(SubRcV3::try_from(data[index])?);
-            index += 1;
-            remaining -= 1;
+        while data.has_remaining() {
+            return_codes.push(SubRcV3::try_from(data.try_get_u8()?)?);
         }
         Ok(Self {
             fixed_header: header,
@@ -196,8 +193,7 @@ impl SubAck<MqttV5_0_0> {
         reason: Option<String>,
         user_property: Vec<UserProperty>,
     ) -> Self {
-        let _reason: Option<&str> = reason.as_deref();
-        let property_len = user_property.property_len() + _reason.property_len();
+        let property_len = user_property.property_len() + reason.property_len();
         Self {
             fixed_header: FixedHeader::new(
                 ControlPacketType::SubAck,
@@ -212,42 +208,33 @@ impl SubAck<MqttV5_0_0> {
             },
         }
     }
-    pub fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
+    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
 
-        let (i, len_properties) = read_variable_len_int(&data[2..])?;
-        let len_properties = len_properties as usize;
-        let mut index = 2 + i;
+        let len_properties = read_variable_len_int(data)? as usize;
         let mut reason = None;
         let mut user_property = Vec::new();
 
-        let mut i = 0;
+        if data.remaining() < len_properties {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+        let end_of_properties = data.remaining() - len_properties;
 
-        while i < len_properties {
-            let (len, property_identifier) = crate::util::read_variable_len_int(&data[index..])?;
+        while data.remaining() > end_of_properties {
+            let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-            i += len;
-            index += len;
-            let property_value = &data[index..];
             match property_identifier {
                 PropertyIdentifier::Reason => {
                     if reason.is_some() {
                         return Err(Error::ProtocolError("Reason specified multiple times"));
                     }
-                    let _reason = extract_str(property_value)?.to_string();
-                    let len = 2 + _reason.len();
-                    reason = Some(_reason);
-                    i += len;
-                    index += len;
+                    reason = Some(extract_str(data)?.to_string());
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(property_value)?.to_string();
-                    let value = extract_str(&property_value[2 + key.len()..])?.to_string();
-                    let len = 2 + key.len() + 2 + value.len();
+                    let key = extract_str(data)?.to_string();
+                    let value = extract_str(data)?.to_string();
                     let property = UserProperty { key, value };
                     user_property.push(property);
-                    i += len;
-                    index += len;
                 }
                 _ => {
                     return Err(MalformedPacket::new(
@@ -258,9 +245,8 @@ impl SubAck<MqttV5_0_0> {
         }
 
         let mut return_codes = Vec::new();
-        while index < data.len() {
-            return_codes.push(SubRcV5::try_from(data[index])?);
-            index += 1;
+        while data.has_remaining() {
+            return_codes.push(SubRcV5::try_from(data.try_get_u8()?)?);
         }
 
         Ok(Self {
@@ -278,9 +264,10 @@ impl SubAck<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
+    use bytes::BytesMut;
+
     use super::*;
     use std::io::BufWriter;
-    use std::io::{BufReader, Read};
 
     #[test]
     fn serialize() {
@@ -302,16 +289,16 @@ mod test_v3 {
             42,
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(SubAck::try_read_v3(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(SubAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
 
 #[cfg(test)]
 mod test_v5 {
+    use bytes::BytesMut;
+
     use super::*;
     use std::io::BufWriter;
     use std::io::{BufReader, Read};
@@ -372,11 +359,9 @@ mod test_v5 {
             None,
             vec![],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(SubAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -402,10 +387,8 @@ mod test_v5 {
                 value: "value1".to_string(),
             }],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(SubAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

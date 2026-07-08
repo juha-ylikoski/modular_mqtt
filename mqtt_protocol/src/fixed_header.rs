@@ -1,44 +1,10 @@
-use std::{
-    fmt::Display,
-    io::{Read, Write},
-};
+use std::io::Write;
+
+use bytes::{Buf, Bytes, BytesMut};
 
 use crate::{Error, MalformedPacket};
 
 use super::util::Qos;
-
-#[derive(Debug)]
-pub enum FixedHeaderError {
-    NotEnoughBytes,
-    ReservedControlPacketType(u8),
-    InvalidQos(u8),
-    InvalidFlags(u8, ControlPacketType),
-    IoError(std::io::Error),
-}
-
-impl Display for FixedHeaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FixedHeaderError::NotEnoughBytes => {
-                f.write_str("Not enough bytes to extract FixedHeader.")
-            }
-            FixedHeaderError::ReservedControlPacketType(r#type) => {
-                f.write_fmt(format_args!("ControlPacketType had reserved value {type}."))
-            }
-            FixedHeaderError::InvalidQos(qos) => {
-                f.write_fmt(format_args!("Invalid Quality of service {qos}."))
-            }
-            FixedHeaderError::InvalidFlags(flags, control_packet_type) => {
-                f.write_fmt(format_args!(
-                    "Flags did not follow specification {flags} for type {control_packet_type:?}."
-                ))
-            }
-            Self::IoError(error) => f.write_fmt(format_args!("Got io error {error}")),
-        }
-    }
-}
-
-impl std::error::Error for FixedHeaderError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlPacketType {
@@ -193,35 +159,29 @@ impl FixedHeader {
         }
     }
 
-    fn parse(packet: &[u8]) -> Result<Self, Error> {
-        let packet_len = packet.len();
+    pub fn parse(buf: &mut BytesMut) -> Result<Option<(Self, Bytes)>, Error> {
+        let packet_len = buf.len();
         if packet_len < 2 {
             return Err(Error::NotEnoughData);
         }
-        let control_packet_type = ControlPacketType::try_from_byte(packet[0])?;
+        let control_packet_type = ControlPacketType::try_from_byte(buf.get_u8())?;
 
-        let (_, remaining_length) = crate::util::read_variable_len_int(&packet[1..])?;
+        let mut peek: &[u8] = &buf[..];
+        let peek_length = peek.remaining();
+        let remaining_length = match crate::util::read_variable_len_int(&mut peek) {
+            Ok(length) => length as usize,
+            Err(Error::NotEnoughData) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let variable_int_len = peek_length - peek.remaining();
+        buf.advance(variable_int_len);
 
-        Ok(Self::new(control_packet_type, remaining_length as usize))
-    }
+        let body = buf.split_to(remaining_length).freeze();
 
-    pub fn try_read_sync(reader: &mut impl Read) -> Result<Self, Error> {
-        let mut buf = [0u8; 5];
-        let mut i = 2;
-        reader.read_exact(&mut buf[0..i]).map_err(Error::IoError)?;
-        loop {
-            // TODO make sure this is never out of bounds
-            match Self::parse(&buf[0..i]) {
-                Ok(packet) => return Ok(packet),
-                Err(Error::NotEnoughData) => {
-                    reader
-                        .read_exact(&mut buf[i..i + 1])
-                        .map_err(Error::IoError)?;
-                    i += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        Ok(Some((
+            Self::new(control_packet_type, remaining_length),
+            body,
+        )))
     }
 
     pub fn write_to_stream(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
@@ -237,7 +197,7 @@ impl FixedHeader {
 }
 #[cfg(test)]
 mod test {
-    use std::io::{BufReader, BufWriter};
+    use std::io::BufWriter;
 
     use super::*;
 
@@ -365,114 +325,145 @@ mod test {
 
     #[test]
     fn deserialize_header() {
-        fn cmp(input: &[u8], expected: FixedHeader) {
-            let mut reader = BufReader::new(input);
-            let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-            assert_eq!(header, expected);
+        fn cmp(input: &[u8], expected_header: FixedHeader, expected_body: &[u8]) {
+            let mut buf = BytesMut::from(input);
+            let (header, body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+            assert_eq!(
+                header, expected_header,
+                "input={input:?} expected={expected_header:?} expected_body={body:?}"
+            );
+            assert_eq!(body, expected_body);
         }
 
         cmp(
-            &[1 << 4, 1],
+            &[1 << 4, 1, 42],
             FixedHeader::new(ControlPacketType::Connect, 1),
+            &[42],
         );
         cmp(
-            &[2 << 4, 1],
-            FixedHeader::new(ControlPacketType::ConnAck, 1),
+            &[2 << 4, 2, 1, 2],
+            FixedHeader::new(ControlPacketType::ConnAck, 2),
+            &[1, 2],
         );
 
         cmp(
-            &[3 << 4, 1],
+            &[3 << 4, 3, 3, 4, 5],
             FixedHeader::new(
                 ControlPacketType::Publish {
                     dup: false,
                     qos: Qos::AtMostOnce,
                     retain: false,
                 },
-                1,
+                3,
             ),
+            &[3, 4, 5],
         );
         cmp(
-            &[3 << 4 | 1 << 3, 1],
+            &[3 << 4 | 1 << 3, 5, 0, 0, 0, 0, 0],
             FixedHeader::new(
                 ControlPacketType::Publish {
                     dup: true,
                     qos: Qos::AtMostOnce,
                     retain: false,
                 },
-                1,
+                5,
             ),
+            &[0; 5],
         );
 
         cmp(
-            &[3 << 4 | 1 << 1, 1],
+            &[3 << 4 | 1 << 1, 5, 0, 0, 0, 0, 0],
             FixedHeader::new(
                 ControlPacketType::Publish {
                     dup: false,
                     qos: Qos::AtLeastOnce,
                     retain: false,
                 },
-                1,
+                5,
             ),
+            &[0; 5],
         );
 
         cmp(
-            &[3 << 4 | 1 << 2, 1],
+            &[3 << 4 | 1 << 2, 5, 0, 0, 0, 0, 0],
             FixedHeader::new(
                 ControlPacketType::Publish {
                     dup: false,
                     qos: Qos::ExactlyOnce,
                     retain: false,
                 },
-                1,
+                5,
             ),
+            &[0; 5],
         );
 
         cmp(
-            &[3 << 4 | 1, 1],
+            &[3 << 4 | 1, 5, 0, 0, 0, 0, 0],
             FixedHeader::new(
                 ControlPacketType::Publish {
                     dup: false,
                     qos: Qos::AtMostOnce,
                     retain: true,
                 },
-                1,
+                5,
             ),
+            &[0; 5],
         );
 
-        cmp(&[4 << 4, 1], FixedHeader::new(ControlPacketType::PubAck, 1));
-        cmp(&[5 << 4, 1], FixedHeader::new(ControlPacketType::PubRec, 1));
         cmp(
-            &[6 << 4 | 1 << 1, 1],
-            FixedHeader::new(ControlPacketType::PubRel, 1),
+            &[4 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PubAck, 5),
+            &[0; 5],
         );
         cmp(
-            &[7 << 4, 1],
-            FixedHeader::new(ControlPacketType::PubComp, 1),
+            &[5 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PubRec, 5),
+            &[0; 5],
         );
         cmp(
-            &[8 << 4 | 1 << 1, 1],
-            FixedHeader::new(ControlPacketType::Subscribe, 1),
-        );
-        cmp(&[9 << 4, 1], FixedHeader::new(ControlPacketType::SubAck, 1));
-        cmp(
-            &[10 << 4 | 1 << 1, 1],
-            FixedHeader::new(ControlPacketType::Unsubscribe, 1),
+            &[6 << 4 | 1 << 1, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PubRel, 5),
+            &[0; 5],
         );
         cmp(
-            &[11 << 4, 1],
-            FixedHeader::new(ControlPacketType::UnsubscribeAck, 1),
+            &[7 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PubComp, 5),
+            &[0; 5],
         );
         cmp(
-            &[12 << 4, 1],
-            FixedHeader::new(ControlPacketType::PingReq, 1),
+            &[8 << 4 | 1 << 1, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::Subscribe, 5),
+            &[0; 5],
         );
         cmp(
-            &[13 << 4, 1],
-            FixedHeader::new(ControlPacketType::PingResp, 1),
+            &[9 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::SubAck, 5),
+            &[0; 5],
         );
         cmp(
-            &[14 << 4, 1],
-            FixedHeader::new(ControlPacketType::Disconnect, 1),
+            &[10 << 4 | 1 << 1, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::Unsubscribe, 5),
+            &[0; 5],
+        );
+        cmp(
+            &[11 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::UnsubscribeAck, 5),
+            &[0; 5],
+        );
+        cmp(
+            &[12 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PingReq, 5),
+            &[0; 5],
+        );
+        cmp(
+            &[13 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::PingResp, 5),
+            &[0; 5],
+        );
+        cmp(
+            &[14 << 4, 5, 0, 0, 0, 0, 0],
+            FixedHeader::new(ControlPacketType::Disconnect, 5),
+            &[0; 5],
         );
     }
 }

@@ -1,5 +1,7 @@
 use std::{io::Write, marker::PhantomData};
 
+use bytes::{Buf, Bytes};
+
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
@@ -166,7 +168,7 @@ where
                 reason,
                 user_property,
                 ..
-            } => reason.as_deref().property_len() + user_property.property_len(),
+            } => reason.property_len() + user_property.property_len(),
         }
     }
     fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
@@ -186,9 +188,7 @@ where
             } => {
                 writer.write_all(&[reason_code.as_u8()])?;
                 let property_len_int_size = write_variable_len_int(property_len as u64, writer)?;
-                reason
-                    .as_deref()
-                    .serialize(crate::PropertyIdentifier::Reason, writer)?;
+                reason.serialize(crate::PropertyIdentifier::Reason, writer)?;
                 user_property.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
 
                 len + 2 + 1 + property_len_int_size + property_len
@@ -198,13 +198,10 @@ where
         Ok(v)
     }
 
-    fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 2 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
+    fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         Ok(PubAckType {
             fixed_header: header,
-            packet_identifier: u16::from_be_bytes([data[0], data[1]]),
+            packet_identifier: data.try_get_u16()?,
             data: PubAckData::V3,
         })
     }
@@ -241,48 +238,43 @@ where
         msg
     }
 
-    fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 4 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
-        let reason_code = R::try_from(data[2])?;
+    fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
+        let reason_code = R::try_from(data.try_get_u8()?)?;
 
-        let (int_len, len_properties) = read_variable_len_int(&data[3..])?;
-        let len_properties = len_properties as usize;
-        let properties = &data[3 + int_len..];
+        let len_properties = read_variable_len_int(data)? as usize;
 
         let mut reason = None;
         let mut user_property = Vec::new();
 
-        let mut i: usize = 0;
-        while i < len_properties {
-            let (len, property_identifier) = crate::util::read_variable_len_int(&properties[i..])?;
+        if data.remaining() < len_properties {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+
+        let properties_end = data.remaining() - len_properties;
+
+        while data.remaining() > properties_end {
+            let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-            i += len;
-            let property_value = &properties[i..];
-            i += match property_identifier {
+            match property_identifier {
                 PropertyIdentifier::Reason => {
                     if reason.is_some() {
                         return Err(Error::ProtocolError("Reason specified multiple times"));
                     }
-                    let _reason = extract_str(property_value)?.to_string();
-                    let len = 2 + _reason.len();
-                    reason = Some(_reason);
-                    Ok(len)
+                    reason = Some(extract_str(data)?.to_string());
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(property_value)?.to_string();
-                    let value = extract_str(&property_value[2 + key.len()..])?.to_string();
-                    let len = 2 + key.len() + 2 + value.len();
+                    let key = extract_str(data)?.to_string();
+                    let value = extract_str(data)?.to_string();
                     let property = UserProperty { key, value };
                     user_property.push(property);
-                    Ok(len)
                 }
-                _ => Err(MalformedPacket::new(
-                    "Received unexpected property for connect",
-                )),
-            }?;
+                _ => {
+                    return Err(MalformedPacket::new(
+                        "Received unexpected property for connect",
+                    ))
+                }
+            };
         }
 
         Ok(PubAckType {
@@ -317,7 +309,10 @@ macro_rules! create_pub_ack_type {
                     packet_identifier,
                 ))
             }
-            pub fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, crate::Error> {
+            pub fn try_read_v3(
+                header: FixedHeader,
+                data: &mut Bytes,
+            ) -> Result<Self, crate::Error> {
                 PubAckType::try_read_v3(header, data).map(Self)
             }
         }
@@ -337,7 +332,7 @@ macro_rules! create_pub_ack_type {
                     user_property,
                 ))
             }
-            pub fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
+            pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
                 PubAckType::try_read_v5(header, data).map(Self)
             }
         }
@@ -380,12 +375,14 @@ macro_rules! make_tests {
     ($name:ident, $test_name:ident, $test_packet_type:expr, $reason_type:ty, $reason_code:ident) => {
         #[cfg(test)]
         mod $test_name {
-            use std::io::{BufReader, BufWriter, Read};
+            use std::io::BufWriter;
 
             use super::*;
 
             mod v3 {
                 use super::*;
+
+                use bytes::BytesMut;
 
                 #[test]
                 fn serialize() {
@@ -400,16 +397,16 @@ macro_rules! make_tests {
                 fn deserialize() {
                     let msg = [$test_packet_type, 2, 0, 42];
                     let expected = $name::new_v3(42);
-                    let mut reader = BufReader::new(&msg[..]);
-                    let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-                    let mut data = Vec::new();
-                    reader.read_to_end(&mut data).unwrap();
-                    assert_eq!($name::try_read_v3(header, &data[..]).unwrap(), expected);
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    assert_eq!($name::try_read_v3(header, &mut body).unwrap(), expected);
                 }
             }
 
             mod v5 {
                 use super::*;
+
+                use bytes::BytesMut;
 
                 #[test]
                 fn serialize() {
@@ -514,11 +511,9 @@ macro_rules! make_tests {
                     ];
                     let expected =
                         $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
-                    let mut reader = BufReader::new(&msg[..]);
-                    let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-                    let mut data = Vec::new();
-                    reader.read_to_end(&mut data).unwrap();
-                    assert_eq!($name::try_read_v5(header, &data[..]).unwrap(), expected);
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
 
                 #[test]
@@ -544,11 +539,9 @@ macro_rules! make_tests {
                         Some("test".to_string()),
                         Vec::new(),
                     );
-                    let mut reader = BufReader::new(&msg[..]);
-                    let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-                    let mut data = Vec::new();
-                    reader.read_to_end(&mut data).unwrap();
-                    assert_eq!($name::try_read_v5(header, &data[..]).unwrap(), expected);
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
                 #[test]
                 fn deserialize_user_property() {
@@ -582,11 +575,9 @@ macro_rules! make_tests {
                             value: "value".to_string(),
                         }],
                     );
-                    let mut reader = BufReader::new(&msg[..]);
-                    let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-                    let mut data = Vec::new();
-                    reader.read_to_end(&mut data).unwrap();
-                    assert_eq!($name::try_read_v5(header, &data[..]).unwrap(), expected);
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
             }
         }

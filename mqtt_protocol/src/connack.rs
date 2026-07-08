@@ -1,5 +1,7 @@
 use std::{io::Write, marker::PhantomData};
 
+use bytes::{Buf, Bytes};
+
 use super::fixed_header::FixedHeader;
 use crate::{
     util::{
@@ -142,7 +144,7 @@ impl TryFrom<u8> for ConnectRcV5 {
 #[derive(Debug, PartialEq)]
 /// The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client.
 /// The first packet sent from the Server to the Client MUST be a CONNACK Packet [MQTT-3.2.0-1].
-pub struct ConnAck<'a, V> {
+pub struct ConnAck<V> {
     pub fixed_header: FixedHeader,
     pub session_present: bool,
     pub connect_rc: ConnectRc,
@@ -171,7 +173,7 @@ pub struct ConnAck<'a, V> {
     /// in the protocol as a result of the remaining length encoding and the protocol header sizes.
     maximum_packet_size: Option<u32>,
     /// UTF-8 string which is the Assigned Client Identifier
-    client_identifier: Option<&'a str>,
+    client_identifier: Option<String>,
     /// This value indicates the highest value that the Server will accept as a Topic Alias sent by the
     /// Client. The Server uses this value to limit the number of Topic Aliases that it is willing to
     /// hold on this Connection. The Client MUST NOT send a Topic Alias in a PUBLISH packet to the
@@ -179,7 +181,7 @@ pub struct ConnAck<'a, V> {
     topic_alias_maximum: Option<u16>,
     /// UTF-8 Encoded String representing the reason associated with this response. This Reason String
     /// is a human readable string designed for diagnostics and SHOULD NOT be parsed by the Client
-    reason: Option<&'a str>,
+    reason: Option<String>,
     /// UTF-8 String Pair. This property can be used to provide additional information to the Client
     /// including diagnostic information
     user_property: Vec<UserProperty>,
@@ -194,18 +196,18 @@ pub struct ConnAck<'a, V> {
     /// instead of the Keep Alive value the Client sent on CONNECT
     server_keep_alive: Option<u16>,
     /// UTF-8 Encoded String which is used as the basis for creating a Response Topic
-    response_information: Option<&'a str>,
+    response_information: Option<String>,
     /// UTF-8 Encoded String which can be used by the Client to identify another Server to use
     /// The Server uses a Server Reference in either a CONNACK or DISCONNECT packet with Reason
     /// code of 0x9C (Use another server) or Reason Code 0x9D (Server moved)
-    server_reference: Option<&'a str>,
+    server_reference: Option<String>,
     /// UTF-8 Encoded String containing the name of the authentication method
-    authentication_method: Option<&'a str>,
+    authentication_method: Option<String>,
     /// Binary Data containing authentication data
-    authentication_data: &'a [u8],
+    authentication_data: Bytes,
 }
 
-impl<'a, V> ConnAck<'a, V> {
+impl<V> ConnAck<V> {
     /// Re-calculate fixed header length
     ///
     /// We initially have no properties -> property len == 0
@@ -320,7 +322,7 @@ impl<'a, V> ConnAck<'a, V> {
     }
 }
 
-impl<'a> ConnAck<'a, MqttV3_1_1> {
+impl ConnAck<MqttV3_1_1> {
     pub fn new_v3(session_present: bool, connect_rc: ConnectRcV3) -> Self {
         Self {
             fixed_header: FixedHeader::new(super::fixed_header::ControlPacketType::ConnAck, 2),
@@ -343,15 +345,12 @@ impl<'a> ConnAck<'a, MqttV3_1_1> {
             response_information: None,
             server_reference: None,
             authentication_method: None,
-            authentication_data: &[],
+            authentication_data: Bytes::new(),
         }
     }
-    pub fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 2 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let flags = data[0];
-        let connect_rc: ConnectRcV3 = data[1].try_into()?;
+    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let flags = data.try_get_u8()?;
+        let connect_rc: ConnectRcV3 = data.try_get_u8()?.try_into()?;
         if flags & (!1) != 0 {
             return Err(MalformedPacket::new(
                 "All reserved bits have to be 0 in CONNACK",
@@ -378,12 +377,12 @@ impl<'a> ConnAck<'a, MqttV3_1_1> {
             response_information: None,
             server_reference: None,
             authentication_method: None,
-            authentication_data: &[],
+            authentication_data: Bytes::new(),
         })
     }
 }
 
-impl<'a> ConnAck<'a, MqttV5_0_0> {
+impl ConnAck<MqttV5_0_0> {
     pub fn new_v5(session_present: bool, connect_rc: ConnectRcV5) -> Self {
         Self {
             fixed_header: FixedHeader::new(super::fixed_header::ControlPacketType::ConnAck, 3),
@@ -406,17 +405,16 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
             response_information: None,
             server_reference: None,
             authentication_method: None,
-            authentication_data: &[],
+            authentication_data: Bytes::new(),
         }
     }
 
-    fn read_property(&mut self, data: &'a [u8]) -> Result<usize, Error> {
+    fn read_property(&mut self, data: &mut Bytes) -> Result<(), Error> {
         if data.is_empty() {
             return Err(Error::NotEnoughData);
         }
 
-        let (i, property_identifier) = read_variable_len_int(data)?;
-        let data = &data[i..];
+        let property_identifier = read_variable_len_int(data)?;
         let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
         match property_identifier {
             PropertyIdentifier::SessionExpiryInterval => {
@@ -425,11 +423,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "SessionExpiryInterval specified multiple times",
                     ));
                 }
-                self.session_expiry_interval =
-                    Some(u32::from_be_bytes(data[0..4].try_into().map_err(|_| {
-                        MalformedPacket::new("Packet too short to read property")
-                    })?));
-                Ok(4)
+                self.session_expiry_interval = Some(data.try_get_u32()?);
             }
             PropertyIdentifier::ReceiveMaximum => {
                 if self.receive_maximum.is_some() {
@@ -437,22 +431,13 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "ReceiveMaximum specified multiple times",
                     ));
                 }
-                self.receive_maximum =
-                    Some(u16::from_be_bytes(data[0..2].try_into().map_err(|_| {
-                        MalformedPacket::new("Packet too short to read property")
-                    })?));
-                Ok(2)
+                self.receive_maximum = Some(data.try_get_u16()?);
             }
             PropertyIdentifier::MaximumQos => {
                 if self.maximum_qos.is_some() {
                     return Err(Error::ProtocolError("MaximumQos specified multiple times"));
                 }
-                if data.is_empty() {
-                    Err(MalformedPacket::new("Packet too short to read property"))
-                } else {
-                    self.maximum_qos = Some(Qos::try_from(data[0])?);
-                    Ok(1)
-                }
+                self.maximum_qos = Some(Qos::try_from(data.try_get_u8()?)?);
             }
             PropertyIdentifier::RetainAvailable => {
                 if self.retain_available.is_some() {
@@ -460,12 +445,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "RetainAvailable specified multiple times",
                     ));
                 }
-                if data.is_empty() {
-                    Err(MalformedPacket::new("Packet too short to read property"))
-                } else {
-                    self.retain_available = Some(data[0] == 1);
-                    Ok(1)
-                }
+                self.retain_available = Some(data.try_get_u8()? == 1);
             }
             PropertyIdentifier::MaximumPacketSize => {
                 if self.maximum_packet_size.is_some() {
@@ -473,11 +453,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "MaximumPacketSize specified multiple times",
                     ));
                 }
-                self.maximum_packet_size =
-                    Some(u32::from_be_bytes(data[0..4].try_into().map_err(|_| {
-                        MalformedPacket::new("Packet too short to read property")
-                    })?));
-                Ok(4)
+                self.maximum_packet_size = Some(data.try_get_u32()?);
             }
             PropertyIdentifier::AssignedClientIdentifier => {
                 if self.client_identifier.is_some() {
@@ -487,7 +463,6 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                 }
                 let client_identifier = extract_str(data)?;
                 self.client_identifier = Some(client_identifier);
-                Ok(2 + client_identifier.len())
             }
             PropertyIdentifier::TopicAliasMaximum => {
                 if self.topic_alias_maximum.is_some() {
@@ -495,29 +470,22 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "TopicAliasmaximum specified multiple times",
                     ));
                 }
-                self.topic_alias_maximum =
-                    Some(u16::from_be_bytes(data[0..2].try_into().map_err(|_| {
-                        MalformedPacket::new("Packet too short to read property")
-                    })?));
-                Ok(2)
+                self.topic_alias_maximum = Some(data.try_get_u16()?);
             }
             PropertyIdentifier::Reason => {
                 if self.reason.is_some() {
                     return Err(Error::ProtocolError("Reason specified multiple times"));
                 }
-                let reason = extract_str(data)?;
-                self.reason = Some(reason);
-                Ok(2 + reason.len())
+                self.reason = Some(extract_str(data)?);
             }
             PropertyIdentifier::UserProperty => {
                 let key = extract_str(data)?;
-                let value = extract_str(&data[2 + key.len()..])?;
+                let value = extract_str(data)?;
                 let property = UserProperty {
                     key: key.to_string(),
                     value: value.to_string(),
                 };
                 self.user_property.push(property);
-                Ok(2 + key.len() + 2 + value.len())
             }
             PropertyIdentifier::WildcardSubscriptionAvailable => {
                 if self.wildcard_subscription_available.is_some() {
@@ -525,12 +493,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "WildcardSubscriptionAvailable specified multiple times",
                     ));
                 }
-                if data.is_empty() {
-                    Err(MalformedPacket::new("Packet too short to read property"))
-                } else {
-                    self.wildcard_subscription_available = Some(data[0] == 1);
-                    Ok(1)
-                }
+                self.wildcard_subscription_available = Some(data.try_get_u8()? == 1);
             }
             PropertyIdentifier::SubscriptionIdentifierAvailable => {
                 if self.subscription_identifiers_available.is_some() {
@@ -538,12 +501,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "SubscriptionIdentifierAvailable specified multiple times",
                     ));
                 }
-                if data.is_empty() {
-                    Err(MalformedPacket::new("Packet too short to read property"))
-                } else {
-                    self.subscription_identifiers_available = Some(data[0] == 1);
-                    Ok(1)
-                }
+                self.subscription_identifiers_available = Some(data.try_get_u8()? == 1);
             }
             PropertyIdentifier::SharedSubscriptionAvailable => {
                 if self.shared_subscription_available.is_some() {
@@ -551,12 +509,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "SharedSubscriptionAvailable specified multiple times",
                     ));
                 }
-                if data.is_empty() {
-                    Err(MalformedPacket::new("Packet too short to read property"))
-                } else {
-                    self.shared_subscription_available = Some(data[0] == 1);
-                    Ok(1)
-                }
+                self.shared_subscription_available = Some(data.try_get_u8()? == 1);
             }
             PropertyIdentifier::ServerKeepAlive => {
                 if self.server_keep_alive.is_some() {
@@ -564,11 +517,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "ServerKeepAlive specified multiple times",
                     ));
                 }
-                self.server_keep_alive =
-                    Some(u16::from_be_bytes(data[0..2].try_into().map_err(|_| {
-                        MalformedPacket::new("Packet too short to read property")
-                    })?));
-                Ok(2)
+                self.server_keep_alive = Some(data.try_get_u16()?);
             }
             PropertyIdentifier::ResponseInformation => {
                 if self.response_information.is_some() {
@@ -576,9 +525,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "ResponseInformation specified multiple times",
                     ));
                 }
-                let response_information = extract_str(data)?;
-                self.response_information = Some(response_information);
-                Ok(2 + response_information.len())
+                self.response_information = Some(extract_str(data)?);
             }
             PropertyIdentifier::ServerReference => {
                 if self.server_reference.is_some() {
@@ -586,9 +533,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "ServerReference specified multiple times",
                     ));
                 }
-                let reference = extract_str(data)?;
-                self.server_reference = Some(reference);
-                Ok(2 + reference.len())
+                self.server_reference = Some(extract_str(data)?);
             }
             PropertyIdentifier::AuthenticationMethod => {
                 if self.authentication_method.is_some() {
@@ -596,9 +541,7 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "AuthenticationMethod specified multiple times",
                     ));
                 }
-                let method = extract_str(data)?;
-                self.authentication_method = Some(method);
-                Ok(2 + method.len())
+                self.authentication_method = Some(extract_str(data)?);
             }
             PropertyIdentifier::AuthenticationData => {
                 if !self.authentication_data.is_empty() {
@@ -606,22 +549,19 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
                         "AuthenticationData specified multiple times",
                     ));
                 }
-                let data = extract_bytes(data)?;
-                self.authentication_data = data;
-                Ok(2 + data.len())
+                self.authentication_data = extract_bytes(data)?;
             }
-            _ => Err(MalformedPacket::new(
-                "Received unexpected property for connect",
-            )),
-        }
-        .map(|len| i + len)
+            _ => {
+                return Err(MalformedPacket::new(
+                    "Received unexpected property for connect",
+                ))
+            }
+        };
+        Ok(())
     }
-    pub fn try_read_v5(header: FixedHeader, data: &'a [u8]) -> Result<Self, Error> {
-        if data.len() < 2 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let flags = data[0];
-        let connect_rc: ConnectRcV5 = data[1].try_into()?;
+    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let flags = data.try_get_u8()?;
+        let connect_rc: ConnectRcV5 = data.try_get_u8()?.try_into()?;
         if flags & (!1) != 0 {
             return Err(MalformedPacket::new(
                 "All reserved bits have to be 0 in CONNACK",
@@ -649,17 +589,18 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
             response_information: None,
             server_reference: None,
             authentication_method: None,
-            authentication_data: &[],
+            authentication_data: Bytes::new(),
         };
 
-        let (len, len_properties) = read_variable_len_int(&data[2..])?;
-        let mut i = 2 + len;
-        if data.len() < i + len_properties as usize {
-            return Err(Error::NotEnoughData);
+        let len_properties = read_variable_len_int(data)? as usize;
+        if data.remaining() < len_properties {
+            return Err(MalformedPacket::new("Packet too short to read property"));
         }
 
-        while i < data.len() {
-            i += connack.read_property(&data[i..])?;
+        let end_properties = data.remaining() - len_properties;
+
+        while data.remaining() > end_properties {
+            connack.read_property(data)?;
         }
 
         Ok(connack)
@@ -700,12 +641,12 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
     pub fn maximum_packet_size(&self) -> Option<u32> {
         self.maximum_packet_size
     }
-    pub fn set_client_identifier(mut self, value: &'a str) -> Self {
+    pub fn set_client_identifier(mut self, value: String) -> Self {
         self.client_identifier = Some(value);
         self
     }
-    pub fn client_identifier(&self) -> Option<&'a str> {
-        self.client_identifier
+    pub fn client_identifier(&self) -> &Option<String> {
+        &self.client_identifier
     }
     pub fn set_topic_alias_maximum(mut self, value: u16) -> Self {
         self.topic_alias_maximum = Some(value);
@@ -714,12 +655,12 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
     pub fn topic_alias_maximum(&self) -> u16 {
         self.topic_alias_maximum.unwrap_or_default()
     }
-    pub fn set_reason(mut self, value: &'a str) -> Self {
+    pub fn set_reason(mut self, value: String) -> Self {
         self.reason = Some(value);
         self
     }
-    pub fn reason(&self) -> Option<&'a str> {
-        self.reason
+    pub fn reason(&self) -> &Option<String> {
+        &self.reason
     }
     pub fn set_user_property(mut self, value: Vec<UserProperty>) -> Self {
         self.user_property = value;
@@ -756,38 +697,40 @@ impl<'a> ConnAck<'a, MqttV5_0_0> {
     pub fn server_keep_alive(&self) -> Option<u16> {
         self.server_keep_alive
     }
-    pub fn set_response_information(mut self, value: &'a str) -> Self {
+    pub fn set_response_information(mut self, value: String) -> Self {
         self.response_information = Some(value);
         self
     }
-    pub fn response_information(&self) -> Option<&'a str> {
-        self.response_information
+    pub fn response_information(&self) -> &Option<String> {
+        &self.response_information
     }
-    pub fn set_server_reference(mut self, value: &'a str) -> Self {
+    pub fn set_server_reference(mut self, value: String) -> Self {
         self.server_reference = Some(value);
         self
     }
-    pub fn server_reference(&self) -> Option<&'a str> {
-        self.server_reference
+    pub fn server_reference(&self) -> &Option<String> {
+        &self.server_reference
     }
-    pub fn set_authentication_method(mut self, value: &'a str) -> Self {
+    pub fn set_authentication_method(mut self, value: String) -> Self {
         self.authentication_method = Some(value);
         self
     }
-    pub fn authentication_method(&self) -> Option<&'a str> {
-        self.authentication_method
+    pub fn authentication_method(&self) -> &Option<String> {
+        &self.authentication_method
     }
-    pub fn set_authentication_data(mut self, value: &'a [u8]) -> Self {
+    pub fn set_authentication_data(mut self, value: Bytes) -> Self {
         self.authentication_data = value;
         self
     }
-    pub fn authentication_data(&self) -> &'a [u8] {
-        self.authentication_data
+    pub fn authentication_data(&self) -> Bytes {
+        self.authentication_data.clone()
     }
 }
 
 #[cfg(test)]
 mod test_v3 {
+    use bytes::BytesMut;
+
     use super::*;
     use std::io::BufWriter;
     use std::io::{BufReader, Read};
@@ -825,37 +768,33 @@ mod test_v3 {
     fn deserialize() {
         let msg = [32, 2, 0, 0];
         let expected = ConnAck::new_v3(false, ConnectRcV3::Accepted);
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v3(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 
     #[test]
     fn deserialize_session_present() {
         let msg = [32, 2, 1, 0];
         let expected = ConnAck::new_v3(true, ConnectRcV3::Accepted);
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v3(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_rc() {
         let msg = [32, 2, 0, 4];
         let expected = ConnAck::new_v3(false, ConnectRcV3::BadUsernamePassword);
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v3(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
 
 #[cfg(test)]
 mod test_v5 {
+    use bytes::BytesMut;
+
     use super::*;
     use std::io::BufWriter;
     use std::io::{BufReader, Read};
@@ -899,9 +838,9 @@ mod test_v5 {
             .set_maximum_qos(Qos::AtLeastOnce)
             .set_retain_available(false)
             .set_maximum_packet_size(100)
-            .set_client_identifier("server-assigned")
+            .set_client_identifier("server-assigned".to_string())
             .set_topic_alias_maximum(5)
-            .set_reason("arbitrary")
+            .set_reason("arbitrary".to_string())
             .set_user_property(vec![
                 UserProperty {
                     key: "property0".to_string(),
@@ -915,11 +854,11 @@ mod test_v5 {
             .set_wildcard_subscription_available(true)
             .set_subscription_identifiers_available(false)
             .set_shared_subscription_available(true)
-            .set_response_information("response")
+            .set_response_information("response".to_string())
             .set_server_keep_alive(25)
-            .set_server_reference("new.server")
-            .set_authentication_method("auth")
-            .set_authentication_data(b"secret");
+            .set_server_reference("new.server".to_string())
+            .set_authentication_method("auth".to_string())
+            .set_authentication_data(Bytes::from_static(b"secret"));
         msg.write_to_stream(&mut writer).unwrap();
         drop(writer);
         assert_eq!(
@@ -976,11 +915,9 @@ mod test_v5 {
         let msg = [32, 3, 0, 0, 0];
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -988,22 +925,18 @@ mod test_v5 {
         let msg = [32, 3, 1, 0, 0];
         let mut expected = ConnAck::new_v5(true, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_rc() {
         let msg = [32, 3, 0, 135, 0];
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
         expected.re_calculate_fixed_header_length();
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -1058,9 +991,9 @@ mod test_v5 {
             .set_maximum_qos(Qos::AtLeastOnce)
             .set_retain_available(false)
             .set_maximum_packet_size(100)
-            .set_client_identifier("server-assigned")
+            .set_client_identifier("server-assigned".to_string())
             .set_topic_alias_maximum(5)
-            .set_reason("arbitrary")
+            .set_reason("arbitrary".to_string())
             .set_user_property(vec![
                 UserProperty {
                     key: "property0".to_string(),
@@ -1074,16 +1007,14 @@ mod test_v5 {
             .set_wildcard_subscription_available(true)
             .set_subscription_identifiers_available(false)
             .set_shared_subscription_available(true)
-            .set_response_information("response")
+            .set_response_information("response".to_string())
             .set_server_keep_alive(25)
-            .set_server_reference("new.server")
-            .set_authentication_method("auth")
-            .set_authentication_data(b"secret");
+            .set_server_reference("new.server".to_string())
+            .set_authentication_method("auth".to_string())
+            .set_authentication_data(Bytes::from_static(b"secret"));
         expected.re_calculate_fixed_header_length();
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(ConnAck::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

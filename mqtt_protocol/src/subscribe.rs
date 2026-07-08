@@ -1,6 +1,8 @@
 use core::panic;
 use std::{io::Write, marker::PhantomData};
 
+use bytes::{Buf, Bytes};
+
 use crate::{
     util::{read_variable_len_int, variable_len_int_size, write_variable_len_int},
     Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier,
@@ -222,27 +224,20 @@ impl Subscribe<MqttV3_1_1> {
         }
     }
 
-    pub fn try_read_v3(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 2 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
-        let mut remaining = header.remaining_length - 2;
-        let mut index = 2;
+    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
 
-        if remaining == 0 {
+        if !data.has_remaining() {
             return Err(MalformedPacket::new(
                 "Subscribe packet cannot have 0 subscriptions",
             ));
         }
 
         let mut subscriptions = Vec::new();
-        while remaining > 0 {
-            let topic = extract_str(&data[index..])?;
-            let qos = Qos::try_from(data[index + topic.len() + 2])?;
+        while data.has_remaining() {
+            let topic = extract_str(data)?;
+            let qos = Qos::try_from(data.try_get_u8()?)?;
             subscriptions.push(TopicSubscription::new_v3(MqttTopic::try_from(topic)?, qos));
-            remaining -= 2 + topic.len() + 1;
-            index += 2 + topic.len() + 1;
         }
 
         Ok(Self {
@@ -294,21 +289,24 @@ impl Subscribe<MqttV5_0_0> {
         }
     }
 
-    pub fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
+    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         if data.len() < 3 {
             return Err(MalformedPacket::new("Packet too short to parse"));
         }
-        let packet_identifier = u16::from_be_bytes([data[0], data[1]]);
+        let packet_identifier = data.try_get_u16()?;
 
-        let (int_len, properties_len) = read_variable_len_int(&data[2..])?;
-        let mut index = 2 + int_len;
-        let payload_start = index + properties_len as usize;
+        let properties_len = read_variable_len_int(data)? as usize;
 
         let mut subscription_identifier: Option<u64> = None;
         let mut user_property: Vec<UserProperty> = Vec::new();
 
-        while index < payload_start {
-            let (i, property_identifier) = read_variable_len_int(&data[index..])?;
+        if data.remaining() < properties_len {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+        let properties_end = data.remaining() - properties_len;
+
+        while data.remaining() > properties_end {
+            let property_identifier = read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             match property_identifier {
                 PropertyIdentifier::SubscriptionIdentifier => {
@@ -317,14 +315,11 @@ impl Subscribe<MqttV5_0_0> {
                             "SubscriptionIdentifier specified multiple times",
                         ));
                     }
-                    let (l, v) = read_variable_len_int(&data[index + i..])?;
-                    subscription_identifier = Some(v);
-                    index += i + l;
+                    subscription_identifier = Some(read_variable_len_int(data)?);
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(&data[index + i..])?.to_string();
-                    let value = extract_str(&data[index + i + 2 + key.len()..])?.to_string();
-                    index += i + 2 + key.len() + 2 + value.len();
+                    let key = extract_str(data)?.to_string();
+                    let value = extract_str(data)?.to_string();
                     user_property.push(UserProperty { key, value });
                 }
                 _ => {
@@ -335,24 +330,20 @@ impl Subscribe<MqttV5_0_0> {
             }
         }
 
-        let mut remaining = header.remaining_length - index;
-
-        if remaining == 0 {
+        if !data.has_remaining() {
             return Err(MalformedPacket::new(
                 "Subscribe packet cannot have 0 subscriptions",
             ));
         }
 
         let mut subscriptions = Vec::new();
-        while remaining > 0 {
-            let topic = extract_str(&data[index..])?;
-            let options = data[index + 2 + topic.len()];
+        while data.has_remaining() {
+            let topic = extract_str(data)?;
+            let options = data.try_get_u8()?;
             subscriptions.push(TopicSubscription::try_v5_from_byte(
                 MqttTopic::try_from(topic)?,
                 options,
             )?);
-            remaining -= 2 + topic.len() + 1;
-            index += 2 + topic.len() + 1;
         }
 
         Ok(Self {
@@ -371,6 +362,8 @@ impl Subscribe<MqttV5_0_0> {
 #[cfg(test)]
 mod test_v3 {
     use std::io::{BufReader, BufWriter, Read};
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -448,17 +441,17 @@ mod test_v3 {
                 TopicSubscription::new_v3(MqttTopic::try_from("topic2").unwrap(), Qos::AtMostOnce),
             ],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Subscribe::try_read_v3(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(Subscribe::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
 
 #[cfg(test)]
 mod test_v5 {
     use std::io::{BufReader, BufWriter, Read};
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -712,11 +705,9 @@ mod test_v5 {
             None,
             Vec::new(),
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Subscribe::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(Subscribe::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -795,11 +786,9 @@ mod test_v5 {
                 value: "value1".into(),
             }],
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Subscribe::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(Subscribe::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -851,10 +840,8 @@ mod test_v5 {
             None,
             Vec::new(),
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Subscribe::try_read_v5(header, &data[..]).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(Subscribe::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

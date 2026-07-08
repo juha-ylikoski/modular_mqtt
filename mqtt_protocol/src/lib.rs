@@ -6,26 +6,27 @@
 
 use std::io::Write;
 
+pub use ack_messages::{PubAck, PubComp, PubRec, PubRel, UnsubAck};
 pub use auth::Auth;
+use bytes::Bytes;
 pub use connack::{ConnAck, ConnectRc};
 pub use connect::{Connect, MqttLastWill};
 pub use disconnect::Disconnect;
-pub use fixed_header::{ControlPacketType, FixedHeader, FixedHeaderError};
-pub use only_fixed::{PingReq, PingResp};
-pub use packet_identifier_msgs::{PubAck, PubComp, PubRec, PubRel, UnsubAck};
-pub use publish::{Publish, ReceivedMessage};
+pub use fixed_header::{ControlPacketType, FixedHeader};
+pub use ping::{PingReq, PingResp};
+pub use publish::Publish;
 pub use suback::{SubAck, SubRcV3};
 pub use subscribe::{Subscribe, TopicSubscription};
 pub use unsubscribe::Unsubscribe;
-pub use util::{MqttTopic, PacketError, Qos, QosPacketIdentifier};
+pub use util::{MqttTopic, Qos, QosPacketIdentifier};
 
+mod ack_messages;
 mod auth;
 mod connack;
 mod connect;
 mod disconnect;
 mod fixed_header;
-mod only_fixed;
-mod packet_identifier_msgs;
+mod ping;
 mod publish;
 mod suback;
 mod subscribe;
@@ -42,10 +43,10 @@ pub(crate) const MQTT_VERSION_5_0_0: u8 = 5;
 
 const SUPPORTED_PROTOCOL_VERSION: &[u8] = &[MQTT_VERSION_3_1_1, MQTT_VERSION_5_0_0];
 
-pub enum MqttPackage<'a, V> {
-    Connect(Connect<'a>),
-    ConnAck(ConnAck<'a, V>),
-    Publish(Publish<'a, V>),
+pub enum MqttPackage<V> {
+    Connect(Connect),
+    ConnAck(ConnAck<V>),
+    Publish(Publish<V>),
     PubAck(PubAck<V>),
     PubRec(PubRec<V>),
     PubRel(PubRel<V>),
@@ -91,6 +92,12 @@ pub enum Error {
     ProtocolError(&'static str),
     NotEnoughData,
     IoError(std::io::Error),
+}
+
+impl From<bytes::TryGetError> for Error {
+    fn from(_value: bytes::TryGetError) -> Self {
+        MalformedPacket::new("Packet too short to read property")
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -325,7 +332,7 @@ impl Property for Vec<UserProperty> {
         len
     }
 }
-impl Property for Option<&str> {
+impl Property for Option<String> {
     fn serialize(
         &self,
         identifier: crate::PropertyIdentifier,
@@ -349,7 +356,7 @@ impl Property for Option<&str> {
     }
 }
 
-impl Property for &[u8] {
+impl Property for Bytes {
     fn serialize(
         &self,
         identifier: crate::PropertyIdentifier,
@@ -376,14 +383,13 @@ impl Property for &[u8] {
     }
 }
 
-impl Property for Option<Vec<u8>> {
+impl Property for Option<Bytes> {
     fn serialize(
         &self,
         identifier: crate::PropertyIdentifier,
         writer: &mut impl Write,
     ) -> Result<usize, std::io::Error> {
         if let Some(value) = self {
-            let value: &[u8] = value;
             value.serialize(identifier, writer)
         } else {
             Ok(0)
@@ -391,7 +397,6 @@ impl Property for Option<Vec<u8>> {
     }
     fn property_len(&self) -> usize {
         if let Some(value) = self {
-            let value: &[u8] = value;
             value.property_len()
         } else {
             0

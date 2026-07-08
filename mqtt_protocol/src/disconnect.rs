@@ -1,7 +1,9 @@
 use std::{io::Write, marker::PhantomData};
 
+use bytes::{Buf, Bytes};
+
 use crate::{
-    util::{extract_str, read_variable_len_int, write_variable_len_int},
+    util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
     PropertyIdentifier, UserProperty,
 };
@@ -155,9 +157,6 @@ impl<V> Disconnect<V> {
             writer.write_all(&[reason_code as u8])?;
             len += 1;
 
-            let reason = reason.as_deref();
-            let server_reference = server_reference.as_deref();
-
             let properties_len = session_expiry_interval.property_len()
                 + reason.property_len()
                 + user_property.property_len()
@@ -183,18 +182,18 @@ impl Disconnect<MqttV3_1_1> {
             },
         }
     }
-    pub fn try_read_v3(header: FixedHeader) -> Result<Self, Error> {
-        if header.control_packet_type == ControlPacketType::Disconnect {
+    pub fn try_read_v3(header: FixedHeader, buf: &mut Bytes) -> Result<Self, Error> {
+        if buf.has_remaining() {
+            Err(MalformedPacket::new(
+                "Mqtt v3 disconnect packet contained trailing bytes",
+            ))
+        } else {
             Ok(Self {
                 fixed_header: header,
                 data: DisconnectData::V3 {
                     protocol_level: PhantomData,
                 },
             })
-        } else {
-            Err(MalformedPacket::new(
-                "Invalid packet type when trying to create packet.",
-            ))
         }
     }
 }
@@ -207,15 +206,15 @@ impl Disconnect<MqttV5_0_0> {
         user_property: Vec<UserProperty>,
         server_reference: Option<String>,
     ) -> Self {
-        let _reason = reason.as_deref();
-        let _server_reference = server_reference.as_deref();
-
         let properties_len = session_expiry_interval.property_len()
-            + _reason.property_len()
+            + reason.property_len()
             + user_property.property_len()
-            + _server_reference.property_len();
+            + server_reference.property_len();
         Self {
-            fixed_header: FixedHeader::new(ControlPacketType::Disconnect, 1 + properties_len),
+            fixed_header: FixedHeader::new(
+                ControlPacketType::Disconnect,
+                1 + variable_len_int_size(properties_len) + properties_len,
+            ),
             data: DisconnectData::V5 {
                 protocol_level: PhantomData,
                 reason_code,
@@ -226,27 +225,23 @@ impl Disconnect<MqttV5_0_0> {
             },
         }
     }
-    pub fn try_read_v5(header: FixedHeader, data: &[u8]) -> Result<Self, Error> {
-        if data.len() < 2 {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let reason_code = DisconnectReasonCode::try_from(data[0])?;
-        let (i, len_properties) = read_variable_len_int(&data[1..])?;
-        let len_properties = len_properties as usize;
-        let mut index = 1 + i;
+    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let reason_code = DisconnectReasonCode::try_from(data.try_get_u8()?)?;
+        let len_properties = read_variable_len_int(data)? as usize;
 
         let mut session_expiry_interval = None;
         let mut reason = None;
         let mut user_property = Vec::new();
         let mut server_reference = None;
 
-        let mut i = 0;
-        while i < len_properties {
-            let (len, property_identifier) = crate::util::read_variable_len_int(&data[index..])?;
+        if data.remaining() + 1 < len_properties {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+
+        let end_of_properties = data.remaining() - len_properties;
+        while data.remaining() > end_of_properties {
+            let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-            i += len;
-            index += len;
-            let property_value = &data[index..];
             match property_identifier {
                 PropertyIdentifier::SessionExpiryInterval => {
                     if session_expiry_interval.is_some() {
@@ -254,33 +249,25 @@ impl Disconnect<MqttV5_0_0> {
                             "SessionExpiryInterval specified multiple times",
                         ));
                     }
-                    session_expiry_interval = Some(u32::from_be_bytes(
-                        property_value[0..4].try_into().map_err(|_| {
+                    session_expiry_interval =
+                        Some(data.try_get_u32().map_err(|_| {
                             MalformedPacket::new("Packet too short to read property")
-                        })?,
-                    ));
-                    i += 4;
-                    index += 4;
+                        })?);
                 }
                 PropertyIdentifier::Reason => {
                     if reason.is_some() {
                         return Err(Error::ProtocolError("Reason specified multiple times"));
                     }
-                    let _reason = extract_str(property_value)?.to_string();
-                    i += 2 + _reason.len();
-                    index += 2 + _reason.len();
-                    reason = Some(_reason);
+                    reason = Some(extract_str(data)?.to_string());
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(property_value)?;
-                    let value = extract_str(&property_value[2 + key.len()..])?;
+                    let key = extract_str(data)?;
+                    let value = extract_str(data)?;
                     let property = UserProperty {
                         key: key.to_string(),
                         value: value.to_string(),
                     };
                     user_property.push(property);
-                    i += 2 + key.len() + 2 + value.len();
-                    index += 2 + key.len() + 2 + value.len();
                 }
                 PropertyIdentifier::ServerReference => {
                     if server_reference.is_some() {
@@ -288,10 +275,8 @@ impl Disconnect<MqttV5_0_0> {
                             "ServerReference specified multiple times",
                         ));
                     }
-                    let reference = extract_str(property_value)?;
+                    let reference = extract_str(data)?;
                     server_reference = Some(reference.to_string());
-                    i += 2 + reference.len();
-                    index += 2 + reference.len();
                 }
                 _ => {
                     return Err(MalformedPacket::new(
@@ -317,7 +302,9 @@ impl Disconnect<MqttV5_0_0> {
 
 #[cfg(test)]
 mod disconnect_v3 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -333,17 +320,20 @@ mod disconnect_v3 {
     fn deserialize() {
         let msg = [224, 0];
         let expected = Disconnect::new_v3();
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
-        assert_eq!(Disconnect::try_read_v3(header).unwrap(), expected);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        assert_eq!(
+            Disconnect::try_read_v3(header, &mut body).unwrap(),
+            expected
+        );
     }
 }
 
 #[cfg(test)]
 mod disconnect_v5 {
     use std::io::{BufReader, BufWriter, Read};
+
+    use bytes::BytesMut;
 
     use super::*;
 
@@ -361,7 +351,7 @@ mod disconnect_v5 {
         .write_to_stream(&mut writer)
         .unwrap();
         drop(writer);
-        assert_eq!(&buf, &[224, 1, 151, 0]);
+        assert_eq!(&buf, &[224, 2, 151, 0]);
     }
 
     #[test]
@@ -381,32 +371,23 @@ mod disconnect_v5 {
         .write_to_stream(&mut writer)
         .unwrap();
         drop(writer);
-        #[rustfmt::skip]
+
         assert_eq!(
             &buf,
             &[
-                224, 44, 129, 
-                // Properties
-                43,  
-                // session expiry interval
-                17, 0, 0, 0, 123, 
-                // Reason
-                31, 0, 6, 
-                b'r', b'e', b'a', b's', b'o', b'n', 
-                // user property
-                38, 0, 9, 
-                b'p', b'r', b'o', b'p', b'e', b'r', b't', b'y', b'1',
-                0, 6, 
-                b'v', b'a', b'l', b'u', b'e', b'1', 
-                // Server reference
-                28, 0, 6,
-                b's', b'e', b'r', b'v', b'e', b'r'
+                224, 45, 129, // Properties
+                43,  // session expiry interval
+                17, 0, 0, 0, 123, // Reason
+                31, 0, 6, b'r', b'e', b'a', b's', b'o', b'n', // user property
+                38, 0, 9, b'p', b'r', b'o', b'p', b'e', b'r', b't', b'y', b'1', 0, 6, b'v', b'a',
+                b'l', b'u', b'e', b'1', // Server reference
+                28, 0, 6, b's', b'e', b'r', b'v', b'e', b'r'
             ]
         );
     }
     #[test]
     fn deserialize() {
-        let msg = [224, 1, 151, 0];
+        let msg = [224, 2, 151, 0];
         let expected = Disconnect::new_v5(
             DisconnectReasonCode::QuotaExceeded,
             None,
@@ -414,37 +395,25 @@ mod disconnect_v5 {
             Vec::new(),
             None,
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
-            Disconnect::try_read_v5(header, &data[..]).unwrap(),
+            Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected
         );
     }
 
     #[test]
     fn deserialize_properties() {
-        #[rustfmt::skip]
         let msg = [
-                224, 44, 129, 
-                // Properties
-                43,  
-                // session expiry interval
-                17, 0, 0, 0, 123, 
-                // Reason
-                31, 0, 6, 
-                b'r', b'e', b'a', b's', b'o', b'n', 
-                // user property
-                38, 0, 9, 
-                b'p', b'r', b'o', b'p', b'e', b'r', b't', b'y', b'1',
-                0, 6, 
-                b'v', b'a', b'l', b'u', b'e', b'1', 
-                // Server reference
-                28, 0, 6,
-                b's', b'e', b'r', b'v', b'e', b'r'
-            ];
+            224, 45, 129, // Properties
+            42,  // session expiry interval
+            17, 0, 0, 0, 123, // Reason
+            31, 0, 6, b'r', b'e', b'a', b's', b'o', b'n', // user property
+            38, 0, 9, b'p', b'r', b'o', b'p', b'e', b'r', b't', b'y', b'1', 0, 6, b'v', b'a', b'l',
+            b'u', b'e', b'1', // Server reference
+            28, 0, 6, b's', b'e', b'r', b'v', b'e', b'r',
+        ];
         let expected = Disconnect::new_v5(
             DisconnectReasonCode::MalformedPacket,
             Some(123),
@@ -455,12 +424,10 @@ mod disconnect_v5 {
             }],
             Some("server".to_string()),
         );
-        let mut reader = BufReader::new(&msg[..]);
-        let header = FixedHeader::try_read_sync(&mut reader).unwrap();
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).unwrap();
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
         assert_eq!(
-            Disconnect::try_read_v5(header, &data[..]).unwrap(),
+            Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected
         );
     }
