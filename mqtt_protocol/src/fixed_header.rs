@@ -148,7 +148,7 @@ impl FixedHeader {
     ///
     /// # Panics
     ///
-    /// Will panic if remaining length is 0 or larger than 268 435 455.
+    /// Will panic if remaining length is larger than 268 435 455.
     pub fn new(control_packet_type: ControlPacketType, remaining_length: usize) -> Self {
         if remaining_length > 268_435_455 {
             panic!("MQTT packet payload (dynamic header + payload) > 268 435 455")
@@ -159,14 +159,31 @@ impl FixedHeader {
         }
     }
 
-    pub fn parse(buf: &mut BytesMut) -> Result<Option<(Self, Bytes)>, Error> {
+    /// Parse mqtt fixed header and return it along as well as variable header and payload for
+    /// the packet
+    ///
+    /// `max_packet_size` parameter has to be lesser or equal to [`crate::MAX_MQTT_PACKET_SIZE`]
+    ///
+    /// If this function returns Err(Error::PacketTooLarge), have you tried to parse a packet
+    /// with larger than configured maximum size. In this case, buffer is poisoned and not
+    /// recoverable and user should disconnect the connection and attempt to re-create it
+    pub fn parse(
+        buf: &mut BytesMut,
+        max_packet_size: usize,
+    ) -> Result<Option<(Self, Bytes)>, Error> {
+        if max_packet_size > crate::MAX_MQTT_PACKET_SIZE {
+            return Err(Error::Generic(
+                "max_packet_size is configured to be larger than it's maximum value",
+            ));
+        }
+
         let packet_len = buf.len();
         if packet_len < 2 {
-            return Err(Error::NotEnoughData);
+            return Ok(None);
         }
-        let control_packet_type = ControlPacketType::try_from_byte(buf.get_u8())?;
+        let control_packet_type = ControlPacketType::try_from_byte(buf[0])?;
 
-        let mut peek: &[u8] = &buf[..];
+        let mut peek: &[u8] = &buf[1..];
         let peek_length = peek.remaining();
         let remaining_length = match crate::util::read_variable_len_int(&mut peek) {
             Ok(length) => length as usize,
@@ -174,8 +191,19 @@ impl FixedHeader {
             Err(e) => return Err(e),
         };
         let variable_int_len = peek_length - peek.remaining();
-        buf.advance(variable_int_len);
 
+        if 1 + variable_int_len + remaining_length > max_packet_size {
+            return Err(Error::PacketTooLarge {
+                packet_size: 1 + variable_int_len + remaining_length,
+                max_configured_size: max_packet_size,
+            });
+        }
+
+        if buf.remaining() < 1 + variable_int_len + remaining_length {
+            return Ok(None);
+        }
+
+        buf.advance(1 + variable_int_len);
         let body = buf.split_to(remaining_length).freeze();
 
         Ok(Some((
@@ -327,7 +355,7 @@ mod test {
     fn deserialize_header() {
         fn cmp(input: &[u8], expected_header: FixedHeader, expected_body: &[u8]) {
             let mut buf = BytesMut::from(input);
-            let (header, body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+            let (header, body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
             assert_eq!(
                 header, expected_header,
                 "input={input:?} expected={expected_header:?} expected_body={body:?}"
@@ -465,5 +493,11 @@ mod test {
             FixedHeader::new(ControlPacketType::Disconnect, 5),
             &[0; 5],
         );
+    }
+
+    #[test]
+    fn partial_delivery() {
+        let mut buf = BytesMut::from(&[1 << 4, 10][..]);
+        assert!(FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().is_none())
     }
 }

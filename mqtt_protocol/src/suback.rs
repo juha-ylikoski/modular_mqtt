@@ -290,7 +290,7 @@ mod test_v3 {
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(SubAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
@@ -301,7 +301,6 @@ mod test_v5 {
 
     use super::*;
     use std::io::BufWriter;
-    use std::io::{BufReader, Read};
 
     #[test]
     fn serialize() {
@@ -360,7 +359,7 @@ mod test_v5 {
             vec![],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -388,7 +387,7 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

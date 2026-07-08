@@ -629,7 +629,7 @@ impl Publish<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -799,7 +799,7 @@ mod test_v3 {
             48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -832,7 +832,7 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -863,7 +863,7 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -894,14 +894,14 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
 
 #[cfg(test)]
 mod test_v5 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -1074,12 +1074,12 @@ mod test_v5 {
             48, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_qos() {
-        let mut expected = Publish::new_v5(
+        let expected = Publish::new_v5(
             false,
             QosPacketIdentifier::ExactlyOnce(42),
             false,
@@ -1108,7 +1108,7 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1140,12 +1140,12 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_retain() {
-        let mut expected = Publish::new_v5(
+        let expected = Publish::new_v5(
             false,
             QosPacketIdentifier::AtMostOnce,
             true,
@@ -1172,7 +1172,7 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -1308,7 +1308,7 @@ mod test_v5 {
             b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         expected.re_calculate_fixed_header_length();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }

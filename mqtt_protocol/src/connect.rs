@@ -1925,7 +1925,7 @@ mod test_de_v3 {
         ];
         let expected = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1989,7 +1989,7 @@ mod test_de_v3 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2041,7 +2041,7 @@ mod test_de_v3 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2093,7 +2093,7 @@ mod test_de_v3 {
             Some(Bytes::from_static(b"password")),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2156,7 +2156,7 @@ mod test_de_v3 {
             Some(Bytes::from_static(b"password")),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2190,7 +2190,9 @@ mod test_de_v3 {
         ];
         let expected = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
         let mut reader = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2204,7 +2206,7 @@ mod test_de_v3 {
         ];
         let expected = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 }
@@ -2230,7 +2232,9 @@ mod test_de_v5 {
         let mut expected = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
         expected.re_calculate_fixed_header_length();
         let mut reader = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2299,7 +2303,9 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut reader = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 
@@ -2477,7 +2483,7 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2532,7 +2538,7 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2587,7 +2593,7 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2653,7 +2659,7 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2689,7 +2695,7 @@ mod test_de_v5 {
         ];
         let expected = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2707,7 +2713,7 @@ mod test_de_v5 {
         let mut expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 
@@ -2760,7 +2766,7 @@ mod test_de_v5 {
             .set_authentication_data(Bytes::from_static(b"secret"));
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 }

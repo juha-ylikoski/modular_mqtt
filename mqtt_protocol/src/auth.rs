@@ -109,7 +109,11 @@ impl Auth<MqttV5_0_0> {
         let mut reason = None;
         let mut user_property = Vec::new();
 
+        if data.remaining() < len_properties {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
         let properties_end = data.remaining() - len_properties;
+
         while data.remaining() > properties_end {
             let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
@@ -221,7 +225,7 @@ mod test_v5 {
         let msg = [240, 2, 0, 0];
         let expected = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -247,7 +251,7 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

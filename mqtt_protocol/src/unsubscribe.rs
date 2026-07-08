@@ -161,7 +161,7 @@ impl Unsubscribe<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -232,7 +232,7 @@ mod test_v3 {
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Unsubscribe::try_read_v3(header, &mut body).unwrap(),
             expected
@@ -242,7 +242,7 @@ mod test_v3 {
 
 #[cfg(test)]
 mod test_v5 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -380,7 +380,7 @@ mod test_v5 {
             vec![],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected
@@ -442,7 +442,7 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected

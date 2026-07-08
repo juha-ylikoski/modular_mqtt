@@ -733,7 +733,6 @@ mod test_v3 {
 
     use super::*;
     use std::io::BufWriter;
-    use std::io::{BufReader, Read};
 
     #[test]
     fn serialize() {
@@ -769,7 +768,7 @@ mod test_v3 {
         let msg = [32, 2, 0, 0];
         let expected = ConnAck::new_v3(false, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 
@@ -778,7 +777,7 @@ mod test_v3 {
         let msg = [32, 2, 1, 0];
         let expected = ConnAck::new_v3(true, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -786,7 +785,7 @@ mod test_v3 {
         let msg = [32, 2, 0, 4];
         let expected = ConnAck::new_v3(false, ConnectRcV3::BadUsernamePassword);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
@@ -797,7 +796,6 @@ mod test_v5 {
 
     use super::*;
     use std::io::BufWriter;
-    use std::io::{BufReader, Read};
 
     #[test]
     fn serialize() {
@@ -916,7 +914,7 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -926,7 +924,7 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(true, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -935,7 +933,7 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -1014,7 +1012,7 @@ mod test_v5 {
             .set_authentication_data(Bytes::from_static(b"secret"));
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

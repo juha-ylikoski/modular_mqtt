@@ -234,7 +234,7 @@ impl Disconnect<MqttV5_0_0> {
         let mut user_property = Vec::new();
         let mut server_reference = None;
 
-        if data.remaining() + 1 < len_properties {
+        if data.remaining() < len_properties {
             return Err(MalformedPacket::new("Packet too short to parse"));
         }
 
@@ -321,7 +321,7 @@ mod disconnect_v3 {
         let msg = [224, 0];
         let expected = Disconnect::new_v3();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Disconnect::try_read_v3(header, &mut body).unwrap(),
             expected
@@ -331,7 +331,7 @@ mod disconnect_v3 {
 
 #[cfg(test)]
 mod disconnect_v5 {
-    use std::io::{BufReader, BufWriter, Read};
+    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -396,7 +396,7 @@ mod disconnect_v5 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected
@@ -425,7 +425,7 @@ mod disconnect_v5 {
             Some("server".to_string()),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
         assert_eq!(
             Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected

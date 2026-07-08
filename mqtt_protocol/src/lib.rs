@@ -41,6 +41,8 @@ pub struct MqttV5_0_0;
 pub(crate) const MQTT_VERSION_3_1_1: u8 = 4;
 pub(crate) const MQTT_VERSION_5_0_0: u8 = 5;
 
+pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
+
 const SUPPORTED_PROTOCOL_VERSION: &[u8] = &[MQTT_VERSION_3_1_1, MQTT_VERSION_5_0_0];
 
 pub enum MqttPackage<V> {
@@ -92,6 +94,11 @@ pub enum Error {
     ProtocolError(&'static str),
     NotEnoughData,
     IoError(std::io::Error),
+    PacketTooLarge {
+        packet_size: usize,
+        max_configured_size: usize,
+    },
+    Generic(&'static str),
 }
 
 impl From<bytes::TryGetError> for Error {

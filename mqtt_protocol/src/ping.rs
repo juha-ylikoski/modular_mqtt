@@ -61,7 +61,9 @@ macro_rules! create_ping_package {
                 let msg = [$test_packet_type, 0];
                 let expected = $name::default();
                 let mut reader = BytesMut::from(&msg[..]);
-                let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!($name::try_read(header, &mut body).unwrap(), expected);
             }
         }

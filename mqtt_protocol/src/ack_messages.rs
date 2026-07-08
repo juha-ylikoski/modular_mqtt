@@ -398,7 +398,9 @@ macro_rules! make_tests {
                     let msg = [$test_packet_type, 2, 0, 42];
                     let expected = $name::new_v3(42);
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                        .unwrap()
+                        .unwrap();
                     assert_eq!($name::try_read_v3(header, &mut body).unwrap(), expected);
                 }
             }
@@ -512,7 +514,9 @@ macro_rules! make_tests {
                     let expected =
                         $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                        .unwrap()
+                        .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
 
@@ -540,7 +544,9 @@ macro_rules! make_tests {
                         Vec::new(),
                     );
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                        .unwrap()
+                        .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
                 #[test]
@@ -576,7 +582,9 @@ macro_rules! make_tests {
                         }],
                     );
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader).unwrap().unwrap();
+                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                        .unwrap()
+                        .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
             }
