@@ -47,6 +47,14 @@ impl<V> Unsubscribe<V> {
             write_str(topic, buf);
         }
     }
+
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
+
+    pub fn topics(&self) -> &[String] {
+        &self.topics
+    }
 }
 impl Unsubscribe<MqttV3_1_1> {
     pub fn new_v3(packet_identifier: u16, topics: Vec<MqttTopic>) -> Self {
@@ -148,6 +156,13 @@ impl Unsubscribe<MqttV5_0_0> {
                 user_property,
             },
         })
+    }
+
+    pub fn user_property(&self) -> &[UserProperty] {
+        match &self.options {
+            UnsubscribeOptions::V3 { .. } => unreachable!(),
+            UnsubscribeOptions::V5 { user_property, .. } => &user_property,
+        }
     }
 }
 

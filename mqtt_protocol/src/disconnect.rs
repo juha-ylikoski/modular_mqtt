@@ -293,6 +293,43 @@ impl Disconnect<MqttV5_0_0> {
             },
         })
     }
+
+    pub fn reason_code(&self) -> DisconnectReasonCode {
+        match self.data {
+            DisconnectData::V3 { .. } => unreachable!(),
+            DisconnectData::V5 { reason_code, .. } => reason_code,
+        }
+    }
+
+    pub fn session_expiry_interval(&self) -> Option<u32> {
+        match self.data {
+            DisconnectData::V3 { .. } => unreachable!(),
+            DisconnectData::V5 {
+                session_expiry_interval,
+                ..
+            } => session_expiry_interval,
+        }
+    }
+    pub fn reason(&self) -> Option<&String> {
+        match &self.data {
+            DisconnectData::V3 { .. } => unreachable!(),
+            DisconnectData::V5 { reason, .. } => reason.as_ref(),
+        }
+    }
+    pub fn user_property(&self) -> &[UserProperty] {
+        match &self.data {
+            DisconnectData::V3 { .. } => unreachable!(),
+            DisconnectData::V5 { user_property, .. } => user_property.as_ref(),
+        }
+    }
+    pub fn server_reference(&self) -> Option<&String> {
+        match &self.data {
+            DisconnectData::V3 { .. } => unreachable!(),
+            DisconnectData::V5 {
+                server_reference, ..
+            } => server_reference.as_ref(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -86,11 +86,11 @@ pub enum PublishProperties<V> {
 #[derive(Debug, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct Publish<V> {
-    pub fixed_header: FixedHeader,
-    pub topic: String,
-    pub packet_identifier: Option<u16>,
-    pub payload: Bytes,
-    pub properties: PublishProperties<V>,
+    fixed_header: FixedHeader,
+    topic: String,
+    packet_identifier: Option<u16>,
+    payload: Bytes,
+    properties: PublishProperties<V>,
 }
 
 impl<V> Publish<V> {
@@ -218,6 +218,18 @@ impl<V> Publish<V> {
         }
         self.write_properties(buf);
         buf.put(&self.payload[..]);
+    }
+
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub fn packet_identifier(&self) -> Option<u16> {
+        self.packet_identifier
+    }
+
+    pub fn payload(&self) -> &Bytes {
+        &self.payload
     }
 }
 
@@ -610,7 +622,6 @@ impl Publish<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
-    
 
     use bytes::BytesMut;
 
@@ -880,7 +891,6 @@ mod test_v3 {
 
 #[cfg(test)]
 mod test_v5 {
-    
 
     use bytes::BytesMut;
 

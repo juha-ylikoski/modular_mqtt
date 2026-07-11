@@ -116,9 +116,9 @@ pub enum SubAckData<V> {
 #[derive(Debug, PartialEq)]
 /// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
 pub struct SubAck<V> {
-    pub fixed_header: FixedHeader,
-    pub packet_identifier: u16,
-    pub data: SubAckData<V>,
+    fixed_header: FixedHeader,
+    packet_identifier: u16,
+    data: SubAckData<V>,
 }
 
 impl<V> SubAck<V> {
@@ -147,6 +147,10 @@ impl<V> SubAck<V> {
             }
         }
     }
+
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
 }
 impl SubAck<MqttV3_1_1> {
     pub fn new_v3(packet_identifier: u16, return_codes: Vec<SubRcV3>) -> Self {
@@ -173,6 +177,12 @@ impl SubAck<MqttV3_1_1> {
                 return_codes,
             },
         })
+    }
+    pub fn return_codes(&self) -> &[SubRcV3] {
+        match &self.data {
+            SubAckData::V3 { return_codes, .. } => &return_codes,
+            SubAckData::V5 { .. } => unreachable!(),
+        }
     }
 }
 
@@ -249,6 +259,27 @@ impl SubAck<MqttV5_0_0> {
                 user_property,
             },
         })
+    }
+
+    pub fn return_codes(&self) -> &[SubRcV5] {
+        match &self.data {
+            SubAckData::V3 { .. } => unreachable!(),
+            SubAckData::V5 { return_codes, .. } => &return_codes,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&String> {
+        match &self.data {
+            SubAckData::V3 { .. } => unreachable!(),
+            SubAckData::V5 { reason, .. } => reason.as_ref(),
+        }
+    }
+
+    pub fn user_property(&self) -> &[UserProperty] {
+        match &self.data {
+            SubAckData::V3 { .. } => unreachable!(),
+            SubAckData::V5 { user_property, .. } => &user_property,
+        }
     }
 }
 

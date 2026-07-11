@@ -328,6 +328,24 @@ macro_rules! create_pub_ack_type {
             pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
                 PubAckType::try_read_v5(header, data).map(Self)
             }
+            pub fn reason(&self) -> Option<&String> {
+                match &self.0.data {
+                    PubAckData::V3 { .. } => unreachable!(),
+                    PubAckData::V5 { reason, .. } => reason.as_ref(),
+                }
+            }
+            pub fn reason_code(&self) -> $reason_code {
+                match &self.0.data {
+                    PubAckData::V3 { .. } => unreachable!(),
+                    PubAckData::V5 { reason_code, .. } => *reason_code,
+                }
+            }
+            pub fn user_property(&self) -> &[UserProperty] {
+                match &self.0.data {
+                    PubAckData::V3 { .. } => unreachable!(),
+                    PubAckData::V5 { user_property, .. } => &user_property,
+                }
+            }
         }
     };
 }

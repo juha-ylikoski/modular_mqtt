@@ -320,7 +320,7 @@ pub struct Connect {
     /// data associated with this Session MUST NOT be reused in any subsequent Session
     ///
     /// <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718030>
-    pub clean_session: bool,
+    clean_session: bool,
 
     /// The Keep Alive is a time interval measured in seconds. Expressed as a 16-bit word,
     /// it is the maximum time interval that is permitted to elapse between the point at
@@ -333,7 +333,7 @@ pub struct Connect {
     /// This means that, in this case, the Server is not required to disconnect the Client on the grounds of inactivity.
     ///
     /// <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718030>
-    pub keep_alive: u16,
+    keep_alive: u16,
 
     ///  If the Will Flag is set to 1 this indicates that, if the Connect request is accepted, a Will
     ///  Message MUST be stored on the Server and associated with the Network Connection. The
@@ -341,15 +341,15 @@ pub struct Connect {
     ///  the Will Message has been deleted by the Server on receipt of a DISCONNECT Packet [MQTT-3.1.2-8].
     ///
     /// <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718030>
-    pub will: Option<MqttLastWill>,
+    will: Option<MqttLastWill>,
     /// The Client Identifier (ClientId) identifies the Client to the Server. Each Client connecting to
     /// the Server has a unique ClientId. The ClientId MUST be used by Clients and by Servers to identify
     /// state that they hold relating to this MQTT Session between the Client and the Server [MQTT-3.1.3-2].
     ///
     /// <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718030>
-    pub client_identifier: String,
-    pub username: Option<String>,
-    pub password: Option<Bytes>,
+    client_identifier: String,
+    username: Option<String>,
+    password: Option<Bytes>,
 
     // v5 properties
     /// If the Session Expiry Interval is absent the value 0 is used. If it is set to 0, or is absent,
@@ -372,23 +372,23 @@ pub struct Connect {
     /// The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection
     /// A value of 0 indicates that the Client does not accept any Topic Aliases on this connection. If Topic
     /// Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client
-    pub topic_alias_maximum: Option<u16>,
+    topic_alias_maximum: Option<u16>,
     /// If the Request Response Information is absent, the value of 0 is used.
     /// The Client uses this value to request the Server to return Response Information in the CONNACK. A value of 0
     /// indicates that the Server MUST NOT return Response Information
     /// If the value is 1 the Server MAY return Response Information in the CONNACK packet.
-    pub request_response_information: Option<bool>,
+    request_response_information: Option<bool>,
     /// The Client uses this value to indicate whether the Reason String or User Properties are sent in the case of failures.
     /// If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on
     /// a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT
-    pub request_problem_information: Option<bool>,
+    request_problem_information: Option<bool>,
     /// The User Property is allowed to appear multiple times to represent multiple name, value pairs. The same name is allowed to appear more than once.
-    pub user_property: Vec<UserProperty>,
+    user_property: Vec<UserProperty>,
     /// If Authentication Method is absent, extended authentication is not performed
-    pub authentication_method: Option<String>,
+    authentication_method: Option<String>,
     /// Binary Data containing authentication data
     /// The contents of this data are defined by the authentication method
-    pub authentication_data: Bytes,
+    authentication_data: Bytes,
 }
 
 #[derive(PartialEq)]
@@ -656,6 +656,54 @@ impl Connect {
             MQTT_VERSION_5_0_0 => self.write_to_buf_v5(buf),
             _ => unreachable!(),
         };
+    }
+
+    pub fn set_clean_session(&mut self, clean_session: bool) {
+        self.clean_session = clean_session;
+    }
+
+    pub fn clean_session(&self) -> bool {
+        self.clean_session
+    }
+
+    pub fn set_keep_alive(&mut self, keep_alive: u16) {
+        self.keep_alive = keep_alive;
+    }
+
+    pub fn keep_alive(&self) -> u16 {
+        self.keep_alive
+    }
+
+    pub fn set_will(&mut self, will: Option<MqttLastWill>) {
+        self.will = will;
+    }
+
+    pub fn will(&self) -> Option<&MqttLastWill> {
+        self.will.as_ref()
+    }
+
+    pub fn set_client_identifier(&mut self, client_identifier: String) {
+        self.client_identifier = client_identifier;
+    }
+
+    pub fn client_identifier(&self) -> &str {
+        &self.client_identifier
+    }
+
+    pub fn set_username(&mut self, username: Option<String>) {
+        self.username = username;
+    }
+
+    pub fn username(&self) -> Option<&String> {
+        self.username.as_ref()
+    }
+
+    pub fn set_password(&mut self, password: Option<Bytes>) {
+        self.password = password;
+    }
+
+    pub fn password(&self) -> Option<&Bytes> {
+        self.password.as_ref()
     }
 }
 
@@ -962,7 +1010,6 @@ impl Connect {
 
 #[cfg(test)]
 mod test_ser_v3 {
-    
 
     use super::*;
 
@@ -1277,7 +1324,6 @@ mod test_ser_v3 {
 
 #[cfg(test)]
 mod test_ser_v5 {
-    
 
     use super::*;
     #[test]

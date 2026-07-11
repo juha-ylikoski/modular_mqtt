@@ -145,9 +145,9 @@ impl TryFrom<u8> for ConnectRcV5 {
 /// The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client.
 /// The first packet sent from the Server to the Client MUST be a CONNACK Packet [MQTT-3.2.0-1].
 pub struct ConnAck<V> {
-    pub fixed_header: FixedHeader,
-    pub session_present: bool,
-    pub connect_rc: ConnectRc,
+    fixed_header: FixedHeader,
+    session_present: bool,
+    connect_rc: ConnectRc,
 
     protocol_level: PhantomData<V>,
 
@@ -301,6 +301,14 @@ impl<V> ConnAck<V> {
             self.authentication_data
                 .serialize(PropertyIdentifier::AuthenticationData, buf);
         }
+    }
+
+    pub fn session_present(&self) -> bool {
+        self.session_present
+    }
+
+    pub fn connect_rc(&self) -> ConnectRc {
+        self.connect_rc
     }
 }
 
@@ -714,7 +722,6 @@ mod test_v3 {
     use bytes::BytesMut;
 
     use super::*;
-    
 
     #[test]
     fn serialize() {
@@ -777,7 +784,6 @@ mod test_v5 {
     use bytes::BytesMut;
 
     use super::*;
-    
 
     #[test]
     fn serialize() {

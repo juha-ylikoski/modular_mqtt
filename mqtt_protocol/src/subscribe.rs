@@ -186,6 +186,14 @@ impl<V> Subscribe<V> {
     pub fn subscriptions(&self) -> &[TopicSubscription] {
         &self.subscriptions
     }
+
+    pub fn subscriptions_mut(&mut self) -> &mut Vec<TopicSubscription> {
+        &mut self.subscriptions
+    }
+
+    pub fn packet_identifier_mut(&mut self) -> &mut u16 {
+        &mut self.packet_identifier
+    }
 }
 
 impl Subscribe<MqttV3_1_1> {
@@ -346,6 +354,22 @@ impl Subscribe<MqttV5_0_0> {
                 user_property,
             },
         })
+    }
+
+    pub fn subscription_identifier(&self) -> Option<u64> {
+        match self.options {
+            SubscribeOptions::V3 { .. } => unreachable!(),
+            SubscribeOptions::V5 {
+                subscription_identifier,
+                ..
+            } => subscription_identifier,
+        }
+    }
+    pub fn user_property(&self) -> &[UserProperty] {
+        match &self.options {
+            SubscribeOptions::V3 { .. } => unreachable!(),
+            SubscribeOptions::V5 { user_property, .. } => &user_property,
+        }
     }
 }
 

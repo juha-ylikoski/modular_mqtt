@@ -164,6 +164,26 @@ impl Auth<MqttV5_0_0> {
             user_property,
         })
     }
+
+    pub fn reason_code(&self) -> ReasonCode {
+        self.reason_code
+    }
+
+    pub fn method(&self) -> Option<&String> {
+        self.method.as_ref()
+    }
+
+    pub fn auth_data(&self) -> &Bytes {
+        &self.auth_data
+    }
+
+    pub fn reason(&self) -> Option<&String> {
+        self.reason.as_ref()
+    }
+
+    pub fn user_property(&self) -> &[UserProperty] {
+        &self.user_property
+    }
 }
 
 #[cfg(test)]
