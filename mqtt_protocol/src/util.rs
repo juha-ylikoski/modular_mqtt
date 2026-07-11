@@ -1,6 +1,4 @@
-use std::io::Write;
-
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{Error, MalformedPacket};
 
@@ -89,11 +87,11 @@ pub fn extract_str(data: &mut Bytes) -> Result<String, Error> {
     }
 }
 
-pub fn write_str(string: &str, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+pub fn write_str(string: &str, buf: &mut impl BufMut) {
+    assert!(string.len() < 0xffff);
     let length = string.len();
-    writer.write_all(&(length as u16).to_be_bytes())?;
-    writer.write_all(string.as_bytes())?;
-    Ok(length + 2)
+    buf.put_u16(length as u16);
+    buf.put(string.as_bytes());
 }
 
 pub fn extract_bytes(data: &mut Bytes) -> Result<Bytes, Error> {
@@ -112,27 +110,21 @@ pub fn extract_bytes(data: &mut Bytes) -> Result<Bytes, Error> {
 }
 
 /// Write mqtt variable length integer
-pub fn write_variable_len_int(
-    mut value: u64,
-    writer: &mut impl Write,
-) -> Result<usize, std::io::Error> {
-    let mut length = 0;
+pub fn write_variable_len_int(mut value: u64, buf: &mut impl BufMut) {
     if value == 0 {
-        writer.write_all(&[0])?;
-        return Ok(1);
+        buf.put_u8(0);
+        return;
     }
 
     while value != 0 {
         let byte = (value % 128) as u8;
         value /= 128;
         if value > 0 {
-            writer.write_all(&[byte | 128])?;
+            buf.put_u8(byte | 128);
         } else {
-            writer.write_all(&[byte])?;
+            buf.put_u8(byte);
         }
-        length += 1;
     }
-    Ok(length)
 }
 
 /// Write mqtt variable length integer
@@ -176,7 +168,6 @@ pub fn read_variable_len_int(packet: &mut impl bytes::Buf) -> Result<u64, crate:
 
 #[cfg(test)]
 mod test {
-    use std::io::BufWriter;
 
     use super::extract_str;
 
@@ -185,9 +176,8 @@ mod test {
     #[test]
     fn serialize_str() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        assert_eq!(write_str("foo", &mut writer).unwrap(), 5);
-        drop(writer);
+        write_str("foo", &mut buf);
+        assert_eq!(buf.len(), 5);
         assert_eq!(&buf, &[0, 3, b'f', b'o', b'o']);
     }
     #[test]
@@ -195,9 +185,8 @@ mod test {
         let input = [b'f'; 1000];
         let input = std::str::from_utf8(&input).unwrap();
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        assert_eq!(write_str(input, &mut writer).unwrap(), 1002);
-        drop(writer);
+        write_str(input, &mut buf);
+        assert_eq!(buf.len(), 1002);
 
         let mut expected = [b'f'; 1002];
         expected[0] = 0x03;

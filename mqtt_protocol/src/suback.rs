@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
@@ -9,7 +9,7 @@ use crate::{
 
 use super::fixed_header::{ControlPacketType, FixedHeader};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SubRcV3 {
     SuccessQos0 = 0,
     SuccessQos1 = 1,
@@ -17,7 +17,7 @@ pub enum SubRcV3 {
     Failure = 0x80,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SubRcV5 {
     /// The subscription is accepted and the maximum QoS sent will be QoS 0. This might be a lower QoS than was requested.
     SuccessQos0 = 0,
@@ -122,19 +122,13 @@ pub struct SubAck<V> {
 }
 
 impl<V> SubAck<V> {
-    pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = self.fixed_header.write_to_stream(writer)?;
-        writer.write_all(&[
-            ((self.packet_identifier & 0xff00) >> 8) as u8,
-            (self.packet_identifier & 0xff) as u8,
-        ])?;
-        length += 2;
-
-        match self.data {
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        self.fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
+        match &self.data {
             SubAckData::V3 { return_codes, .. } => {
                 for rc in return_codes {
-                    writer.write_all(&[rc as u8])?;
-                    length += 1;
+                    buf.put_u8(*rc as u8);
                 }
             }
             SubAckData::V5 {
@@ -144,18 +138,14 @@ impl<V> SubAck<V> {
                 ..
             } => {
                 let property_len = user_property.property_len() + reason.property_len();
-                length += write_variable_len_int(property_len as u64, writer)?;
-                length += reason.serialize(PropertyIdentifier::Reason, writer)?
-                    + user_property.serialize(PropertyIdentifier::UserProperty, writer)?;
+                write_variable_len_int(property_len as u64, buf);
+                reason.serialize(PropertyIdentifier::Reason, buf);
+                user_property.serialize(PropertyIdentifier::UserProperty, buf);
                 for rc in return_codes {
-                    writer.write_all(&[rc as u8])?;
-                    length += 1;
+                    buf.put_u8((*rc) as u8);
                 }
             }
         }
-
-        writer.flush()?;
-        Ok(length)
     }
 }
 impl SubAck<MqttV3_1_1> {
@@ -267,18 +257,15 @@ mod test_v3 {
     use bytes::BytesMut;
 
     use super::*;
-    use std::io::BufWriter;
 
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = SubAck::new_v3(
             42,
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[144, 5, 0, 42, 0, 1, 0x80]);
     }
 
@@ -290,7 +277,9 @@ mod test_v3 {
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(SubAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
@@ -300,27 +289,23 @@ mod test_v5 {
     use bytes::BytesMut;
 
     use super::*;
-    use std::io::BufWriter;
 
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = SubAck::new_v5(
             42,
             vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
             None,
             vec![],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[144, 6, 0, 42, 0, 0, 1, 0x80]);
     }
 
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = SubAck::new_v5(
             42,
             vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
@@ -330,8 +315,7 @@ mod test_v5 {
                 value: "value1".to_string(),
             }],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -359,7 +343,9 @@ mod test_v5 {
             vec![],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -387,7 +373,9 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

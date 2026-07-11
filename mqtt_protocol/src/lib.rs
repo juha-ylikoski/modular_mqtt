@@ -4,11 +4,9 @@
 //! Copyright © OASIS Open 2019. All Rights Reserved.
 //! See the NOTICE file in the project root for the full license text.
 
-use std::io::Write;
-
 pub use ack_messages::{PubAck, PubComp, PubRec, PubRel, UnsubAck};
 pub use auth::Auth;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 pub use connack::{ConnAck, ConnectRc};
 pub use connect::{Connect, MqttLastWill};
 pub use disconnect::Disconnect;
@@ -188,26 +186,17 @@ pub struct UserProperty {
 }
 
 pub(crate) trait Property {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error>;
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut);
 
     fn property_len(&self) -> usize;
 }
 
 impl Property for Option<u8> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if let Some(value) = self {
-            writer.write_all(&[identifier, *value]).map(|_| 2)
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            buf.put_u8(*value);
         }
     }
     fn property_len(&self) -> usize {
@@ -219,17 +208,11 @@ impl Property for Option<u8> {
     }
 }
 impl Property for Option<u16> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if let Some(value) = self {
-            let data = value.to_be_bytes();
-            writer.write_all(&[identifier, data[0], data[1]]).map(|_| 3)
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            buf.put_u16(*value);
         }
     }
     fn property_len(&self) -> usize {
@@ -241,19 +224,11 @@ impl Property for Option<u16> {
     }
 }
 impl Property for Option<u32> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if let Some(value) = self {
-            let data = value.to_be_bytes();
-            writer
-                .write_all(&[identifier, data[0], data[1], data[2], data[3]])
-                .map(|_| 5)
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            buf.put_u32(*value);
         }
     }
     fn property_len(&self) -> usize {
@@ -266,22 +241,11 @@ impl Property for Option<u32> {
 }
 
 impl Property for Option<u64> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if let Some(value) = self {
-            let data = value.to_be_bytes();
-            writer
-                .write_all(&[
-                    identifier, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
-                    data[7],
-                ])
-                .map(|_| 9)
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            buf.put_u64(*value);
         }
     }
     fn property_len(&self) -> usize {
@@ -294,13 +258,9 @@ impl Property for Option<u64> {
 }
 
 impl Property for Option<bool> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let property = self.map(|v| v as u8);
-        property.serialize(identifier, writer)
+        property.serialize(identifier, buf)
     }
     fn property_len(&self) -> usize {
         if self.is_some() {
@@ -312,23 +272,16 @@ impl Property for Option<bool> {
 }
 
 impl Property for Vec<UserProperty> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if !self.is_empty() {
-            let mut len = 0;
             for property in self {
-                writer.write_all(&[identifier])?;
-                len += 1
-                    + crate::util::write_str(property.key.as_str(), writer)?
-                    + crate::util::write_str(property.value.as_str(), writer)?;
+                buf.put_u8(identifier);
+                buf.put_u16(property.key.len() as u16);
+                buf.put(property.key.as_bytes());
+                buf.put_u16(property.value.len() as u16);
+                buf.put(property.value.as_bytes());
             }
-            Ok(len)
-        } else {
-            Ok(0)
         }
     }
     fn property_len(&self) -> usize {
@@ -340,18 +293,11 @@ impl Property for Vec<UserProperty> {
     }
 }
 impl Property for Option<String> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let identifier = identifier as u8;
         if let Some(value) = self {
-            writer.write_all(&[identifier])?;
-            let len = 1 + crate::util::write_str(value, writer)?;
-            Ok(len)
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            crate::util::write_str(value, buf);
         }
     }
     fn property_len(&self) -> usize {
@@ -364,20 +310,14 @@ impl Property for Option<String> {
 }
 
 impl Property for Bytes {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         assert!(self.len() <= 0xffff);
         let identifier = identifier as u8;
         if !self.is_empty() {
-            let len = (self.len() as u16).to_be_bytes();
-            writer.write_all(&[identifier, len[0], len[1]])?;
-            writer.write_all(self)?;
-            Ok(1 + 2 + self.len())
-        } else {
-            Ok(0)
+            buf.put_u8(identifier);
+            let len = self.len() as u16;
+            buf.put_u16(len);
+            buf.put(&self[..])
         }
     }
     fn property_len(&self) -> usize {
@@ -391,15 +331,9 @@ impl Property for Bytes {
 }
 
 impl Property for Option<Bytes> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         if let Some(value) = self {
-            value.serialize(identifier, writer)
-        } else {
-            Ok(0)
+            value.serialize(identifier, buf)
         }
     }
     fn property_len(&self) -> usize {
@@ -412,13 +346,9 @@ impl Property for Option<Bytes> {
 }
 
 impl Property for Option<PayloadFormat> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let property = self.as_ref().map(|v| *v as u8);
-        property.serialize(identifier, writer)
+        property.serialize(identifier, buf)
     }
     fn property_len(&self) -> usize {
         if self.is_some() {
@@ -430,13 +360,9 @@ impl Property for Option<PayloadFormat> {
 }
 
 impl Property for Option<Qos> {
-    fn serialize(
-        &self,
-        identifier: crate::PropertyIdentifier,
-        writer: &mut impl Write,
-    ) -> Result<usize, std::io::Error> {
+    fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         let property = self.as_ref().map(|v| *v as u8);
-        property.serialize(identifier, writer)
+        property.serialize(identifier, buf)
     }
     fn property_len(&self) -> usize {
         if self.is_some() {

@@ -1,6 +1,4 @@
-use std::io::Write;
-
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::{Error, MalformedPacket};
 
@@ -212,20 +210,13 @@ impl FixedHeader {
         )))
     }
 
-    pub fn write_to_stream(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = 1;
-        writer.write_all(&[
-            self.control_packet_type.value() << 4 | self.control_packet_type.flags()
-        ])?;
-
-        length += crate::util::write_variable_len_int(self.remaining_length as u64, writer)?;
-
-        Ok(length)
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        buf.put_u8(self.control_packet_type.value() << 4 | self.control_packet_type.flags());
+        crate::util::write_variable_len_int(self.remaining_length as u64, buf);
     }
 }
 #[cfg(test)]
 mod test {
-    use std::io::BufWriter;
 
     use super::*;
 
@@ -235,10 +226,8 @@ mod test {
 
         fn cmp(header: FixedHeader, expected: &[u8]) {
             let mut buf = Vec::new();
-            let mut writer = BufWriter::new(&mut buf);
-            let len = header.write_to_stream(&mut writer).unwrap();
-            drop(writer);
-            assert_eq!(&buf[0..len], expected);
+            header.write_to_buf(&mut buf);
+            assert_eq!(&buf[0..buf.len()], expected);
         }
 
         // 1 Byte
@@ -281,12 +270,8 @@ mod test {
         fn cmp(packet_type: ControlPacketType, type_value: u8, flags: u8) {
             let expected = [type_value << 4 | flags, 1];
             let mut buf = Vec::new();
-            let mut writer = BufWriter::new(&mut buf);
-            let len = FixedHeader::new(packet_type, 1)
-                .write_to_stream(&mut writer)
-                .unwrap();
-            drop(writer);
-            assert_eq!(&buf[0..len], expected);
+            FixedHeader::new(packet_type, 1).write_to_buf(&mut buf);
+            assert_eq!(&buf[0..buf.len()], expected);
         }
 
         cmp(ControlPacketType::Connect, 1, 0);
@@ -355,7 +340,9 @@ mod test {
     fn deserialize_header() {
         fn cmp(input: &[u8], expected_header: FixedHeader, expected_body: &[u8]) {
             let mut buf = BytesMut::from(input);
-            let (header, body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+            let (header, body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 header, expected_header,
                 "input={input:?} expected={expected_header:?} expected_body={body:?}"
@@ -498,6 +485,8 @@ mod test {
     #[test]
     fn partial_delivery() {
         let mut buf = BytesMut::from(&[1 << 4, 10][..]);
-        assert!(FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().is_none())
+        assert!(FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .is_none())
     }
 }

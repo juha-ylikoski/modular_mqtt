@@ -1,6 +1,4 @@
-use std::io::Write;
-
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::fixed_header::ControlPacketType;
 use crate::util::variable_len_int_size;
@@ -180,33 +178,24 @@ impl MqttLastWill5_0_0 {
             + self.user_property.property_len()
     }
 
-    pub fn write_properties(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    pub fn write_properties(&self, buf: &mut impl BufMut) {
         let properties_len = self.properties_len();
-        let mut length = crate::util::write_variable_len_int(properties_len as u64, writer)?;
+        crate::util::write_variable_len_int(properties_len as u64, buf);
 
-        length += self
-            .delay_interval
-            .serialize(PropertyIdentifier::WillDelayInterval, writer)?
-            + self
-                .payload_format
-                .serialize(PropertyIdentifier::PayloadFormatIndicator, writer)?
-            + self
-                .message_expiry_interval
-                .serialize(PropertyIdentifier::MessageExpiryInterval, writer)?
-            + self
-                .content_type
-                .serialize(PropertyIdentifier::ContentType, writer)?
-            + self
-                .response_topic
-                .serialize(PropertyIdentifier::ResponseTopic, writer)?
-            + self
-                .correlation_data
-                .serialize(PropertyIdentifier::CorrelationData, writer)?
-            + self
-                .user_property
-                .serialize(PropertyIdentifier::UserProperty, writer)?;
-
-        Ok(length)
+        self.delay_interval
+            .serialize(PropertyIdentifier::WillDelayInterval, buf);
+        self.payload_format
+            .serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
+        self.message_expiry_interval
+            .serialize(PropertyIdentifier::MessageExpiryInterval, buf);
+        self.content_type
+            .serialize(PropertyIdentifier::ContentType, buf);
+        self.response_topic
+            .serialize(PropertyIdentifier::ResponseTopic, buf);
+        self.correlation_data
+            .serialize(PropertyIdentifier::CorrelationData, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
     }
 
     fn read_properties(mut self, properties: &mut Bytes) -> Result<Self, Error> {
@@ -618,10 +607,10 @@ impl Connect {
         Ok(connect)
     }
 
-    fn write_until_properties(&mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    fn write_until_properties(&mut self, buf: &mut impl BufMut) {
         self.re_calculate_fixed_header_length();
 
-        let mut length = self.fixed_header.write_to_stream(writer)?;
+        self.fixed_header.write_to_buf(buf);
         let mut flags = 0;
         if self.username.is_some() {
             flags |= u8::from(Flags::Username);
@@ -640,33 +629,33 @@ impl Connect {
             flags |= u8::from(Flags::CleanSession);
         }
 
-        writer.write_all(&[
-            // Protocol name length
-            0,
-            4,
-            // Protocol name
-            b'M',
-            b'Q',
-            b'T',
-            b'T',
-            // Protocol level
-            self.protocol_level,
-            flags,
-            ((self.keep_alive & 0xff00) >> 8) as u8,
-            (self.keep_alive & 0xff) as u8,
-        ])?;
-        length += 10;
-        Ok(length)
+        buf.put(
+            [
+                // Protocol name length
+                0,
+                4,
+                // Protocol name
+                b'M',
+                b'Q',
+                b'T',
+                b'T',
+                // Protocol level
+                self.protocol_level,
+                flags,
+                ((self.keep_alive & 0xff00) >> 8) as u8,
+                (self.keep_alive & 0xff) as u8,
+            ]
+            .as_slice(),
+        );
     }
 
-    pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = self.write_until_properties(writer)?;
-        length += match self.protocol_level {
-            MQTT_VERSION_3_1_1 => self.write_to_stream_v3(writer),
-            MQTT_VERSION_5_0_0 => self.write_to_stream_v5(writer),
+    pub fn write_to_buf(&mut self, buf: &mut impl BufMut) {
+        self.write_until_properties(buf);
+        match self.protocol_level {
+            MQTT_VERSION_3_1_1 => self.write_to_buf_v3(buf),
+            MQTT_VERSION_5_0_0 => self.write_to_buf_v5(buf),
             _ => unreachable!(),
-        }?;
-        Ok(length)
+        };
     }
 }
 
@@ -719,29 +708,24 @@ impl Connect {
         }
     }
 
-    fn write_to_stream_v3(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = 0;
+    fn write_to_buf_v3(&self, buf: &mut impl BufMut) {
         // Payload
-        length += write_str(&self.client_identifier, writer)?;
+        write_str(&self.client_identifier, buf);
 
-        if let Some(will) = self.will {
-            length += write_str(will.topic(), writer)?;
+        if let Some(will) = &self.will {
+            write_str(will.topic(), buf);
             let pl_len = will.payload().len();
-            writer.write_all(&(pl_len as u16).to_be_bytes())?;
-            writer.write_all(&will.payload())?;
-            length += 2 + pl_len;
+            buf.put_u16(pl_len as u16);
+            buf.put(&will.payload()[..]);
         }
-        if let Some(username) = self.username {
-            length += write_str(&username, writer)?;
+        if let Some(username) = &self.username {
+            write_str(username, buf);
         }
-        if let Some(password) = self.password {
+        if let Some(password) = &self.password {
             let pl_len = password.len();
-            writer.write_all(&(pl_len as u16).to_be_bytes())?;
-            writer.write_all(&password)?;
-            length += 2 + pl_len;
+            buf.put_u16(pl_len as u16);
+            buf.put(&password[..]);
         }
-        writer.flush()?;
-        Ok(length)
     }
 }
 
@@ -885,36 +869,25 @@ impl Connect {
         self
     }
 
-    fn write_properties(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let len = self
-            .session_expiry_interval
-            .serialize(PropertyIdentifier::SessionExpiryInterval, writer)?
-            + self
-                .receive_maximum
-                .serialize(PropertyIdentifier::ReceiveMaximum, writer)?
-            + self
-                .maximum_packet_size
-                .serialize(PropertyIdentifier::MaximumPacketSize, writer)?
-            + self
-                .topic_alias_maximum
-                .serialize(PropertyIdentifier::TopicAliasMaximum, writer)?
-            + self
-                .request_response_information
-                .serialize(PropertyIdentifier::RequestResponseInformation, writer)?
-            + self
-                .request_problem_information
-                .serialize(PropertyIdentifier::RequestProblemInformation, writer)?
-            + self
-                .user_property
-                .serialize(PropertyIdentifier::UserProperty, writer)?
-            + self
-                .authentication_method
-                .serialize(PropertyIdentifier::AuthenticationMethod, writer)?
-            + self
-                .authentication_data
-                .serialize(PropertyIdentifier::AuthenticationData, writer)?;
-
-        Ok(len)
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        self.session_expiry_interval
+            .serialize(PropertyIdentifier::SessionExpiryInterval, buf);
+        self.receive_maximum
+            .serialize(PropertyIdentifier::ReceiveMaximum, buf);
+        self.maximum_packet_size
+            .serialize(PropertyIdentifier::MaximumPacketSize, buf);
+        self.topic_alias_maximum
+            .serialize(PropertyIdentifier::TopicAliasMaximum, buf);
+        self.request_response_information
+            .serialize(PropertyIdentifier::RequestResponseInformation, buf);
+        self.request_problem_information
+            .serialize(PropertyIdentifier::RequestProblemInformation, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+        self.authentication_method
+            .serialize(PropertyIdentifier::AuthenticationMethod, buf);
+        self.authentication_data
+            .serialize(PropertyIdentifier::AuthenticationData, buf);
     }
 
     fn properties_len(&self) -> usize {
@@ -929,37 +902,32 @@ impl Connect {
             + self.authentication_data.property_len()
     }
 
-    fn write_to_stream_v5(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = 0;
-        length += crate::util::write_variable_len_int(self.properties_len() as u64, writer)?;
-        length += self.write_properties(writer)?;
+    fn write_to_buf_v5(&self, buf: &mut impl BufMut) {
+        crate::util::write_variable_len_int(self.properties_len() as u64, buf);
+        self.write_properties(buf);
 
         // Payload
-        length += write_str(&self.client_identifier, writer)?;
+        write_str(&self.client_identifier, buf);
 
-        if let Some(will) = self.will {
+        if let Some(will) = &self.will {
             let will = match will {
                 MqttLastWill::V3(_) => unreachable!(),
                 MqttLastWill::V5(will) => will,
             };
-            length += will.write_properties(writer)?;
-            length += write_str(&will.topic, writer)?;
+            will.write_properties(buf);
+            write_str(&will.topic, buf);
             let pl_len = will.payload.len();
-            writer.write_all(&(pl_len as u16).to_be_bytes())?;
-            writer.write_all(&will.payload)?;
-            length += 2 + pl_len;
+            buf.put_u16(pl_len as u16);
+            buf.put(&will.payload[..]);
         }
-        if let Some(username) = self.username {
-            length += write_str(&username, writer)?;
+        if let Some(username) = &self.username {
+            write_str(username, buf);
         }
-        if let Some(password) = self.password {
+        if let Some(password) = &self.password {
             let pl_len = password.len();
-            writer.write_all(&(pl_len as u16).to_be_bytes())?;
-            writer.write_all(&password)?;
-            length += 2 + pl_len;
+            buf.put_u16(pl_len as u16);
+            buf.put(&password[..]);
         }
-        writer.flush()?;
-        Ok(length)
     }
 
     pub fn session_expiry_interval(&self) -> Option<u32> {
@@ -994,17 +962,15 @@ impl Connect {
 
 #[cfg(test)]
 mod test_ser_v3 {
-    use std::io::BufWriter;
+    
 
     use super::*;
 
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1019,8 +985,7 @@ mod test_ser_v3 {
     #[test]
     fn will() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(
+        let mut msg = Connect::new_v3(
             false,
             0,
             "client2".to_string(),
@@ -1033,8 +998,7 @@ mod test_ser_v3 {
             None,
             None,
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1087,8 +1051,7 @@ mod test_ser_v3 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(
+        let mut msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1096,8 +1059,7 @@ mod test_ser_v3 {
             Some("username".to_string()),
             None,
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1143,8 +1105,7 @@ mod test_ser_v3 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(
+        let mut msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1152,8 +1113,7 @@ mod test_ser_v3 {
             None,
             Some(Bytes::from_static(b"password")),
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1199,8 +1159,7 @@ mod test_ser_v3 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(
+        let mut msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1208,8 +1167,7 @@ mod test_ser_v3 {
             Some("username".to_string()),
             Some(Bytes::from_static(b"password")),
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1266,10 +1224,8 @@ mod test_ser_v3 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1304,10 +1260,8 @@ mod test_ser_v3 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1323,16 +1277,14 @@ mod test_ser_v3 {
 
 #[cfg(test)]
 mod test_ser_v5 {
-    use std::io::BufWriter;
+    
 
     use super::*;
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1350,8 +1302,7 @@ mod test_ser_v5 {
     #[test]
     fn will_no_properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(
+        let mut msg = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
@@ -1364,8 +1315,7 @@ mod test_ser_v5 {
             None,
             None,
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1424,8 +1374,7 @@ mod test_ser_v5 {
     #[test]
     fn will_properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(
+        let mut msg = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
@@ -1456,8 +1405,7 @@ mod test_ser_v5 {
             None,
             None,
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1604,8 +1552,7 @@ mod test_ser_v5 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(
+        let mut msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1613,8 +1560,7 @@ mod test_ser_v5 {
             Some("username".to_string()),
             None,
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1663,8 +1609,7 @@ mod test_ser_v5 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(
+        let mut msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1672,8 +1617,7 @@ mod test_ser_v5 {
             None,
             Some(Bytes::from_static(b"password")),
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1722,8 +1666,7 @@ mod test_ser_v5 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(
+        let mut msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1731,8 +1674,7 @@ mod test_ser_v5 {
             Some("username".to_string()),
             Some(Bytes::from_static(b"password")),
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1792,10 +1734,8 @@ mod test_ser_v5 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1833,10 +1773,8 @@ mod test_ser_v5 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1854,8 +1792,7 @@ mod test_ser_v5 {
     #[test]
     fn properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
+        let mut msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
             .set_session_expiry_interval(42)
             .set_receive_maximum(24)
             .set_maximum_packet_size(100)
@@ -1874,8 +1811,7 @@ mod test_ser_v5 {
             ])
             .set_authentication_method("auth".to_string())
             .set_authentication_data(Bytes::from_static(b"secret"));
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1925,7 +1861,9 @@ mod test_de_v3 {
         ];
         let expected = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1989,7 +1927,9 @@ mod test_de_v3 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2041,7 +1981,9 @@ mod test_de_v3 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2093,7 +2035,9 @@ mod test_de_v3 {
             Some(Bytes::from_static(b"password")),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2156,7 +2100,9 @@ mod test_de_v3 {
             Some(Bytes::from_static(b"password")),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2206,7 +2152,9 @@ mod test_de_v3 {
         ];
         let expected = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 }
@@ -2483,7 +2431,9 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2538,7 +2488,9 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2593,7 +2545,9 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2659,7 +2613,9 @@ mod test_de_v5 {
         );
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2695,7 +2651,9 @@ mod test_de_v5 {
         ];
         let expected = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -2713,7 +2671,9 @@ mod test_de_v5 {
         let mut expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 
@@ -2766,7 +2726,9 @@ mod test_de_v5 {
             .set_authentication_data(Bytes::from_static(b"secret"));
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
     }
 }

@@ -1,7 +1,6 @@
-use std::io::Write;
 use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::util::{read_variable_len_int, variable_len_int_size, write_variable_len_int};
 use crate::{
@@ -34,26 +33,19 @@ pub struct Unsubscribe<V> {
 }
 
 impl<V> Unsubscribe<V> {
-    pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut length = self.fixed_header.write_to_stream(writer)?;
-        writer.write_all(&[
-            ((self.packet_identifier & 0xff00) >> 8) as u8,
-            (self.packet_identifier & 0xff) as u8,
-        ])?;
-        length += 2;
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        self.fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
 
-        if let UnsubscribeOptions::V5 { user_property, .. } = self.options {
+        if let UnsubscribeOptions::V5 { user_property, .. } = &self.options {
             let properties_len = user_property.property_len();
-            length += write_variable_len_int(properties_len as u64, writer)?;
-            length += user_property.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
+            write_variable_len_int(properties_len as u64, buf);
+            user_property.serialize(crate::PropertyIdentifier::UserProperty, buf);
         }
 
-        for topic in self.topics {
-            write_str(&topic, writer)?;
-            length += topic.len() + 2;
+        for topic in &self.topics {
+            write_str(topic, buf);
         }
-        writer.flush()?;
-        Ok(length)
     }
 }
 impl Unsubscribe<MqttV3_1_1> {
@@ -161,7 +153,6 @@ impl Unsubscribe<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
-    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -170,13 +161,11 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = Unsubscribe::new_v3(
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -232,7 +221,9 @@ mod test_v3 {
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Unsubscribe::try_read_v3(header, &mut body).unwrap(),
             expected
@@ -242,7 +233,6 @@ mod test_v3 {
 
 #[cfg(test)]
 mod test_v5 {
-    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -251,14 +241,12 @@ mod test_v5 {
     #[test]
     fn serialize_normal() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = Unsubscribe::new_v5(
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
             vec![],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -289,7 +277,6 @@ mod test_v5 {
     #[test]
     fn serialize_user_property() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         let msg = Unsubscribe::new_v5(
             42,
             vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
@@ -298,8 +285,7 @@ mod test_v5 {
                 value: "value1".into(),
             }],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -380,7 +366,9 @@ mod test_v5 {
             vec![],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected
@@ -442,7 +430,9 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Unsubscribe::try_read_v5(header, &mut body).unwrap(),
             expected

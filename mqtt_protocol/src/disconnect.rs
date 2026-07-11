@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
@@ -8,7 +8,7 @@ use crate::{
     PropertyIdentifier, UserProperty,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum DisconnectReasonCode {
     /// Close the connection normally. Do not send the Will Message.
     Normal = 0,
@@ -142,8 +142,8 @@ pub struct Disconnect<V> {
 }
 
 impl<V> Disconnect<V> {
-    pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut len = self.fixed_header.write_to_stream(writer)?;
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        self.fixed_header.write_to_buf(buf);
 
         if let DisconnectData::V5 {
             reason_code,
@@ -152,25 +152,20 @@ impl<V> Disconnect<V> {
             user_property,
             server_reference,
             ..
-        } = self.data
+        } = &self.data
         {
-            writer.write_all(&[reason_code as u8])?;
-            len += 1;
-
+            buf.put_u8(*reason_code as u8);
             let properties_len = session_expiry_interval.property_len()
                 + reason.property_len()
                 + user_property.property_len()
                 + server_reference.property_len();
-            len += write_variable_len_int(properties_len as u64, writer)?;
+            write_variable_len_int(properties_len as u64, buf);
 
-            len += session_expiry_interval
-                .serialize(PropertyIdentifier::SessionExpiryInterval, writer)?
-                + reason.serialize(PropertyIdentifier::Reason, writer)?
-                + user_property.serialize(PropertyIdentifier::UserProperty, writer)?
-                + server_reference.serialize(PropertyIdentifier::ServerReference, writer)?;
+            session_expiry_interval.serialize(PropertyIdentifier::SessionExpiryInterval, buf);
+            reason.serialize(PropertyIdentifier::Reason, buf);
+            user_property.serialize(PropertyIdentifier::UserProperty, buf);
+            server_reference.serialize(PropertyIdentifier::ServerReference, buf);
         }
-        writer.flush()?;
-        Ok(len)
     }
 }
 impl Disconnect<MqttV3_1_1> {
@@ -302,7 +297,6 @@ impl Disconnect<MqttV5_0_0> {
 
 #[cfg(test)]
 mod disconnect_v3 {
-    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -311,9 +305,7 @@ mod disconnect_v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        Disconnect::new_v3().write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        Disconnect::new_v3().write_to_buf(&mut buf);
         assert_eq!(&buf, &[224, 0]);
     }
     #[test]
@@ -321,7 +313,9 @@ mod disconnect_v3 {
         let msg = [224, 0];
         let expected = Disconnect::new_v3();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Disconnect::try_read_v3(header, &mut body).unwrap(),
             expected
@@ -331,7 +325,6 @@ mod disconnect_v3 {
 
 #[cfg(test)]
 mod disconnect_v5 {
-    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -340,7 +333,6 @@ mod disconnect_v5 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         Disconnect::new_v5(
             DisconnectReasonCode::QuotaExceeded,
             None,
@@ -348,16 +340,13 @@ mod disconnect_v5 {
             Vec::new(),
             None,
         )
-        .write_to_stream(&mut writer)
-        .unwrap();
-        drop(writer);
+        .write_to_buf(&mut buf);
         assert_eq!(&buf, &[224, 2, 151, 0]);
     }
 
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
         Disconnect::new_v5(
             DisconnectReasonCode::MalformedPacket,
             Some(123),
@@ -368,9 +357,7 @@ mod disconnect_v5 {
             }],
             Some("server".to_string()),
         )
-        .write_to_stream(&mut writer)
-        .unwrap();
-        drop(writer);
+        .write_to_buf(&mut buf);
 
         assert_eq!(
             &buf,
@@ -396,7 +383,9 @@ mod disconnect_v5 {
             None,
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected
@@ -425,7 +414,9 @@ mod disconnect_v5 {
             Some("server".to_string()),
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             Disconnect::try_read_v5(header, &mut body).unwrap(),
             expected

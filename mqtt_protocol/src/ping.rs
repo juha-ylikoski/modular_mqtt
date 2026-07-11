@@ -1,7 +1,5 @@
-use std::io::Write;
-
-use bytes::Buf;
 use bytes::Bytes;
+use bytes::{Buf, BufMut};
 
 use crate::fixed_header::{ControlPacketType, FixedHeader};
 use crate::{Error, MalformedPacket};
@@ -33,27 +31,22 @@ macro_rules! create_ping_package {
                     })
                 }
             }
-            pub fn write_to_stream(writer: &mut impl Write) -> Result<usize, std::io::Error> {
+            pub fn write_to_buf(buf: &mut impl BufMut) {
                 let fixed_header = FixedHeader::new($packet_type, 0);
-                let len = fixed_header.write_to_stream(writer)?;
-                writer.flush()?;
-                Ok(len)
+                fixed_header.write_to_buf(buf);
             }
         }
 
         #[cfg(test)]
         mod $test_mod {
             use bytes::BytesMut;
-            use std::io::BufWriter;
 
             use super::*;
 
             #[test]
             fn serialize() {
                 let mut buf = Vec::new();
-                let mut writer = BufWriter::new(&mut buf);
-                $name::write_to_stream(&mut writer).unwrap();
-                drop(writer);
+                $name::write_to_buf(&mut buf);
                 assert_eq!(&buf, &[$test_packet_type, 0]);
             }
             #[test]
@@ -61,9 +54,10 @@ macro_rules! create_ping_package {
                 let msg = [$test_packet_type, 0];
                 let expected = $name::default();
                 let mut reader = BytesMut::from(&msg[..]);
-                let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
-                    .unwrap()
-                    .unwrap();
+                let (header, mut body) =
+                    FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                        .unwrap()
+                        .unwrap();
                 assert_eq!($name::try_read(header, &mut body).unwrap(), expected);
             }
         }

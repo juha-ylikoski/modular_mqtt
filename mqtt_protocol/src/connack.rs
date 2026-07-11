@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use super::fixed_header::FixedHeader;
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     UserProperty,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ConnectRcV3 {
     /// Connection accepted
     Accepted = 0,
@@ -28,7 +28,7 @@ pub enum ConnectRcV3 {
     Refused = 5,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ConnectRcV5 {
     /// Connection accepted
     Accepted = 0,
@@ -76,17 +76,17 @@ pub enum ConnectRcV5 {
     ConnectionRateExceeded = 159,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ConnectRc {
     V3(ConnectRcV3),
     V5(ConnectRcV5),
 }
 
-impl From<ConnectRc> for u8 {
-    fn from(value: ConnectRc) -> Self {
+impl From<&ConnectRc> for u8 {
+    fn from(value: &ConnectRc) -> Self {
         match value {
-            ConnectRc::V3(connect_rc_v3) => connect_rc_v3 as u8,
-            ConnectRc::V5(connect_rc_v5) => connect_rc_v5 as u8,
+            ConnectRc::V3(connect_rc_v3) => *connect_rc_v3 as u8,
+            ConnectRc::V5(connect_rc_v5) => *connect_rc_v5 as u8,
         }
     }
 }
@@ -242,12 +242,12 @@ impl<V> ConnAck<V> {
                 2 + variable_len_int_size(properties_length) + properties_length;
         }
     }
-    pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    pub fn write_to_buf(&mut self, buf: &mut impl BufMut) {
         let v5 = matches!(self.connect_rc, ConnectRc::V5(_));
         self.re_calculate_fixed_header_length();
-        let mut length = self.fixed_header.write_to_stream(writer)?;
-        writer.write_all(&[self.session_present as u8, self.connect_rc.into()])?;
-        length += 2;
+        self.fixed_header.write_to_buf(buf);
+        buf.put_u8(self.session_present as u8);
+        buf.put_u8(u8::from(&self.connect_rc));
         if v5 {
             let properties_length = self.session_expiry_interval.property_len()
                 + self.receive_maximum.property_len()
@@ -266,59 +266,41 @@ impl<V> ConnAck<V> {
                 + self.server_reference.property_len()
                 + self.authentication_method.property_len()
                 + self.authentication_data.property_len();
-            length += write_variable_len_int(properties_length as u64, writer)?;
-            length += self
-                .session_expiry_interval
-                .serialize(PropertyIdentifier::SessionExpiryInterval, writer)?
-                + self
-                    .receive_maximum
-                    .serialize(PropertyIdentifier::ReceiveMaximum, writer)?
-                + self
-                    .maximum_qos
-                    .serialize(PropertyIdentifier::MaximumQos, writer)?
-                + self
-                    .retain_available
-                    .serialize(PropertyIdentifier::RetainAvailable, writer)?
-                + self
-                    .maximum_packet_size
-                    .serialize(PropertyIdentifier::MaximumPacketSize, writer)?
-                + self
-                    .client_identifier
-                    .serialize(PropertyIdentifier::AssignedClientIdentifier, writer)?
-                + self
-                    .topic_alias_maximum
-                    .serialize(PropertyIdentifier::TopicAliasMaximum, writer)?
-                + self.reason.serialize(PropertyIdentifier::Reason, writer)?
-                + self
-                    .user_property
-                    .serialize(PropertyIdentifier::UserProperty, writer)?
-                + self
-                    .wildcard_subscription_available
-                    .serialize(PropertyIdentifier::WildcardSubscriptionAvailable, writer)?
-                + self
-                    .subscription_identifiers_available
-                    .serialize(PropertyIdentifier::SubscriptionIdentifierAvailable, writer)?
-                + self
-                    .shared_subscription_available
-                    .serialize(PropertyIdentifier::SharedSubscriptionAvailable, writer)?
-                + self
-                    .server_keep_alive
-                    .serialize(PropertyIdentifier::ServerKeepAlive, writer)?
-                + self
-                    .response_information
-                    .serialize(PropertyIdentifier::ResponseInformation, writer)?
-                + self
-                    .server_reference
-                    .serialize(PropertyIdentifier::ServerReference, writer)?
-                + self
-                    .authentication_method
-                    .serialize(PropertyIdentifier::AuthenticationMethod, writer)?
-                + self
-                    .authentication_data
-                    .serialize(PropertyIdentifier::AuthenticationData, writer)?;
+            write_variable_len_int(properties_length as u64, buf);
+            self.session_expiry_interval
+                .serialize(PropertyIdentifier::SessionExpiryInterval, buf);
+            self.receive_maximum
+                .serialize(PropertyIdentifier::ReceiveMaximum, buf);
+            self.maximum_qos
+                .serialize(PropertyIdentifier::MaximumQos, buf);
+            self.retain_available
+                .serialize(PropertyIdentifier::RetainAvailable, buf);
+            self.maximum_packet_size
+                .serialize(PropertyIdentifier::MaximumPacketSize, buf);
+            self.client_identifier
+                .serialize(PropertyIdentifier::AssignedClientIdentifier, buf);
+            self.topic_alias_maximum
+                .serialize(PropertyIdentifier::TopicAliasMaximum, buf);
+            self.reason.serialize(PropertyIdentifier::Reason, buf);
+            self.user_property
+                .serialize(PropertyIdentifier::UserProperty, buf);
+            self.wildcard_subscription_available
+                .serialize(PropertyIdentifier::WildcardSubscriptionAvailable, buf);
+            self.subscription_identifiers_available
+                .serialize(PropertyIdentifier::SubscriptionIdentifierAvailable, buf);
+            self.shared_subscription_available
+                .serialize(PropertyIdentifier::SharedSubscriptionAvailable, buf);
+            self.server_keep_alive
+                .serialize(PropertyIdentifier::ServerKeepAlive, buf);
+            self.response_information
+                .serialize(PropertyIdentifier::ResponseInformation, buf);
+            self.server_reference
+                .serialize(PropertyIdentifier::ServerReference, buf);
+            self.authentication_method
+                .serialize(PropertyIdentifier::AuthenticationMethod, buf);
+            self.authentication_data
+                .serialize(PropertyIdentifier::AuthenticationData, buf);
         }
-        writer.flush()?;
-        Ok(length)
     }
 }
 
@@ -732,34 +714,28 @@ mod test_v3 {
     use bytes::BytesMut;
 
     use super::*;
-    use std::io::BufWriter;
+    
 
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v3(false, ConnectRcV3::Accepted);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v3(false, ConnectRcV3::Accepted);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 0, 0]);
     }
 
     #[test]
     fn serialize_session_present() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v3(true, ConnectRcV3::Accepted);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v3(true, ConnectRcV3::Accepted);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 1, 0]);
     }
     #[test]
     fn serialize_rc() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v3(false, ConnectRcV3::Refused);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v3(false, ConnectRcV3::Refused);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 0, 5]);
     }
 
@@ -768,7 +744,9 @@ mod test_v3 {
         let msg = [32, 2, 0, 0];
         let expected = ConnAck::new_v3(false, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 
@@ -777,7 +755,9 @@ mod test_v3 {
         let msg = [32, 2, 1, 0];
         let expected = ConnAck::new_v3(true, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -785,7 +765,9 @@ mod test_v3 {
         let msg = [32, 2, 0, 4];
         let expected = ConnAck::new_v3(false, ConnectRcV3::BadUsernamePassword);
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
@@ -795,42 +777,35 @@ mod test_v5 {
     use bytes::BytesMut;
 
     use super::*;
-    use std::io::BufWriter;
+    
 
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v5(false, ConnectRcV5::Accepted);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v5(false, ConnectRcV5::Accepted);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 0, 0, 0]);
     }
 
     #[test]
     fn serialize_session_present() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v5(true, ConnectRcV5::Accepted);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v5(true, ConnectRcV5::Accepted);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 1, 0, 0]);
     }
     #[test]
     fn serialize_rc() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        let mut msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
+        msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 0, 135, 0]);
     }
 
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        let msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized)
+        let mut msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized)
             .set_session_expiry_interval(24)
             .set_receive_maximum(42)
             .set_maximum_qos(Qos::AtLeastOnce)
@@ -857,8 +832,7 @@ mod test_v5 {
             .set_server_reference("new.server".to_string())
             .set_authentication_method("auth".to_string())
             .set_authentication_data(Bytes::from_static(b"secret"));
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -914,7 +888,9 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -924,7 +900,9 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(true, ConnectRcV5::Accepted);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -933,7 +911,9 @@ mod test_v5 {
         let mut expected = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -1012,7 +992,9 @@ mod test_v5 {
             .set_authentication_data(Bytes::from_static(b"secret"));
         expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(ConnAck::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

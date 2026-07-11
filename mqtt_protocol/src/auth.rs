@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{
@@ -10,7 +10,7 @@ use crate::{
     Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ReasonCode {
     /// Authentication is successful
     Success = 0,
@@ -49,30 +49,24 @@ pub struct Auth<V> {
 }
 
 impl Auth<MqttV5_0_0> {
-    pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let mut len = self.fixed_header.write_to_stream(writer)?;
-        writer.write_all(&[self.reason_code as u8])?;
-        len += 1;
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        self.fixed_header.write_to_buf(buf);
+        buf.put_u8(self.reason_code as u8);
 
         let properties_len = self.method.property_len()
             + self.auth_data.property_len()
             + self.reason.property_len()
             + self.user_property.property_len();
 
-        len += write_variable_len_int(properties_len as u64, writer)?;
+        write_variable_len_int(properties_len as u64, buf);
 
-        len += self
-            .method
-            .serialize(PropertyIdentifier::AuthenticationMethod, writer)?
-            + self
-                .auth_data
-                .serialize(PropertyIdentifier::AuthenticationData, writer)?
-            + self.reason.serialize(PropertyIdentifier::Reason, writer)?
-            + self
-                .user_property
-                .serialize(PropertyIdentifier::UserProperty, writer)?;
-
-        Ok(len)
+        self.method
+            .serialize(PropertyIdentifier::AuthenticationMethod, buf);
+        self.auth_data
+            .serialize(PropertyIdentifier::AuthenticationData, buf);
+        self.reason.serialize(PropertyIdentifier::Reason, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
     }
 
     pub fn new_v5(
@@ -174,7 +168,6 @@ impl Auth<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v5 {
-    use std::io::BufWriter;
 
     use bytes::BytesMut;
 
@@ -182,18 +175,15 @@ mod test_v5 {
 
     #[test]
     fn serialize() {
-        let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
+        let mut buf = BytesMut::new();
         let msg = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
-        assert_eq!(&buf, &[240, 2, 0, 0]);
+        msg.write_to_buf(&mut buf);
+        assert_eq!(&buf[..], &[240, 2, 0, 0]);
     }
 
     #[test]
     fn serialize_properties() {
-        let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
+        let mut buf = BytesMut::new();
         let msg = Auth::new_v5(
             ReasonCode::ReAuthenticate,
             Some("method".to_string()),
@@ -204,10 +194,9 @@ mod test_v5 {
                 value: "value1".to_string(),
             }],
         );
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
-            &buf,
+            &buf[..],
             &[
                 240, 47, 25, // Properties length
                 45, // Auth method
@@ -225,7 +214,9 @@ mod test_v5 {
         let msg = [240, 2, 0, 0];
         let expected = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
@@ -251,7 +242,9 @@ mod test_v5 {
             }],
         );
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
     }
 }

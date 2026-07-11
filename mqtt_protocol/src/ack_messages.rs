@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
@@ -171,31 +171,24 @@ where
             } => reason.property_len() + user_property.property_len(),
         }
     }
-    fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-        let len = self.fixed_header.write_to_stream(writer)?;
-        writer.write_all(&[
-            ((self.packet_identifier & 0xff00) >> 8) as u8,
-            (self.packet_identifier & 0xff) as u8,
-        ])?;
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
+        self.fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
         let property_len = self.properties_len();
-        let v = match self.data {
-            PubAckData::V3 => len + 2,
+        match &self.data {
+            PubAckData::V3 => (),
             PubAckData::V5 {
                 reason_code,
                 reason,
                 user_property,
                 ..
             } => {
-                writer.write_all(&[reason_code.as_u8()])?;
-                let property_len_int_size = write_variable_len_int(property_len as u64, writer)?;
-                reason.serialize(crate::PropertyIdentifier::Reason, writer)?;
-                user_property.serialize(crate::PropertyIdentifier::UserProperty, writer)?;
-
-                len + 2 + 1 + property_len_int_size + property_len
+                buf.put_u8(reason_code.as_u8());
+                write_variable_len_int(property_len as u64, buf);
+                reason.serialize(crate::PropertyIdentifier::Reason, buf);
+                user_property.serialize(crate::PropertyIdentifier::UserProperty, buf);
             }
         };
-        writer.flush()?;
-        Ok(v)
     }
 
     fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
@@ -297,8 +290,8 @@ macro_rules! create_pub_ack_type {
         pub struct $name<V>(PubAckType<V, $reason_code>);
 
         impl<V> $name<V> {
-            pub fn write_to_stream(self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
-                self.0.write_to_stream(writer)
+            pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+                self.0.write_to_buf(buf)
             }
         }
 
@@ -375,7 +368,6 @@ macro_rules! make_tests {
     ($name:ident, $test_name:ident, $test_packet_type:expr, $reason_type:ty, $reason_code:ident) => {
         #[cfg(test)]
         mod $test_name {
-            use std::io::BufWriter;
 
             use super::*;
 
@@ -387,10 +379,8 @@ macro_rules! make_tests {
                 #[test]
                 fn serialize() {
                     let mut buf = Vec::new();
-                    let mut writer = BufWriter::new(&mut buf);
                     let msg = $name::new_v3(42);
-                    msg.write_to_stream(&mut writer).unwrap();
-                    drop(writer);
+                    msg.write_to_buf(&mut buf);
                     assert_eq!(&buf, &[$test_packet_type, 2, 0, 42]);
                 }
                 #[test]
@@ -398,9 +388,10 @@ macro_rules! make_tests {
                     let msg = [$test_packet_type, 2, 0, 42];
                     let expected = $name::new_v3(42);
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
-                        .unwrap()
-                        .unwrap();
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
                     assert_eq!($name::try_read_v3(header, &mut body).unwrap(), expected);
                 }
             }
@@ -413,10 +404,8 @@ macro_rules! make_tests {
                 #[test]
                 fn serialize() {
                     let mut buf = Vec::new();
-                    let mut writer = BufWriter::new(&mut buf);
                     let msg = $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
-                    msg.write_to_stream(&mut writer).unwrap();
-                    drop(writer);
+                    msg.write_to_buf(&mut buf);
                     assert_eq!(
                         &buf,
                         &[
@@ -433,15 +422,13 @@ macro_rules! make_tests {
                 #[test]
                 fn serialize_reason() {
                     let mut buf = Vec::new();
-                    let mut writer = BufWriter::new(&mut buf);
                     let msg = $name::new_v5(
                         42,
                         <$reason_type>::$reason_code,
                         Some("test".to_string()),
                         Vec::new(),
                     );
-                    msg.write_to_stream(&mut writer).unwrap();
-                    drop(writer);
+                    msg.write_to_buf(&mut buf);
                     assert_eq!(
                         &buf,
                         &[
@@ -464,7 +451,6 @@ macro_rules! make_tests {
                 #[test]
                 fn serialize_user_property() {
                     let mut buf = Vec::new();
-                    let mut writer = BufWriter::new(&mut buf);
                     let msg = $name::new_v5(
                         42,
                         <$reason_type>::$reason_code,
@@ -474,8 +460,7 @@ macro_rules! make_tests {
                             value: "value".to_string(),
                         }],
                     );
-                    msg.write_to_stream(&mut writer).unwrap();
-                    drop(writer);
+                    msg.write_to_buf(&mut buf);
                     assert_eq!(
                         &buf,
                         &[
@@ -514,9 +499,10 @@ macro_rules! make_tests {
                     let expected =
                         $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
-                        .unwrap()
-                        .unwrap();
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
 
@@ -544,9 +530,10 @@ macro_rules! make_tests {
                         Vec::new(),
                     );
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
-                        .unwrap()
-                        .unwrap();
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
                 #[test]
@@ -582,9 +569,10 @@ macro_rules! make_tests {
                         }],
                     );
                     let mut reader = BytesMut::from(&msg[..]);
-                    let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
-                        .unwrap()
-                        .unwrap();
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
                     assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
                 }
             }

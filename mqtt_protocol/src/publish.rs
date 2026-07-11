@@ -1,6 +1,6 @@
-use std::{io::Write, marker::PhantomData};
+use std::marker::PhantomData;
 
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
@@ -172,7 +172,7 @@ impl<V> Publish<V> {
         }
     }
 
-    fn write_properties(&self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    fn write_properties(&self, buf: &mut impl BufMut) {
         if let PublishProperties::V5 {
             payload_format,
             message_expiry_interval,
@@ -185,58 +185,39 @@ impl<V> Publish<V> {
             ..
         } = &self.properties
         {
-            let mut length = 0;
             let properties_len = self.properties_len();
-            length += write_variable_len_int(properties_len as u64, writer)?;
+            write_variable_len_int(properties_len as u64, buf);
 
             fn add_subscription_identifier(
                 subscription_identifier: Option<u64>,
-                writer: &mut impl Write,
-            ) -> Result<usize, std::io::Error> {
+                buf: &mut impl BufMut,
+            ) {
                 if let Some(id) = subscription_identifier {
-                    Ok(write_variable_len_int(
-                        PropertyIdentifier::SubscriptionIdentifier as u64,
-                        writer,
-                    )? + write_variable_len_int(id, writer)?)
-                } else {
-                    Ok(0)
+                    write_variable_len_int(PropertyIdentifier::SubscriptionIdentifier as u64, buf);
+                    write_variable_len_int(id, buf);
                 }
             }
 
-            length += payload_format
-                .serialize(PropertyIdentifier::PayloadFormatIndicator, writer)?
-                + message_expiry_interval
-                    .serialize(PropertyIdentifier::MessageExpiryInterval, writer)?
-                + topic_alias.serialize(PropertyIdentifier::TopicAlias, writer)?
-                + response_topic.serialize(PropertyIdentifier::ResponseTopic, writer)?
-                + correlation_data.serialize(PropertyIdentifier::CorrelationData, writer)?
-                + user_property.serialize(PropertyIdentifier::UserProperty, writer)?
-                + add_subscription_identifier(*subscription_identifier, writer)?
-                + content_type.serialize(PropertyIdentifier::ContentType, writer)?;
-
-            Ok(length)
-        } else {
-            Ok(0)
+            payload_format.serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
+            message_expiry_interval.serialize(PropertyIdentifier::MessageExpiryInterval, buf);
+            topic_alias.serialize(PropertyIdentifier::TopicAlias, buf);
+            response_topic.serialize(PropertyIdentifier::ResponseTopic, buf);
+            correlation_data.serialize(PropertyIdentifier::CorrelationData, buf);
+            user_property.serialize(PropertyIdentifier::UserProperty, buf);
+            add_subscription_identifier(*subscription_identifier, buf);
+            content_type.serialize(PropertyIdentifier::ContentType, buf);
         }
     }
 
-    pub fn write_to_stream(mut self, writer: &mut impl Write) -> Result<usize, std::io::Error> {
+    pub fn write_to_buf(&mut self, buf: &mut impl BufMut) {
         self.re_calculate_fixed_header_length();
-        let mut length = self.fixed_header.write_to_stream(writer)?;
-        length += write_str(&self.topic, writer)?;
+        self.fixed_header.write_to_buf(buf);
+        write_str(&self.topic, buf);
         if let Some(packet_identifier) = self.packet_identifier {
-            writer.write_all(&[
-                ((packet_identifier & 0xff00) >> 8) as u8,
-                (packet_identifier & 0xff) as u8,
-            ])?;
-            length += 2;
+            buf.put_u16(packet_identifier);
         }
-        length += self.write_properties(writer)?;
-        length += self.payload.len();
-        writer.write_all(&self.payload)?;
-        writer.flush()?;
-
-        Ok(length)
+        self.write_properties(buf);
+        buf.put(&self.payload[..]);
     }
 }
 
@@ -629,7 +610,7 @@ impl Publish<MqttV5_0_0> {
 
 #[cfg(test)]
 mod test_v3 {
-    use std::io::BufWriter;
+    
 
     use bytes::BytesMut;
 
@@ -638,7 +619,7 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let mut msg = Publish::new_v3(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -646,9 +627,7 @@ mod test_v3 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -660,7 +639,7 @@ mod test_v3 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let msg = Publish::new_v3(
+        let mut msg = Publish::new_v3(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -668,9 +647,7 @@ mod test_v3 {
             Bytes::from_static(b"foo"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[48, 9, 0, 4, b'f', b'o', b'o', b'2', b'f', b'o', b'o']
@@ -679,7 +656,7 @@ mod test_v3 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let mut msg = Publish::new_v3(
             false,
             QosPacketIdentifier::ExactlyOnce(42),
             false,
@@ -687,9 +664,7 @@ mod test_v3 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -717,7 +692,7 @@ mod test_v3 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let mut msg = Publish::new_v3(
             true,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -725,9 +700,7 @@ mod test_v3 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -753,7 +726,7 @@ mod test_v3 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let mut msg = Publish::new_v3(
             false,
             QosPacketIdentifier::AtMostOnce,
             true,
@@ -761,9 +734,7 @@ mod test_v3 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -799,7 +770,9 @@ mod test_v3 {
             48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -832,7 +805,9 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -863,7 +838,9 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -894,14 +871,16 @@ mod test_v3 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
     }
 }
 
 #[cfg(test)]
 mod test_v5 {
-    use std::io::BufWriter;
+    
 
     use bytes::BytesMut;
 
@@ -910,7 +889,7 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -918,9 +897,7 @@ mod test_v5 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -932,7 +909,7 @@ mod test_v5 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -940,9 +917,7 @@ mod test_v5 {
             Bytes::from_static(b"foo"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[48, 10, 0, 4, b'f', b'o', b'o', b'2', 0, b'f', b'o', b'o']
@@ -951,7 +926,7 @@ mod test_v5 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             false,
             QosPacketIdentifier::ExactlyOnce(42),
             false,
@@ -959,9 +934,7 @@ mod test_v5 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -990,7 +963,7 @@ mod test_v5 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             true,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -998,9 +971,7 @@ mod test_v5 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1027,7 +998,7 @@ mod test_v5 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             false,
             QosPacketIdentifier::AtMostOnce,
             true,
@@ -1035,9 +1006,7 @@ mod test_v5 {
             Bytes::from_static(b"payload"),
         );
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1074,7 +1043,9 @@ mod test_v5 {
             48, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1108,7 +1079,9 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1140,7 +1113,9 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
     #[test]
@@ -1172,14 +1147,16 @@ mod test_v5 {
             b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
 
     #[test]
     fn serialize_properties() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let mut msg = Publish::new_v5(
             false,
             QosPacketIdentifier::AtMostOnce,
             false,
@@ -1204,9 +1181,7 @@ mod test_v5 {
         .set_subscription_identifier(12)
         .set_content_type("test".to_string());
         let mut buf = Vec::new();
-        let mut writer = BufWriter::new(&mut buf);
-        msg.write_to_stream(&mut writer).unwrap();
-        drop(writer);
+        msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
             &[
@@ -1308,7 +1283,9 @@ mod test_v5 {
             b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
         let mut buf = BytesMut::from(&msg[..]);
-        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap().unwrap();
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
         expected.re_calculate_fixed_header_length();
         assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
     }
