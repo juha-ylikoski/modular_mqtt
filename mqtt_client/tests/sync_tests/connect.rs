@@ -8,13 +8,13 @@ use mqtt_client::{
     client_opts::{ClientOpts, MqttLastWill, OnDisconnectBehavior},
 };
 use ntest::timeout;
-use rust_mqtt_protocol::{MqttLastWill3_1_1, MqttTopic, Publish, Qos};
+use rust_mqtt_protocol::{MqttLastWill3_1_1, MqttTopic, MqttV3_1_1, Publish, Qos};
 
 #[test]
 #[timeout(5000)]
 fn connect_no_server() {
     util::init_logging();
-    match SyncClient::connect_tcp(
+    match SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -58,7 +58,7 @@ fn connect() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -107,7 +107,7 @@ fn connect_username_password() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -207,7 +207,7 @@ fn connect_refused() {
         });
     });
 
-    match SyncClient::connect_tcp(
+    match SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,

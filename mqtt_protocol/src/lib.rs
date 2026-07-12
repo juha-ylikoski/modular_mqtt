@@ -4,7 +4,10 @@
 //! Copyright © OASIS Open 2019. All Rights Reserved.
 //! See the NOTICE file in the project root for the full license text.
 
-pub use ack_messages::{PubAck, PubComp, PubRec, PubRel, UnsubAck};
+pub use ack_messages::{
+    PubAck, PubAckReasonCode, PubComp, PubCompReasonCode, PubRec, PubRecReasonCode, PubRel,
+    PubRelReasonCode, UnsubAck,
+};
 pub use auth::Auth;
 use bytes::{BufMut, Bytes};
 pub use connack::{ConnAck, ConnectRc, ConnectRcV3, ConnectRcV5};

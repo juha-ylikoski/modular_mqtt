@@ -7,6 +7,7 @@ use mqtt_client::{
     client_opts::{ClientOpts, OnDisconnectBehavior},
 };
 use ntest::timeout;
+use rust_mqtt_protocol::MqttV3_1_1;
 
 #[test]
 #[timeout(15000)]
@@ -42,7 +43,7 @@ fn ping_sequence() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 2,

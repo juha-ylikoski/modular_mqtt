@@ -9,7 +9,7 @@ async fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let mut client = SyncClient::connect_tcp(
+    let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id-sub".to_string(),
             keep_alive: 15,
@@ -32,7 +32,7 @@ async fn main() {
 
     tracing::info!("Publish with qos=0");
     assert!(client
-        .publish(Publish::new_v3(
+        .publish(Publish::new_v5(
             "qos0".try_into().unwrap(),
             b"Published message content as utf8 string",
             Qos::AtMostOnce,
