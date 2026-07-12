@@ -1,11 +1,11 @@
 use std::{
-    io::{BufReader, Read, Write},
+    io::{Read, Write},
     net::TcpStream,
     time::Duration,
 };
 
 pub enum SyncReader {
-    Tcp(BufReader<TcpStream>),
+    Tcp(TcpStream),
     Disconnected,
 }
 
@@ -29,7 +29,7 @@ impl Read for SyncReader {
 impl SyncReader {
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), std::io::Error> {
         match self {
-            SyncReader::Tcp(reader) => reader.get_ref().set_read_timeout(dur),
+            SyncReader::Tcp(reader) => reader.set_read_timeout(dur),
             SyncReader::Disconnected => Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "Client disconnected",

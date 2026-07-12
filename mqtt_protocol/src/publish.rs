@@ -4,8 +4,8 @@ use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    ControlPacketType, Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, PayloadFormat, Property,
-    PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV3_1_1, MqttV5_0_0, PayloadFormat,
+    Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -85,15 +85,15 @@ pub enum PublishProperties<V> {
 
 #[derive(Debug, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
-pub struct Publish<V> {
+pub struct Publish<V, Q> {
     fixed_header: FixedHeader,
+    qos: Q,
     topic: String,
-    packet_identifier: Option<u16>,
     payload: Bytes,
     properties: PublishProperties<V>,
 }
 
-impl<V> Publish<V> {
+impl<V, Q> Publish<V, Q> {
     pub fn dup(&self) -> bool {
         match self.fixed_header.control_packet_type {
             ControlPacketType::Publish { dup, .. } => dup,
@@ -112,7 +112,36 @@ impl<V> Publish<V> {
             _ => unreachable!(),
         }
     }
+}
 
+impl<V> Publish<V, Qos> {
+    pub fn assign_packet_identifier(
+        self,
+        id: impl FnOnce() -> u16,
+        dup: bool,
+    ) -> Publish<V, QosPacketIdentifier> {
+        let mut v = Publish {
+            fixed_header: self.fixed_header,
+            qos: match self.qos {
+                Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
+                Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(id()),
+                Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(id()),
+            },
+            topic: self.topic,
+            payload: self.payload,
+            properties: self.properties,
+        };
+        let is_dup = dup;
+        match &mut v.fixed_header.control_packet_type {
+            ControlPacketType::Publish { dup, .. } => *dup = is_dup,
+            _ => unreachable!(),
+        }
+        v.re_calculate_fixed_header_length();
+        v
+    }
+}
+
+impl<V> Publish<V, QosPacketIdentifier> {
     /// Re-calculate fixed header length
     ///
     /// We initially have no properties -> property len == 0
@@ -130,10 +159,10 @@ impl<V> Publish<V> {
                 let remaining_length = 2
                     + self.topic.len()
                     + {
-                        if self.packet_identifier.is_some() {
-                            2
-                        } else {
-                            0
+                        match self.qos {
+                            QosPacketIdentifier::AtMostOnce => 0,
+                            QosPacketIdentifier::AtLeastOnce(_)
+                            | QosPacketIdentifier::ExactlyOnce(_) => 2,
                         }
                     }
                     + self.payload.len();
@@ -209,12 +238,13 @@ impl<V> Publish<V> {
         }
     }
 
-    pub fn write_to_buf(&mut self, buf: &mut impl BufMut) {
-        self.re_calculate_fixed_header_length();
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
         self.fixed_header.write_to_buf(buf);
         write_str(&self.topic, buf);
-        if let Some(packet_identifier) = self.packet_identifier {
-            buf.put_u16(packet_identifier);
+        match self.qos {
+            QosPacketIdentifier::AtMostOnce => (),
+            QosPacketIdentifier::AtLeastOnce(packet_identifier)
+            | QosPacketIdentifier::ExactlyOnce(packet_identifier) => buf.put_u16(packet_identifier),
         }
         self.write_properties(buf);
         buf.put(&self.payload[..]);
@@ -225,7 +255,11 @@ impl<V> Publish<V> {
     }
 
     pub fn packet_identifier(&self) -> Option<u16> {
-        self.packet_identifier
+        match self.qos {
+            QosPacketIdentifier::AtMostOnce => None,
+            QosPacketIdentifier::AtLeastOnce(packet_identifier)
+            | QosPacketIdentifier::ExactlyOnce(packet_identifier) => Some(packet_identifier),
+        }
     }
 
     pub fn payload(&self) -> &Bytes {
@@ -233,25 +267,15 @@ impl<V> Publish<V> {
     }
 }
 
-impl Publish<MqttV3_1_1> {
-    pub fn new_v3(
-        dup: bool,
-        qos: QosPacketIdentifier,
-        retain: bool,
-        topic: MqttTopic,
-        payload: Bytes,
-    ) -> Self {
+impl Publish<MqttV3_1_1, Qos> {
+    pub fn new_v3(topic: MqttTopic, payload: impl IntoPayload, qos: Qos, retain: bool) -> Self {
+        let payload = payload.into_payload();
         let topic = topic.0;
-        let packet_identifier = match &qos {
-            QosPacketIdentifier::AtMostOnce => None,
-            QosPacketIdentifier::AtLeastOnce(id) => Some(*id),
-            QosPacketIdentifier::ExactlyOnce(id) => Some(*id),
-        };
 
         let remaining_length = 2
             + topic.len()
             + {
-                if packet_identifier.is_some() {
+                if qos != Qos::AtMostOnce {
                     2
                 } else {
                     0
@@ -261,20 +285,23 @@ impl Publish<MqttV3_1_1> {
         Self {
             fixed_header: FixedHeader::new(
                 super::fixed_header::ControlPacketType::Publish {
-                    dup,
-                    qos: qos.into(),
+                    dup: false,
+                    qos,
                     retain,
                 },
                 remaining_length,
             ),
+            qos,
             topic,
-            packet_identifier,
             payload,
             properties: PublishProperties::V3 {
                 protocol_level: PhantomData,
             },
         }
     }
+}
+
+impl Publish<MqttV3_1_1, QosPacketIdentifier> {
     pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let topic = extract_str(data)?.to_string();
 
@@ -283,18 +310,18 @@ impl Publish<MqttV3_1_1> {
             _ => unreachable!(),
         };
 
-        let packet_identifier = if qos != Qos::AtMostOnce {
-            Some(data.try_get_u16()?)
-        } else {
-            None
+        let qos = match qos {
+            Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
+            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
+            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
         };
 
         let payload = data.clone();
 
         Ok(Self {
             fixed_header: header,
+            qos,
             topic,
-            packet_identifier,
             payload,
             properties: PublishProperties::V3 {
                 protocol_level: PhantomData,
@@ -303,43 +330,99 @@ impl Publish<MqttV3_1_1> {
     }
 }
 
-impl Publish<MqttV5_0_0> {
-    pub fn new_v5(
-        dup: bool,
-        qos: QosPacketIdentifier,
-        retain: bool,
-        topic: MqttTopic,
-        payload: Bytes,
-    ) -> Self {
+impl<Q> Publish<MqttV5_0_0, Q> {
+    pub fn payload_format(&self) -> Option<PayloadFormat> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { payload_format, .. } => *payload_format,
+        }
+    }
+
+    pub fn message_expiry_interval(&self) -> Option<u32> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                message_expiry_interval,
+                ..
+            } => *message_expiry_interval,
+        }
+    }
+
+    pub fn topic_alias(&self) -> Option<u16> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { topic_alias, .. } => *topic_alias,
+        }
+    }
+
+    pub fn response_topic(&self) -> Option<&str> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { response_topic, .. } => response_topic.as_deref(),
+        }
+    }
+
+    pub fn correlation_data(&self) -> &[u8] {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                correlation_data, ..
+            } => correlation_data,
+        }
+    }
+
+    pub fn user_property(&self) -> &[UserProperty] {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { user_property, .. } => user_property,
+        }
+    }
+
+    pub fn subscription_identifier(&self) -> Option<u64> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                subscription_identifier,
+                ..
+            } => *subscription_identifier,
+        }
+    }
+
+    pub fn content_type(&self) -> Option<&str> {
+        match &self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { content_type, .. } => content_type.as_deref(),
+        }
+    }
+}
+
+impl Publish<MqttV5_0_0, Qos> {
+    pub fn new_v5(topic: MqttTopic, payload: impl IntoPayload, qos: Qos, retain: bool) -> Self {
+        let payload = payload.into_payload();
         let topic = topic.0;
-        let packet_identifier = match &qos {
-            QosPacketIdentifier::AtMostOnce => None,
-            QosPacketIdentifier::AtLeastOnce(id) => Some(*id),
-            QosPacketIdentifier::ExactlyOnce(id) => Some(*id),
-        };
 
         let remaining_length = 2
             + topic.len()
             + 1 // properties length is static 0 before we initialize them
             + {
-                if packet_identifier.is_some() {
-                    2
-                } else {
-                    0
+                match qos {
+                    Qos::AtMostOnce => 0,
+                    Qos::AtLeastOnce |
+                    Qos::ExactlyOnce => 2,
                 }
             }
             + payload.len();
         Self {
             fixed_header: FixedHeader::new(
                 super::fixed_header::ControlPacketType::Publish {
-                    dup,
-                    qos: qos.into(),
+                    dup: false,
+                    qos,
                     retain,
                 },
                 remaining_length,
             ),
             topic,
-            packet_identifier,
+            qos,
             payload,
             properties: PublishProperties::V5 {
                 protocol_level: PhantomData,
@@ -355,6 +438,75 @@ impl Publish<MqttV5_0_0> {
         }
     }
 
+    pub fn set_payload_format(mut self, value: PayloadFormat) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { payload_format, .. } => *payload_format = Some(value),
+        }
+        self
+    }
+
+    pub fn set_message_expiry_interval(mut self, interval: u32) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                message_expiry_interval,
+                ..
+            } => *message_expiry_interval = Some(interval),
+        }
+        self
+    }
+
+    pub fn set_response_topic(mut self, topic: String) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { response_topic, .. } => *response_topic = Some(topic),
+        }
+        self
+    }
+    pub fn set_topic_alias(mut self, alias: u16) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { topic_alias, .. } => *topic_alias = Some(alias),
+        }
+        self
+    }
+    pub fn set_correlation_data(mut self, data: Bytes) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                correlation_data, ..
+            } => *correlation_data = data,
+        }
+        self
+    }
+    pub fn set_user_property(mut self, user_properties: Vec<UserProperty>) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { user_property, .. } => *user_property = user_properties,
+        }
+        self
+    }
+    pub fn set_subscription_identifier(mut self, value: u64) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 {
+                subscription_identifier,
+                ..
+            } => *subscription_identifier = Some(value),
+        }
+        self
+    }
+    pub fn set_content_type(mut self, value: String) -> Self {
+        match &mut self.properties {
+            PublishProperties::V3 { .. } => unreachable!(),
+            PublishProperties::V5 { content_type, .. } => *content_type = Some(value),
+        }
+        self
+    }
+}
+
+impl Publish<MqttV5_0_0, QosPacketIdentifier> {
     fn read_property(&mut self, data: &mut Bytes) -> Result<(), Error> {
         let property_identifier = read_variable_len_int(data)?;
         let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
@@ -451,10 +603,10 @@ impl Publish<MqttV5_0_0> {
             _ => unreachable!(),
         };
 
-        let packet_identifier = if qos != Qos::AtMostOnce {
-            Some(data.try_get_u16()?)
-        } else {
-            None
+        let qos = match qos {
+            Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
+            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
+            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
         };
 
         let properties_len = read_variable_len_int(data)? as usize;
@@ -467,7 +619,7 @@ impl Publish<MqttV5_0_0> {
         let mut publish = Self {
             fixed_header: header,
             topic,
-            packet_identifier,
+            qos,
             payload: Bytes::new(),
             properties: PublishProperties::V5 {
                 protocol_level: PhantomData,
@@ -490,134 +642,6 @@ impl Publish<MqttV5_0_0> {
 
         Ok(publish)
     }
-
-    pub fn set_payload_format(mut self, value: PayloadFormat) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { payload_format, .. } => *payload_format = Some(value),
-        }
-        self
-    }
-    pub fn payload_format(&self) -> Option<PayloadFormat> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { payload_format, .. } => *payload_format,
-        }
-    }
-
-    pub fn set_message_expiry_interval(mut self, interval: u32) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                message_expiry_interval,
-                ..
-            } => *message_expiry_interval = Some(interval),
-        }
-        self
-    }
-    pub fn message_expiry_interval(&self) -> Option<u32> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                message_expiry_interval,
-                ..
-            } => *message_expiry_interval,
-        }
-    }
-
-    pub fn set_topic_alias(mut self, alias: u16) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { topic_alias, .. } => *topic_alias = Some(alias),
-        }
-        self
-    }
-    pub fn topic_alias(&self) -> Option<u16> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { topic_alias, .. } => *topic_alias,
-        }
-    }
-
-    pub fn set_response_topic(mut self, topic: String) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { response_topic, .. } => *response_topic = Some(topic),
-        }
-        self
-    }
-    pub fn response_topic(&self) -> Option<&str> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { response_topic, .. } => response_topic.as_deref(),
-        }
-    }
-
-    pub fn set_correlation_data(mut self, data: Bytes) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                correlation_data, ..
-            } => *correlation_data = data,
-        }
-        self
-    }
-    pub fn correlation_data(&self) -> &[u8] {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                correlation_data, ..
-            } => correlation_data,
-        }
-    }
-
-    pub fn set_user_property(mut self, user_properties: Vec<UserProperty>) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { user_property, .. } => *user_property = user_properties,
-        }
-        self
-    }
-    pub fn user_property(&self) -> &[UserProperty] {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { user_property, .. } => user_property,
-        }
-    }
-
-    pub fn set_subscription_identifier(mut self, value: u64) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                subscription_identifier,
-                ..
-            } => *subscription_identifier = Some(value),
-        }
-        self
-    }
-    pub fn subscription_identifier(&self) -> Option<u64> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                subscription_identifier,
-                ..
-            } => *subscription_identifier,
-        }
-    }
-
-    pub fn set_content_type(mut self, value: String) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { content_type, .. } => *content_type = Some(value),
-        }
-        self
-    }
-    pub fn content_type(&self) -> Option<&str> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { content_type, .. } => content_type.as_deref(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -630,13 +654,13 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v3(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
+        let msg = Publish::new_v3(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -650,13 +674,8 @@ mod test_v3 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let mut msg = Publish::new_v3(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
-            topic,
-            Bytes::from_static(b"foo"),
-        );
+        let msg = Publish::new_v3(topic, Bytes::from_static(b"foo"), Qos::AtMostOnce, false)
+            .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -667,13 +686,13 @@ mod test_v3 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v3(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
+        let msg = Publish::new_v3(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::ExactlyOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -703,13 +722,13 @@ mod test_v3 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v3(
-            true,
-            QosPacketIdentifier::AtMostOnce,
-            false,
+        let msg = Publish::new_v3(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, true);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -737,13 +756,8 @@ mod test_v3 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v3(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            true,
-            topic,
-            Bytes::from_static(b"payload"),
-        );
+        let msg = Publish::new_v3(topic, Bytes::from_static(b"payload"), Qos::AtMostOnce, true)
+            .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -771,12 +785,12 @@ mod test_v3 {
     #[test]
     fn deserialize() {
         let expected = Publish::new_v3(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let msg = [
             48, 14, 0, 5, b't', b'o', b'p', b'i', b'c', b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
@@ -789,12 +803,12 @@ mod test_v3 {
     #[test]
     fn deserialize_qos() {
         let expected = Publish::new_v3(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::ExactlyOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false);
         let msg = [
             48 | 2 << 1,
             16,
@@ -824,12 +838,12 @@ mod test_v3 {
     #[test]
     fn deserialize_dup() {
         let expected = Publish::new_v3(
-            true,
-            QosPacketIdentifier::AtMostOnce,
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, true);
         let msg = [
             48 | 1 << 3,
             14,
@@ -857,12 +871,12 @@ mod test_v3 {
     #[test]
     fn deserialize_retain() {
         let expected = Publish::new_v3(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            true,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            true,
+        )
+        .assign_packet_identifier(|| 0, false);
         let msg = [
             48 | 1,
             14,
@@ -899,13 +913,13 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
+        let msg = Publish::new_v5(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -919,13 +933,8 @@ mod test_v5 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let mut msg = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
-            topic,
-            Bytes::from_static(b"foo"),
-        );
+        let msg = Publish::new_v5(topic, Bytes::from_static(b"foo"), Qos::AtMostOnce, false)
+            .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -936,13 +945,13 @@ mod test_v5 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v5(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
+        let msg = Publish::new_v5(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::ExactlyOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -973,13 +982,13 @@ mod test_v5 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v5(
-            true,
-            QosPacketIdentifier::AtMostOnce,
-            false,
+        let msg = Publish::new_v5(
             topic,
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, true);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -1008,13 +1017,8 @@ mod test_v5 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            true,
-            topic,
-            Bytes::from_static(b"payload"),
-        );
+        let msg = Publish::new_v5(topic, Bytes::from_static(b"payload"), Qos::AtMostOnce, true)
+            .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -1043,12 +1047,12 @@ mod test_v5 {
     #[test]
     fn deserialize() {
         let expected = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let msg = [
             48, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
@@ -1061,12 +1065,12 @@ mod test_v5 {
     #[test]
     fn deserialize_qos() {
         let expected = Publish::new_v5(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::ExactlyOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false);
         let msg = [
             48 | 2 << 1,
             17,
@@ -1097,12 +1101,12 @@ mod test_v5 {
     #[test]
     fn deserialize_dup() {
         let expected = Publish::new_v5(
-            true,
-            QosPacketIdentifier::AtMostOnce,
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, true);
         let msg = [
             48 | 1 << 3,
             15,
@@ -1131,12 +1135,12 @@ mod test_v5 {
     #[test]
     fn deserialize_retain() {
         let expected = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            true,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            true,
+        )
+        .assign_packet_identifier(|| 42, false);
         let msg = [
             48 | 1,
             15,
@@ -1166,12 +1170,11 @@ mod test_v5 {
     #[test]
     fn serialize_properties() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let mut msg = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
+        let msg = Publish::new_v5(
             topic,
             Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
         )
         .set_payload_format(PayloadFormat::Binary)
         .set_message_expiry_interval(10)
@@ -1189,7 +1192,8 @@ mod test_v5 {
             },
         ])
         .set_subscription_identifier(12)
-        .set_content_type("test".to_string());
+        .set_content_type("test".to_string())
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -1226,12 +1230,12 @@ mod test_v5 {
     #[test]
     fn deserialize_properties() {
         let mut expected = Publish::new_v5(
-            false,
-            QosPacketIdentifier::AtMostOnce,
-            false,
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
-        );
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
 
         match &mut expected.properties {
             PublishProperties::V3 { .. } => unreachable!(),

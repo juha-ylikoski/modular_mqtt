@@ -7,8 +7,8 @@
 pub use ack_messages::{PubAck, PubComp, PubRec, PubRel, UnsubAck};
 pub use auth::Auth;
 use bytes::{BufMut, Bytes};
-pub use connack::{ConnAck, ConnectRc};
-pub use connect::{Connect, MqttLastWill};
+pub use connack::{ConnAck, ConnectRc, ConnectRcV3, ConnectRcV5};
+pub use connect::{Connect, MqttLastWill, MqttLastWill3_1_1, MqttLastWill5_0_0};
 pub use disconnect::Disconnect;
 pub use fixed_header::{ControlPacketType, FixedHeader};
 pub use ping::{PingReq, PingResp};
@@ -31,9 +31,9 @@ mod subscribe;
 mod unsubscribe;
 mod util;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MqttV3_1_1;
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MqttV5_0_0;
 
 pub(crate) const MQTT_VERSION_3_1_1: u8 = 4;
@@ -43,10 +43,10 @@ pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
 
 const SUPPORTED_PROTOCOL_VERSION: &[u8] = &[MQTT_VERSION_3_1_1, MQTT_VERSION_5_0_0];
 
-pub enum MqttPackage<V> {
+pub enum MqttPackage<V, Q> {
     Connect(Connect),
     ConnAck(ConnAck<V>),
-    Publish(Publish<V>),
+    Publish(Publish<V, Q>),
     PubAck(PubAck<V>),
     PubRec(PubRec<V>),
     PubRel(PubRel<V>),
@@ -104,6 +104,13 @@ impl From<bytes::TryGetError> for Error {
         MalformedPacket::new("Packet too short to read property")
     }
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{self:?}"))
+    }
+}
+impl std::error::Error for Error {}
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PropertyIdentifier {
@@ -179,7 +186,7 @@ pub enum PayloadFormat {
     Utf8,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UserProperty {
     pub key: String,
     pub value: String,
@@ -370,5 +377,33 @@ impl Property for Option<Qos> {
         } else {
             0
         }
+    }
+}
+
+pub trait IntoPayload {
+    fn into_payload(self) -> Bytes;
+}
+
+impl IntoPayload for Bytes {
+    fn into_payload(self) -> Bytes {
+        self
+    }
+}
+
+impl IntoPayload for Vec<u8> {
+    fn into_payload(self) -> Bytes {
+        Bytes::from(self)
+    }
+}
+
+impl IntoPayload for &'static [u8] {
+    fn into_payload(self) -> Bytes {
+        Bytes::from_static(self)
+    }
+}
+
+impl<const N: usize> IntoPayload for &'static [u8; N] {
+    fn into_payload(self) -> Bytes {
+        Bytes::from_static(self)
     }
 }

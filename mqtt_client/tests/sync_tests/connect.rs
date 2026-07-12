@@ -1,14 +1,14 @@
-use crate::util;
+use crate::util::{self, write_packet};
 
 use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::util::Message;
+use bytes::Bytes;
 use mqtt_client::{
     client::SyncClient,
-    client_opts::{ClientOpts, OnDisconnectBehavior},
+    client_opts::{ClientOpts, MqttLastWill, OnDisconnectBehavior},
 };
 use ntest::timeout;
-use rust_mqtt_protocol::{MqttLastWill, Qos};
+use rust_mqtt_protocol::{MqttLastWill3_1_1, MqttTopic, Publish, Qos};
 
 #[test]
 #[timeout(5000)]
@@ -23,6 +23,7 @@ fn connect_no_server() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         "127.0.0.1:1234".to_string(),
     ) {
@@ -44,15 +45,16 @@ fn connect() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -65,6 +67,7 @@ fn connect() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
@@ -84,22 +87,23 @@ fn connect_username_password() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
             rust_mqtt_protocol::Connect::new_v3(
                 true,
                 1,
-                "",
+                "".to_string(),
                 None,
-                Some("username"),
-                Some(b"password")
+                Some("username".to_string()),
+                Some(Bytes::from_static(b"password"))
             )
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -110,9 +114,9 @@ fn connect_username_password() {
             clean_session: true,
             will: None,
             username: Some("username".to_string()),
-            password: Some(b"password".to_vec()),
-
+            password: Some(Bytes::from_static(b"password")),
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
@@ -133,27 +137,28 @@ fn connect_last_will() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
             rust_mqtt_protocol::Connect::new_v3(
                 true,
                 1,
-                "",
-                Some(MqttLastWill::new(
-                    "last-will-topic",
-                    b"payload",
+                "".to_string(),
+                Some(MqttLastWill3_1_1::new(
+                    MqttTopic::try_from("last-will-topic").unwrap(),
+                    Bytes::from_static(b"payload"),
+                    rust_mqtt_protocol::Qos::AtMostOnce,
                     false,
-                    rust_mqtt_protocol::Qos::AtMostOnce
                 )),
                 None,
                 None,
             )
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -162,15 +167,16 @@ fn connect_last_will() {
             client_id: "".to_string(),
             keep_alive: 1,
             clean_session: true,
-            will: Some(mqtt_client::client_opts::LastWill {
-                topic: "last-will-topic".to_string(),
-                payload: b"payload".into(),
-                retain: false,
-                qos: rust_mqtt_protocol::Qos::AtMostOnce,
-            }),
+            will: Some(MqttLastWill::from(MqttLastWill3_1_1::new(
+                MqttTopic::try_from("last-will-topic").unwrap(),
+                Bytes::from_static(b"payload"),
+                rust_mqtt_protocol::Qos::AtMostOnce,
+                false,
+            ))),
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
@@ -189,15 +195,16 @@ fn connect_refused() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "", None, None, None,)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "".to_string(), None, None, None,)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Refused)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Refused)
+                .write_to_buf(buf)
+        });
     });
 
     match SyncClient::connect_tcp(
@@ -209,13 +216,14 @@ fn connect_refused() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     ) {
         Ok(_) => panic!("Should not get here"),
         Err(e) => match e {
-            mqtt_client::error::ConnectError::ConnectFailed(connect_rc) => {
-                assert_eq!(connect_rc, rust_mqtt_protocol::ConnectRc::Refused)
+            mqtt_client::error::ConnectError::ConnectFailedV3(connect_rc) => {
+                assert_eq!(connect_rc, rust_mqtt_protocol::ConnectRcV3::Refused)
             }
             _ => panic!("Should not get here"),
         },
@@ -233,16 +241,17 @@ fn disconnect() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
-        rust_mqtt_protocol::Disconnect::write_to_stream(&mut stream).unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf);
+            rust_mqtt_protocol::Disconnect::new_v3().write_to_buf(buf);
+        });
     });
 
     let client = SyncClient::connect_tcp(
@@ -254,18 +263,20 @@ fn disconnect() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     handle.join().unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    assert_eq!(client.online(), false);
+    assert!(!client.online());
     client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             "foo".try_into().unwrap(),
             b"bar",
             Qos::AtMostOnce,
+            false,
         ))
         .unwrap();
 }

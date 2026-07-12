@@ -1,14 +1,13 @@
-use crate::util;
+use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
 
 use mqtt_client::{
     client::SyncClient,
     client_opts::{ClientOpts, OnDisconnectBehavior},
-    util::Message,
 };
 use ntest::timeout;
-use rust_mqtt_protocol::{ControlPacketType, FixedHeader, MqttTopic};
+use rust_mqtt_protocol::{ControlPacketType, MqttTopic, Publish, Qos};
 
 #[test]
 #[timeout(5000)]
@@ -20,26 +19,28 @@ fn publish_qos0() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: 0,
-                topic: "topic".to_string(),
-                packet_identifier: None,
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::AtMostOnce,
+                false
+            )
+            .assign_packet_identifier(|| 1, false)
         );
         rx_close.recv().unwrap();
     });
@@ -53,15 +54,17 @@ fn publish_qos0() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     assert!(client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::AtMostOnce,
+            false
         ))
         .unwrap()
         .is_none());
@@ -81,39 +84,37 @@ fn publish_qos1() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
-        assert!(recv_msg.packet_identifier.is_some());
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        assert!(recv_msg.packet_identifier().is_some());
 
         let expected_packet_identifier = recv.recv().unwrap();
 
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos: rust_mqtt_protocol::Qos::AtLeastOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: Some(expected_packet_identifier),
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::AtLeastOnce,
+                false
+            )
+            .assign_packet_identifier(|| expected_packet_identifier, false)
         );
-        rust_mqtt_protocol::PubAck::new(recv_msg.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubAck::new_v3(recv_msg.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -126,15 +127,17 @@ fn publish_qos1() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     let msg = client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::AtLeastOnce,
+            false,
         ))
         .unwrap()
         .unwrap();
@@ -157,47 +160,46 @@ fn publish_qos2() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
-        assert!(recv_pub.packet_identifier.is_some());
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos: rust_mqtt_protocol::Qos::ExactlyOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: Some(expected_packet_identifier),
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::ExactlyOnce,
+                false
+            )
+            .assign_packet_identifier(|| expected_packet_identifier, false)
         );
-        rust_mqtt_protocol::PubRec::new(recv_pub.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubRec::new_v3(recv_pub.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             pub_rel,
-            rust_mqtt_protocol::PubRel::new(expected_packet_identifier)
+            rust_mqtt_protocol::PubRel::new_v3(expected_packet_identifier)
         );
-        rust_mqtt_protocol::PubComp::new(recv_pub.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubComp::new_v3(recv_pub.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -210,15 +212,17 @@ fn publish_qos2() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     let msg = client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::ExactlyOnce,
+            false,
         ))
         .unwrap()
         .unwrap();
@@ -242,43 +246,43 @@ fn publish_resend_qos1() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
-        assert!(recv_pub.packet_identifier.is_some());
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos: rust_mqtt_protocol::Qos::AtLeastOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: Some(expected_packet_identifier),
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::AtLeastOnce,
+                false
+            )
+            .assign_packet_identifier(|| expected_packet_identifier, false)
         );
-        let (header, data) = loop {
-            let (header, data) = util::read_packet(&mut stream);
+        let (header, mut data) = loop {
+            let (header, mut data) = util::read_packet(&mut stream);
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let ping_req = rust_mqtt_protocol::PingReq::try_read(header).unwrap();
+                    let ping_req =
+                        rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
                     assert_eq!(ping_req, rust_mqtt_protocol::PingReq::default());
 
-                    rust_mqtt_protocol::PingResp::write_to_stream(&mut stream).unwrap();
+                    write_packet(&mut stream, |buf| {
+                        rust_mqtt_protocol::PingResp::write_to_buf(buf)
+                    });
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -286,24 +290,22 @@ fn publish_resend_qos1() {
                 _ => panic!("Should not get here"),
             }
         };
-        let recv_pub2 = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
+        let recv_pub2 = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: true,
-                    qos: rust_mqtt_protocol::Qos::AtLeastOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: recv_pub2.packet_identifier,
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::AtLeastOnce,
+                false
+            )
+            .assign_packet_identifier(|| recv_pub2.packet_identifier().unwrap(), false),
         );
-        rust_mqtt_protocol::PubAck::new(recv_pub2.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubAck::new_v3(recv_pub2.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -316,15 +318,17 @@ fn publish_resend_qos1() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     let msg = client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::AtLeastOnce,
+            false,
         ))
         .unwrap()
         .unwrap();
@@ -347,44 +351,42 @@ fn publish_resend_pub_qos2() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
-        assert!(recv_pub.packet_identifier.is_some());
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos: rust_mqtt_protocol::Qos::ExactlyOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: recv_pub.packet_identifier,
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::ExactlyOnce,
+                false
+            )
+            .assign_packet_identifier(|| recv_pub.packet_identifier().unwrap(), false)
         );
-        tracing::info!("HERE");
-        let (header, data) = loop {
-            let (header, data) = util::read_packet(&mut stream);
+        let (header, mut data) = loop {
+            let (header, mut data) = util::read_packet(&mut stream);
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let connect = rust_mqtt_protocol::PingReq::try_read(header).unwrap();
+                    let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
                     assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
 
-                    rust_mqtt_protocol::PingResp::write_to_stream(&mut stream).unwrap();
+                    write_packet(&mut stream, |buf| {
+                        rust_mqtt_protocol::PingResp::write_to_buf(buf);
+                    });
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -392,36 +394,33 @@ fn publish_resend_pub_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
-        tracing::info!("HERE 2");
-        let recv_pub2 = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
+        let recv_pub2 = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: true,
-                    qos: rust_mqtt_protocol::Qos::ExactlyOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: Some(expected_packet_identifier),
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::ExactlyOnce,
+                false
+            )
+            .assign_packet_identifier(|| expected_packet_identifier, false)
         );
 
-        rust_mqtt_protocol::PubRec::new(recv_pub2.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubRec::new_v3(recv_pub2.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             pub_rel,
-            rust_mqtt_protocol::PubRel::new(expected_packet_identifier)
+            rust_mqtt_protocol::PubRel::new_v3(expected_packet_identifier)
         );
-        rust_mqtt_protocol::PubComp::new(recv_pub2.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubComp::new_v3(recv_pub2.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -434,15 +433,17 @@ fn publish_resend_pub_qos2() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     let msg = client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::ExactlyOnce,
+            false,
         ))
         .unwrap()
         .unwrap();
@@ -465,77 +466,74 @@ fn publish_resend_pubrel_qos2() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::ReceivedMessage::try_read(header, data).unwrap();
-        assert!(recv_msg.packet_identifier.is_some());
+        let (header, mut data) = util::read_packet(&mut stream);
+        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        assert!(recv_msg.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos: rust_mqtt_protocol::Qos::ExactlyOnce,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier: Some(expected_packet_identifier),
-                payload: b"payload".to_vec()
-            }
+            rust_mqtt_protocol::Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                Qos::ExactlyOnce,
+                false
+            )
+            .assign_packet_identifier(|| expected_packet_identifier, false),
         );
 
-        rust_mqtt_protocol::PubRec::new(recv_msg.packet_identifier.unwrap())
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubRec::new_v3(recv_msg.packet_identifier().unwrap())
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
-            recv_msg.packet_identifier.unwrap(),
-            pub_rel.packet_identifier
+            recv_msg.packet_identifier().unwrap(),
+            pub_rel.packet_identifier()
         );
         assert_eq!(
             pub_rel,
-            rust_mqtt_protocol::PubRel::new(recv_msg.packet_identifier.unwrap())
+            rust_mqtt_protocol::PubRel::new_v3(recv_msg.packet_identifier().unwrap())
         );
 
-        let (header, data) = loop {
-            let (header, data) = util::read_packet(&mut stream);
+        let (header, mut data) = loop {
+            let (header, mut data) = util::read_packet(&mut stream);
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let connect = rust_mqtt_protocol::PingReq::try_read(header).unwrap();
+                    let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
                     assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
 
-                    rust_mqtt_protocol::PingResp::write_to_stream(&mut stream).unwrap();
+                    write_packet(&mut stream, |buf| {
+                        rust_mqtt_protocol::PingResp::write_to_buf(buf)
+                    });
                 }
-                ControlPacketType::PubRel { .. } => {
+                ControlPacketType::PubRel => {
                     break (header, data);
                 }
                 _ => panic!("Should not get here"),
             }
         };
-        let pub_rel2 = rust_mqtt_protocol::PubRel::try_read(header, &data).unwrap();
+        let pub_rel2 = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             pub_rel2,
-            rust_mqtt_protocol::PubRel {
-                fixed_header: FixedHeader::new(ControlPacketType::PubRel, 2),
-                packet_identifier: pub_rel2.packet_identifier,
-            }
+            rust_mqtt_protocol::PubRel::new_v3(pub_rel2.packet_identifier())
         );
-        rust_mqtt_protocol::PubComp::new(expected_packet_identifier)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PubComp::new_v3(expected_packet_identifier).write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -548,15 +546,17 @@ fn publish_resend_pubrel_qos2() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )
     .unwrap();
     let msg = client
-        .publish(Message::new(
+        .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             rust_mqtt_protocol::Qos::ExactlyOnce,
+            false,
         ))
         .unwrap()
         .unwrap();

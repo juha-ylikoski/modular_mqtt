@@ -306,10 +306,6 @@ impl<V> ConnAck<V> {
     pub fn session_present(&self) -> bool {
         self.session_present
     }
-
-    pub fn connect_rc(&self) -> ConnectRc {
-        self.connect_rc
-    }
 }
 
 impl ConnAck<MqttV3_1_1> {
@@ -369,6 +365,12 @@ impl ConnAck<MqttV3_1_1> {
             authentication_method: None,
             authentication_data: Bytes::new(),
         })
+    }
+    pub fn connect_rc(&self) -> ConnectRcV3 {
+        match self.connect_rc {
+            ConnectRc::V3(rc) => rc,
+            ConnectRc::V5(_) => unreachable!(),
+        }
     }
 }
 
@@ -594,6 +596,13 @@ impl ConnAck<MqttV5_0_0> {
         }
 
         Ok(connack)
+    }
+
+    pub fn connect_rc(&self) -> ConnectRcV5 {
+        match self.connect_rc {
+            ConnectRc::V3(_) => unreachable!(),
+            ConnectRc::V5(rc) => rc,
+        }
     }
 
     pub fn set_session_expiry_interval(mut self, value: u32) -> Self {

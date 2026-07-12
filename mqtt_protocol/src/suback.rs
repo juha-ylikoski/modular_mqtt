@@ -180,7 +180,7 @@ impl SubAck<MqttV3_1_1> {
     }
     pub fn return_codes(&self) -> &[SubRcV3] {
         match &self.data {
-            SubAckData::V3 { return_codes, .. } => &return_codes,
+            SubAckData::V3 { return_codes, .. } => return_codes,
             SubAckData::V5 { .. } => unreachable!(),
         }
     }
@@ -264,7 +264,7 @@ impl SubAck<MqttV5_0_0> {
     pub fn return_codes(&self) -> &[SubRcV5] {
         match &self.data {
             SubAckData::V3 { .. } => unreachable!(),
-            SubAckData::V5 { return_codes, .. } => &return_codes,
+            SubAckData::V5 { return_codes, .. } => return_codes,
         }
     }
 
@@ -278,7 +278,7 @@ impl SubAck<MqttV5_0_0> {
     pub fn user_property(&self) -> &[UserProperty] {
         match &self.data {
             SubAckData::V3 { .. } => unreachable!(),
-            SubAckData::V5 { user_property, .. } => &user_property,
+            SubAckData::V5 { user_property, .. } => user_property,
         }
     }
 }

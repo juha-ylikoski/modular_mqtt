@@ -7,11 +7,8 @@ use testcontainers_modules::mosquitto;
 use mqtt_client::{
     client::SyncClient,
     client_opts::{ClientOpts, OnDisconnectBehavior},
-    util::Message,
 };
-use rust_mqtt_protocol::{
-    ControlPacketType, MqttTopic, Qos, ReceivedMessage, SubAck, SubRc, UnsubscribeAck,
-};
+use rust_mqtt_protocol::{MqttTopic, Publish, Qos, SubAck, SubRcV3, UnsubAck};
 
 struct MosquittoContainer {
     #[allow(unused)]
@@ -49,6 +46,7 @@ fn mosquitto_publish(qos: Qos) {
                 username: None,
                 password: None,
                 on_disconnect: OnDisconnectBehavior::Panic,
+                max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
             },
             addr.to_string(),
         )
@@ -63,6 +61,7 @@ fn mosquitto_publish(qos: Qos) {
                 username: None,
                 password: None,
                 on_disconnect: OnDisconnectBehavior::Panic,
+                max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
             },
             addr.to_string(),
         )
@@ -73,21 +72,22 @@ fn mosquitto_publish(qos: Qos) {
             client_r
                 .subscribe(vec!["topic".try_into().unwrap()], qos)
                 .unwrap(),
-            SubAck::new(
+            SubAck::new_v3(
                 1,
                 vec![match qos {
-                    Qos::AtMostOnce => SubRc::SuccessQos0,
-                    Qos::AtLeastOnce => SubRc::SuccessQos1,
-                    Qos::ExactlyOnce => SubRc::SuccessQos2,
+                    Qos::AtMostOnce => SubRcV3::SuccessQos0,
+                    Qos::AtLeastOnce => SubRcV3::SuccessQos1,
+                    Qos::ExactlyOnce => SubRcV3::SuccessQos2,
                 }]
             )
         );
 
         let inflight = client_w
-            .publish(Message::new(
+            .publish(Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 qos,
+                false,
             ))
             .unwrap();
 
@@ -99,26 +99,15 @@ fn mosquitto_publish(qos: Qos) {
             inflight.wait_until_delivered();
         }
 
-        let packet_identifier = if qos == Qos::AtMostOnce {
-            None
-        } else {
-            // Mosquitto always returns 1 as first packet identifier
-            Some(1)
-        };
-
         assert_eq!(
             r_stream.recv().unwrap(),
-            ReceivedMessage {
-                flags: ControlPacketType::Publish {
-                    dup: false,
-                    qos,
-                    retain: false
-                }
-                .flags(),
-                topic: "topic".to_string(),
-                packet_identifier,
-                payload: b"payload".to_vec()
-            }
+            Publish::new_v3(
+                MqttTopic::try_from("topic").unwrap(),
+                b"payload",
+                qos,
+                false
+            )
+            .assign_packet_identifier(|| 1, false)
         );
         client_w.disconnect().unwrap();
         client_r.disconnect().unwrap();
@@ -164,6 +153,7 @@ fn mosquitto_unsub() {
                 username: None,
                 password: None,
                 on_disconnect: OnDisconnectBehavior::Panic,
+                max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
             },
             addr.to_string(),
         )
@@ -178,6 +168,7 @@ fn mosquitto_unsub() {
                 username: None,
                 password: None,
                 on_disconnect: OnDisconnectBehavior::Panic,
+                max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
             },
             addr.to_string(),
         )
@@ -188,21 +179,22 @@ fn mosquitto_unsub() {
             client_r
                 .subscribe(vec!["topic".try_into().unwrap()], qos)
                 .unwrap(),
-            SubAck::new(1, vec![SubRc::SuccessQos0,])
+            SubAck::new_v3(1, vec![SubRcV3::SuccessQos0,])
         );
 
         assert_eq!(
             client_r
                 .unsubscribe(vec!["topic".try_into().unwrap()])
                 .unwrap(),
-            UnsubscribeAck::new(2)
+            UnsubAck::new_v3(2)
         );
 
         assert!(client_w
-            .publish(Message::new(
+            .publish(Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 qos,
+                false
             ))
             .unwrap()
             .is_none());

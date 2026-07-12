@@ -1,4 +1,4 @@
-use crate::util;
+use crate::util::{self, write_packet};
 
 use std::{net::TcpListener, time::Duration};
 
@@ -9,7 +9,7 @@ use mqtt_client::{
 use ntest::timeout;
 
 #[test]
-#[timeout(10000)]
+#[timeout(15000)]
 fn ping_sequence() {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -18,24 +18,27 @@ fn ping_sequence() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 2, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 2, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_stream(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
         std::thread::sleep(Duration::from_secs(4));
 
-        let (header, data) = util::read_packet(&mut stream);
+        let (header, mut data) = util::read_packet(&mut stream);
         assert_eq!(data.len(), 0);
-        let connect = rust_mqtt_protocol::PingReq::try_read(header).unwrap();
+        let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
         assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
 
-        rust_mqtt_protocol::PingResp::write_to_stream(&mut stream).unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::PingResp::write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -48,6 +51,7 @@ fn ping_sequence() {
             username: None,
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         addr.to_string(),
     )

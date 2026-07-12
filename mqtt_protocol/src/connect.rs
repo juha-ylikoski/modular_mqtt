@@ -10,7 +10,7 @@ use crate::{
 use super::fixed_header::FixedHeader;
 use super::util::{extract_bytes, extract_str, write_str, Qos};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MqttLastWill3_1_1 {
     topic: String,
     payload: Bytes,
@@ -19,7 +19,7 @@ pub struct MqttLastWill3_1_1 {
 }
 
 impl MqttLastWill3_1_1 {
-    pub fn new(topic: MqttTopic, payload: Bytes, retain: bool, qos: Qos) -> Self {
+    pub fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self {
         Self {
             topic: topic.0,
             payload,
@@ -29,7 +29,7 @@ impl MqttLastWill3_1_1 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MqttLastWill5_0_0 {
     topic: String,
     payload: Bytes,
@@ -64,7 +64,7 @@ pub struct MqttLastWill5_0_0 {
     user_property: Vec<UserProperty>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MqttLastWill {
     V3(MqttLastWill3_1_1),
     V5(MqttLastWill5_0_0),
@@ -98,7 +98,7 @@ impl MqttLastWill {
 }
 
 impl MqttLastWill5_0_0 {
-    pub fn new(topic: String, payload: Bytes, retain: bool, qos: Qos) -> Self {
+    pub fn new(topic: String, payload: Bytes, qos: Qos, retain: bool) -> Self {
         Self {
             topic,
             payload,
@@ -578,8 +578,8 @@ impl Connect {
                     MqttLastWill5_0_0::new(
                         topic,
                         payload,
-                        Flags::WillRetain.flag_set(flags),
                         Qos::try_from((flags & 0b00011000) >> 3)?,
+                        Flags::WillRetain.flag_set(flags),
                     )
                     .read_properties(&mut properties)?,
                 ));
@@ -1039,8 +1039,8 @@ mod test_ser_v3 {
             Some(MqttLastWill3_1_1::new(
                 "will".try_into().unwrap(),
                 Bytes::from_static(b"payload"),
-                true,
                 Qos::ExactlyOnce,
+                true,
             )),
             None,
             None,
@@ -1355,8 +1355,8 @@ mod test_ser_v5 {
             Some(MqttLastWill5_0_0::new(
                 "will".to_string(),
                 Bytes::from_static(b"payload"),
-                true,
                 Qos::ExactlyOnce,
+                true,
             )),
             None,
             None,
@@ -1428,8 +1428,8 @@ mod test_ser_v5 {
                 MqttLastWill5_0_0::new(
                     "will".to_string(),
                     Bytes::from_static(b"payload"),
-                    true,
                     Qos::ExactlyOnce,
+                    true,
                 )
                 .set_delay_interval(42)
                 .set_payload_format(PayloadFormat::Utf8)
@@ -1966,8 +1966,8 @@ mod test_de_v3 {
             Some(MqttLastWill3_1_1::new(
                 "will".try_into().unwrap(),
                 Bytes::from_static(b"payload"),
-                true,
                 Qos::ExactlyOnce,
+                true,
             )),
             None,
             None,
@@ -2289,8 +2289,8 @@ mod test_de_v5 {
             Some(MqttLastWill5_0_0::new(
                 "will".to_string(),
                 Bytes::from_static(b"payload"),
-                true,
                 Qos::ExactlyOnce,
+                true,
             )),
             None,
             None,
@@ -2452,8 +2452,8 @@ mod test_de_v5 {
                 MqttLastWill5_0_0::new(
                     "will".to_string(),
                     Bytes::from_static(b"payload"),
-                    true,
                     Qos::ExactlyOnce,
+                    true,
                 )
                 .set_delay_interval(42)
                 .set_payload_format(PayloadFormat::Utf8)

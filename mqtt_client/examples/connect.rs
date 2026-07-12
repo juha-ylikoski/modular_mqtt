@@ -17,6 +17,7 @@ async fn main() {
             username: None,
             password: None,
             on_disconnect: mqtt_client::client_opts::OnDisconnectBehavior::Panic,
+            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
         },
         "127.0.0.1:1883".to_string(),
     )

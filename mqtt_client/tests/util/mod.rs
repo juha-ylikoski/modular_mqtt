@@ -1,13 +1,26 @@
-use std::io::Read;
+use std::io::{Read, Write};
 
-use mqtt_client::util::buf_with_size;
+use bytes::{Bytes, BytesMut};
 use rust_mqtt_protocol::FixedHeader;
 
-pub fn read_packet<R: Read>(reader: &mut R) -> (FixedHeader, Vec<u8>) {
-    let header = FixedHeader::try_read_sync(reader).unwrap();
-    let mut buf = buf_with_size(header.remaining_length);
-    reader.read_exact(&mut buf).unwrap();
-    (header, buf)
+#[allow(unused)]
+pub fn read_packet<R: Read>(reader: &mut R) -> (FixedHeader, Bytes) {
+    let mut buf = BytesMut::zeroed(4096);
+    let len = reader.read(&mut buf[..]).unwrap();
+    buf.truncate(len);
+    let (header, body) = FixedHeader::parse(&mut buf, rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE)
+        .unwrap()
+        .unwrap();
+    (header, body)
+}
+
+#[allow(unused)]
+pub fn write_packet<W: Write>(writer: &mut W, fun: impl FnOnce(&mut BytesMut)) {
+    let mut buf = BytesMut::with_capacity(4096);
+    fun(&mut buf);
+    buf.truncate(buf.len());
+    let buf = buf.split();
+    writer.write_all(&buf[..]).unwrap();
 }
 
 pub fn init_logging() {

@@ -293,6 +293,9 @@ macro_rules! create_pub_ack_type {
             pub fn write_to_buf(&self, buf: &mut impl BufMut) {
                 self.0.write_to_buf(buf)
             }
+            pub fn packet_identifier(&self) -> u16 {
+                self.0.packet_identifier
+            }
         }
 
         impl $name<MqttV3_1_1> {
@@ -328,6 +331,7 @@ macro_rules! create_pub_ack_type {
             pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
                 PubAckType::try_read_v5(header, data).map(Self)
             }
+
             pub fn reason(&self) -> Option<&String> {
                 match &self.0.data {
                     PubAckData::V3 { .. } => unreachable!(),

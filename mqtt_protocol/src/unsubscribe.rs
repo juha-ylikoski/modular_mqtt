@@ -161,7 +161,7 @@ impl Unsubscribe<MqttV5_0_0> {
     pub fn user_property(&self) -> &[UserProperty] {
         match &self.options {
             UnsubscribeOptions::V3 { .. } => unreachable!(),
-            UnsubscribeOptions::V5 { user_property, .. } => &user_property,
+            UnsubscribeOptions::V5 { user_property, .. } => user_property,
         }
     }
 }

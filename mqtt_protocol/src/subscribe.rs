@@ -368,7 +368,7 @@ impl Subscribe<MqttV5_0_0> {
     pub fn user_property(&self) -> &[UserProperty] {
         match &self.options {
             SubscribeOptions::V3 { .. } => unreachable!(),
-            SubscribeOptions::V5 { user_property, .. } => &user_property,
+            SubscribeOptions::V5 { user_property, .. } => user_property,
         }
     }
 }
