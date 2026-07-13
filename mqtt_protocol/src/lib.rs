@@ -6,18 +6,18 @@
 
 pub use ack_messages::{
     PubAck, PubAckReasonCode, PubComp, PubCompReasonCode, PubRec, PubRecReasonCode, PubRel,
-    PubRelReasonCode, UnsubAck,
+    PubRelReasonCode, UnsubAck, UnsubAckReasonCode,
 };
 pub use auth::Auth;
 use bytes::{BufMut, Bytes};
 pub use connack::{ConnAck, ConnectRc, ConnectRcV3, ConnectRcV5};
 pub use connect::{Connect, MqttLastWill, MqttLastWill3_1_1, MqttLastWill5_0_0};
-pub use disconnect::Disconnect;
+pub use disconnect::{Disconnect, DisconnectReasonCode};
 pub use fixed_header::{ControlPacketType, FixedHeader};
 pub use ping::{PingReq, PingResp};
 pub use publish::Publish;
-pub use suback::{SubAck, SubRcV3};
-pub use subscribe::{Subscribe, TopicSubscription};
+pub use suback::{SubAck, SubRcV3, SubRcV5};
+pub use subscribe::{RetainHandling, Subscribe, TopicSubscription};
 pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, Qos, QosPacketIdentifier};
 

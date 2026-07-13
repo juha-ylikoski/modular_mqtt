@@ -8,8 +8,9 @@ use crate::{
     PropertyIdentifier, UserProperty,
 };
 
-trait ReasonCode: TryFrom<u8> {
+trait ReasonCode: TryFrom<u8> + Copy {
     fn as_u8(&self) -> u8;
+    fn can_be_omitted() -> bool;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,6 +93,9 @@ impl ReasonCode for PubAckReasonCode {
     fn as_u8(&self) -> u8 {
         *self as u8
     }
+    fn can_be_omitted() -> bool {
+        true
+    }
 }
 
 impl TryFrom<u8> for PubRelReasonCode {
@@ -108,6 +112,9 @@ impl TryFrom<u8> for PubRelReasonCode {
 impl ReasonCode for PubRelReasonCode {
     fn as_u8(&self) -> u8 {
         *self as u8
+    }
+    fn can_be_omitted() -> bool {
+        true
     }
 }
 
@@ -130,6 +137,9 @@ impl TryFrom<u8> for UnsubAckReasonCode {
 impl ReasonCode for UnsubAckReasonCode {
     fn as_u8(&self) -> u8 {
         *self as u8
+    }
+    fn can_be_omitted() -> bool {
+        false
     }
 }
 
@@ -174,6 +184,7 @@ where
     fn write_to_buf(&self, buf: &mut impl BufMut) {
         self.fixed_header.write_to_buf(buf);
         buf.put_u16(self.packet_identifier);
+
         let property_len = self.properties_len();
         match &self.data {
             PubAckData::V3 => (),
@@ -183,6 +194,12 @@ where
                 user_property,
                 ..
             } => {
+                // If fixed header remaining length == 2 -> reason code = 0x00 + everything is omitted
+                // (except for unsuback for some reason)
+                if R::can_be_omitted() && reason_code.as_u8() == 0 && property_len == 0 {
+                    assert_eq!(self.fixed_header.remaining_length, 2);
+                    return;
+                }
                 buf.put_u8(reason_code.as_u8());
                 write_variable_len_int(property_len as u64, buf);
                 reason.serialize(crate::PropertyIdentifier::Reason, buf);
@@ -227,12 +244,33 @@ where
         let property_len = msg.properties_len();
         let property_len_int_size = variable_len_int_size(property_len);
         let remaining_length = 2 + 1 + property_len_int_size + property_len;
-        msg.fixed_header.remaining_length = remaining_length;
+        msg.fixed_header.remaining_length =
+            if R::can_be_omitted() && reason_code.as_u8() == 0 && property_len == 0 {
+                2
+            } else {
+                remaining_length
+            };
         msg
     }
 
     fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let packet_identifier = data.try_get_u16()?;
+
+        // If fixed header remaining length == 2 -> reason code = 0x00 and everything is omitted
+        // (except for unsuback for some reason)
+        if R::can_be_omitted() && !data.has_remaining() {
+            return Ok(Self {
+                fixed_header: header,
+                packet_identifier,
+                data: PubAckData::V5 {
+                    procol_version: PhantomData,
+                    reason_code: R::try_from(0)?,
+                    reason: None,
+                    user_property: Vec::new(),
+                },
+            });
+        }
+
         let reason_code = R::try_from(data.try_get_u8()?)?;
 
         let len_properties = read_variable_len_int(data)? as usize;
@@ -361,7 +399,7 @@ create_pub_ack_type!(
     PubAckReasonCode
 );
 create_pub_ack_type!(
-    /// A PUBACK Packet is the response to a PUBLISH Packet with QoS level 1.
+    /// A PUBREC Packet is the response to a PUBLISH Packet with QoS level 2.
     PubRec,
     PubRec,
     PubRecReasonCode
@@ -439,6 +477,20 @@ macro_rules! make_tests {
                             0
                         ]
                     );
+                }
+
+                #[test]
+                fn serialize_short() {
+                    let mut buf = Vec::new();
+                    let msg =
+                        $name::new_v5(42, <$reason_type>::try_from(0).unwrap(), None, Vec::new());
+                    msg.write_to_buf(&mut buf);
+
+                    if <$reason_type>::can_be_omitted() {
+                        assert_eq!(&buf, &[$test_packet_type, 2, 0, 42,]);
+                    } else {
+                        assert_eq!(&buf, &[$test_packet_type, 4, 0, 42, 0, 0]);
+                    }
                 }
 
                 #[test]
@@ -529,6 +581,23 @@ macro_rules! make_tests {
                 }
 
                 #[test]
+                fn deserialize_short() {
+                    let msg = if <$reason_type>::can_be_omitted() {
+                        &[$test_packet_type, 2, 0, 42][..]
+                    } else {
+                        &[$test_packet_type, 4, 0, 42, 0, 0][..]
+                    };
+                    let expected =
+                        $name::new_v5(42, <$reason_type>::try_from(0).unwrap(), None, Vec::new());
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
+                }
+
+                #[test]
                 fn deserialize_reason() {
                     let msg = [
                         $test_packet_type,
@@ -610,7 +679,13 @@ make_tests!(
     NoMatchingSubscribes
 );
 make_tests!(PubRec, test_pubrec, 80, PubRecReasonCode, NotAuthorized);
-make_tests!(PubRel, test_pubrel, 96 | 2, PubRelReasonCode, Success);
+make_tests!(
+    PubRel,
+    test_pubrel,
+    96 | 2,
+    PubRelReasonCode,
+    PacketIdentifierNotFound
+);
 make_tests!(
     PubComp,
     test_pubcomp,

@@ -18,12 +18,7 @@ fn connect_no_server() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         "127.0.0.1:1234".to_string(),
     ) {
@@ -62,12 +57,7 @@ fn connect() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -111,12 +101,9 @@ fn connect_username_password() {
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
             username: Some("username".to_string()),
             password: Some(Bytes::from_static(b"password")),
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -166,17 +153,13 @@ fn connect_last_will() {
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
-            clean_session: true,
             will: Some(MqttLastWill::from(MqttLastWill3_1_1::new(
                 MqttTopic::try_from("last-will-topic").unwrap(),
                 Bytes::from_static(b"payload"),
                 rust_mqtt_protocol::Qos::AtMostOnce,
                 false,
             ))),
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -211,12 +194,7 @@ fn connect_refused() {
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     ) {
@@ -258,12 +236,7 @@ fn disconnect() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )

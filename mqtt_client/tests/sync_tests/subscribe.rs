@@ -1,15 +1,11 @@
-use crate::util;
+use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
 
-use mqtt_client::{
-    client::SyncClient,
-    client_opts::{ClientOpts, OnDisconnectBehavior},
-};
+use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
 use rust_mqtt_protocol::{
-    MqttTopic, PubAck, PubComp, PubRec, PubRel, Qos, QosPacketIdentifier, ReceivedMessage, SubAck,
-    SubRcV3, TopicSubscription,
+    MqttTopic, PubAck, PubComp, PubRec, PubRel, Publish, Qos, SubAck, SubRcV3, TopicSubscription,
 };
 
 #[test]
@@ -23,18 +19,19 @@ fn sub_qos0() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -46,9 +43,10 @@ fn sub_qos0() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -56,17 +54,13 @@ fn sub_qos0() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::AtMostOnce)
+        .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -89,18 +83,19 @@ fn sub_qos1() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -112,9 +107,10 @@ fn sub_qos1() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -122,17 +118,16 @@ fn sub_qos1() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::AtLeastOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::AtLeastOnce,
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -155,18 +150,19 @@ fn sub_qos2() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -178,9 +174,10 @@ fn sub_qos2() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -188,17 +185,16 @@ fn sub_qos2() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::ExactlyOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::ExactlyOnce,
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -221,18 +217,19 @@ fn sub_qos0_receive_packet() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -244,19 +241,16 @@ fn sub_qos0_receive_packet() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
+                .write_to_buf(buf)
+        });
         let topic = MqttTopic::try_from("topic").unwrap();
-        rust_mqtt_protocol::Publish::new_v3(
-            false,
-            rust_mqtt_protocol::QosPacketIdentifier::AtMostOnce,
-            false,
-            &topic,
-            b"test",
-        )
-        .write_to_buf(&mut stream)
-        .unwrap();
+        write_packet(&mut stream, |buf| {
+            Publish::new_v3(topic, b"test", Qos::AtMostOnce, false)
+                .assign_packet_identifier(|| 1, false)
+                .write_to_buf(buf)
+        });
         rx_close.recv().unwrap();
     });
 
@@ -264,11 +258,7 @@ fn sub_qos0_receive_packet() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -277,7 +267,7 @@ fn sub_qos0_receive_packet() {
     let stream = client.stream();
 
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::AtMostOnce)
+        .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -287,12 +277,13 @@ fn sub_qos0_receive_packet() {
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
-        ReceivedMessage {
-            flags: 0,
-            topic: "topic".to_string(),
-            packet_identifier: None,
-            payload: b"test".to_vec()
-        }
+        Publish::new_v3(
+            MqttTopic::try_from("topic").unwrap(),
+            b"test",
+            Qos::AtMostOnce,
+            false
+        )
+        .assign_packet_identifier(|| 1, false)
     );
     client.disconnect().unwrap();
     tx_close.send(()).unwrap();
@@ -310,18 +301,19 @@ fn sub_qos1_receive_packet() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -333,22 +325,19 @@ fn sub_qos1_receive_packet() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos1])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos1])
+                .write_to_buf(buf)
+        });
         let topic = MqttTopic::try_from("topic").unwrap();
-        rust_mqtt_protocol::Publish::new_v3(
-            false,
-            rust_mqtt_protocol::QosPacketIdentifier::AtLeastOnce(42),
-            false,
-            &topic,
-            b"test",
-        )
-        .write_to_buf(&mut stream)
-        .unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let ack = rust_mqtt_protocol::PubAck::try_read(header, &data).unwrap();
-        assert_eq!(ack, PubAck::new(42));
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::Publish::new_v3(topic, b"test", Qos::AtLeastOnce, false)
+                .assign_packet_identifier(|| 42, false)
+                .write_to_buf(buf)
+        });
+        let (header, mut data) = util::read_packet(&mut stream);
+        let ack = rust_mqtt_protocol::PubAck::try_read_v3(header, &mut data).unwrap();
+        assert_eq!(ack, PubAck::new_v3(42));
         rx_close.recv().unwrap();
     });
 
@@ -356,11 +345,7 @@ fn sub_qos1_receive_packet() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -369,7 +354,10 @@ fn sub_qos1_receive_packet() {
     let stream = client.stream();
 
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::AtLeastOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::AtLeastOnce,
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -379,12 +367,13 @@ fn sub_qos1_receive_packet() {
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
-        ReceivedMessage {
-            flags: 2,
-            topic: "topic".to_string(),
-            packet_identifier: Some(42),
-            payload: b"test".to_vec()
-        }
+        Publish::new_v3(
+            MqttTopic::try_from("topic").unwrap(),
+            b"test",
+            Qos::AtLeastOnce,
+            false
+        )
+        .assign_packet_identifier(|| 42, false)
     );
     client.disconnect().unwrap();
     tx_close.send(()).unwrap();
@@ -403,18 +392,19 @@ fn sub_qos2_receive_packet() {
 
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id", None, None, None)
+            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
         );
-        rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRc::Accepted)
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
+                .write_to_buf(buf)
+        });
 
-        let (header, data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read(header, &data).unwrap();
+        let (header, mut data) = util::read_packet(&mut stream);
+        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
         assert_eq!(
             sub,
             rust_mqtt_protocol::Subscribe::new_v3(
@@ -426,27 +416,24 @@ fn sub_qos2_receive_packet() {
             )
         );
         send.send(sub.packet_identifier()).unwrap();
-        rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos2])
-            .write_to_buf(&mut stream)
-            .unwrap();
+        write_packet(&mut stream, |buf| {
+            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos2])
+                .write_to_buf(buf)
+        });
         let topic = MqttTopic::try_from("topic").unwrap();
-        rust_mqtt_protocol::Publish::new_v3(
-            false,
-            QosPacketIdentifier::ExactlyOnce(42),
-            false,
-            &topic,
-            b"test",
-        )
-        .write_to_buf(&mut stream)
-        .unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let rec = PubRec::try_read(header, &data).unwrap();
-        assert_eq!(rec, PubRec::new(42));
+        write_packet(&mut stream, |buf| {
+            Publish::new_v3(topic, b"test", Qos::ExactlyOnce, false)
+                .assign_packet_identifier(|| 42, false)
+                .write_to_buf(buf)
+        });
+        let (header, mut data) = util::read_packet(&mut stream);
+        let rec = PubRec::try_read_v3(header, &mut data).unwrap();
+        assert_eq!(rec, PubRec::new_v3(42));
 
-        PubRel::new(42).write_to_stream(&mut stream).unwrap();
-        let (header, data) = util::read_packet(&mut stream);
-        let rec = PubComp::try_read(header, &data).unwrap();
-        assert_eq!(rec, PubComp::new(42));
+        write_packet(&mut stream, |buf| PubRel::new_v3(42).write_to_buf(buf));
+        let (header, mut data) = util::read_packet(&mut stream);
+        let rec = PubComp::try_read_v3(header, &mut data).unwrap();
+        assert_eq!(rec, PubComp::new_v3(42));
         pub_done_tx.send(()).unwrap();
         rx_close.recv().unwrap();
     });
@@ -455,11 +442,7 @@ fn sub_qos2_receive_packet() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -468,7 +451,10 @@ fn sub_qos2_receive_packet() {
     let stream = client.stream();
 
     let suback = client
-        .subscribe(vec!["topic".try_into().unwrap()], Qos::ExactlyOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::ExactlyOnce,
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(
@@ -478,12 +464,13 @@ fn sub_qos2_receive_packet() {
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
-        ReceivedMessage {
-            flags: 4,
-            topic: "topic".to_string(),
-            packet_identifier: Some(42),
-            payload: b"test".to_vec()
-        }
+        Publish::new_v3(
+            MqttTopic::try_from("topic").unwrap(),
+            b"test",
+            Qos::ExactlyOnce,
+            false
+        )
+        .assign_packet_identifier(|| 42, false)
     );
     pub_done_rx.recv().unwrap();
     client.disconnect().unwrap();

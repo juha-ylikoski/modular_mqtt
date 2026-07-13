@@ -47,12 +47,7 @@ fn ping_sequence() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 2,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )

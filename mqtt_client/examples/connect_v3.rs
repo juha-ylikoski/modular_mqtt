@@ -12,13 +12,7 @@ async fn main() {
     SyncClient::<MqttV3_1_1>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 15,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: mqtt_client::client_opts::OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         "127.0.0.1:1883".to_string(),
     )

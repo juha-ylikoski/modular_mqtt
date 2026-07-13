@@ -154,11 +154,19 @@ impl<V> Disconnect<V> {
             ..
         } = &self.data
         {
-            buf.put_u8(*reason_code as u8);
             let properties_len = session_expiry_interval.property_len()
                 + reason.property_len()
                 + user_property.property_len()
                 + server_reference.property_len();
+
+            // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
+            if *reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
+                assert_eq!(self.fixed_header.remaining_length, 0);
+                return;
+            }
+
+            buf.put_u8(*reason_code as u8);
+
             write_variable_len_int(properties_len as u64, buf);
 
             session_expiry_interval.serialize(PropertyIdentifier::SessionExpiryInterval, buf);
@@ -208,7 +216,11 @@ impl Disconnect<MqttV5_0_0> {
         Self {
             fixed_header: FixedHeader::new(
                 ControlPacketType::Disconnect,
-                1 + variable_len_int_size(properties_len) + properties_len,
+                if reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
+                    0
+                } else {
+                    1 + variable_len_int_size(properties_len) + properties_len
+                },
             ),
             data: DisconnectData::V5 {
                 protocol_level: PhantomData,
@@ -221,6 +233,21 @@ impl Disconnect<MqttV5_0_0> {
         }
     }
     pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
+        if header.remaining_length == 0 {
+            return Ok(Self {
+                fixed_header: header,
+                data: DisconnectData::V5 {
+                    protocol_level: PhantomData,
+                    reason_code: DisconnectReasonCode::Normal,
+                    session_expiry_interval: None,
+                    reason: None,
+                    user_property: Vec::new(),
+                    server_reference: None,
+                },
+            });
+        }
+
         let reason_code = DisconnectReasonCode::try_from(data.try_get_u8()?)?;
         let len_properties = read_variable_len_int(data)? as usize;
 
@@ -382,6 +409,14 @@ mod disconnect_v5 {
     }
 
     #[test]
+    fn serialize_short() {
+        let mut buf = Vec::new();
+        Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None)
+            .write_to_buf(&mut buf);
+        assert_eq!(&buf, &[224, 0]);
+    }
+
+    #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
         Disconnect::new_v5(
@@ -419,6 +454,21 @@ mod disconnect_v5 {
             Vec::new(),
             None,
         );
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Disconnect::try_read_v5(header, &mut body).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn deserialize_short() {
+        let msg = [224, 0];
+        let expected =
+            Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()

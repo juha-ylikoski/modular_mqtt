@@ -2,8 +2,8 @@ use bytes::{Bytes, BytesMut};
 use rust_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, Disconnect, FixedHeader,
     MqttTopic, MqttV3_1_1, MqttV5_0_0, PingReq, PingResp, PubAck, PubComp, PubCompReasonCode,
-    PubRec, PubRel, PubRelReasonCode, Publish, Qos, QosPacketIdentifier, SubAck, Subscribe,
-    TopicSubscription, UnsubAck, Unsubscribe,
+    PubRec, PubRecReasonCode, PubRel, PubRelReasonCode, Publish, Qos, QosPacketIdentifier, SubAck,
+    Subscribe, TopicSubscription, UnsubAck, Unsubscribe,
 };
 use std::{
     collections::HashMap,
@@ -18,7 +18,7 @@ use crate::{
     client_opts::{ClientOpts, MqttLastWill, OnDisconnectBehavior},
     error::{BackendError, ClientError, ConnectError},
     sync_connection::{SyncReader, SyncWriter},
-    util::{InflightMessage, InflightMessageState},
+    util::{InflightMessage, InflightMessageState, IntoTopicSubscription},
     RESENT_INTERVAL,
 };
 
@@ -81,7 +81,10 @@ pub trait MqttClient<V: std::fmt::Debug>: Sized {
         writer: Arc<Mutex<SyncWriter>>,
         opts: ClientOpts<V>,
     ) -> Result<Self, ConnectError>;
+    fn topic_subscription(&self, topic: impl IntoTopicSubscription, qos: Qos) -> TopicSubscription;
     fn subscribe_packet(packet_identifier: u16, subs: Vec<TopicSubscription>) -> Subscribe<V>;
+    fn unsubscribe_packet(packet_identifier: u16, topics: Vec<MqttTopic>) -> Unsubscribe<V>;
+    fn disconnect_packet() -> Disconnect<V>;
 }
 pub trait MqttBackend<V: std::fmt::Debug>: Sized {
     fn check_resend_msgs(&mut self) -> Result<(), std::io::Error>;
@@ -237,11 +240,31 @@ impl MqttClient<MqttV3_1_1> for SyncClient<MqttV3_1_1> {
             Err(ConnectError::ConnectFailedV3(connack.connect_rc()))
         }
     }
+    fn topic_subscription(&self, topic: impl IntoTopicSubscription, qos: Qos) -> TopicSubscription {
+        topic.into_topic_subscription(
+            false,
+            qos,
+            false,
+            false,
+            rust_mqtt_protocol::RetainHandling::SendAtSubscribe,
+        )
+    }
+
     fn subscribe_packet(
         packet_identifier: u16,
         subs: Vec<TopicSubscription>,
     ) -> Subscribe<MqttV3_1_1> {
         Subscribe::new_v3(packet_identifier, subs)
+    }
+
+    fn unsubscribe_packet(
+        packet_identifier: u16,
+        topics: Vec<MqttTopic>,
+    ) -> Unsubscribe<MqttV3_1_1> {
+        Unsubscribe::new_v3(packet_identifier, topics)
+    }
+    fn disconnect_packet() -> Disconnect<MqttV3_1_1> {
+        Disconnect::new_v3()
     }
 }
 
@@ -366,11 +389,45 @@ impl MqttClient<MqttV5_0_0> for SyncClient<MqttV5_0_0> {
             Err(ConnectError::ConnectFailedV5(connack.connect_rc()))
         }
     }
+
+    fn topic_subscription(&self, topic: impl IntoTopicSubscription, qos: Qos) -> TopicSubscription {
+        match self.opts.extra_opts {
+            crate::client_opts::ExtraOptions::V3 { .. } => unreachable!(),
+            crate::client_opts::ExtraOptions::V5 {
+                subscription_no_local,
+                subscription_keep_retain,
+                subscription_retain_handling,
+                ..
+            } => topic.into_topic_subscription(
+                true,
+                qos,
+                subscription_no_local,
+                subscription_keep_retain,
+                subscription_retain_handling,
+            ),
+        }
+    }
+
     fn subscribe_packet(
         packet_identifier: u16,
         subs: Vec<TopicSubscription>,
     ) -> Subscribe<MqttV5_0_0> {
         Subscribe::new_v5(packet_identifier, subs, None, Vec::new())
+    }
+    fn unsubscribe_packet(
+        packet_identifier: u16,
+        topics: Vec<MqttTopic>,
+    ) -> Unsubscribe<MqttV5_0_0> {
+        Unsubscribe::new_v5(packet_identifier, topics, Vec::new())
+    }
+    fn disconnect_packet() -> Disconnect<MqttV5_0_0> {
+        Disconnect::new_v5(
+            rust_mqtt_protocol::DisconnectReasonCode::Normal,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
     }
 }
 
@@ -379,7 +436,7 @@ where
     Self: MqttBackend<V>,
     V: std::fmt::Debug,
 {
-    #[instrument(skip_all)]
+    #[instrument(skip_all,fields(client_id=%self.opts.client_id))]
     fn bg_thread(mut self) -> Result<(), BackendError> {
         tracing::debug!("Start listening for mqtt messages");
         let res = self.loop_bg_thread();
@@ -427,6 +484,7 @@ where
 
         // Check if we already have a packet in buffer
         if !self.read_buf.is_empty() {
+            tracing::trace!("Buffer has data. Try to parse it");
             match FixedHeader::parse(&mut self.read_buf, self.opts.max_packet_size) {
                 Ok(Some(v)) => return Ok(Some(v)),
                 Err(e) => return Err(BackendError::MqttError(e)),
@@ -435,6 +493,10 @@ where
         }
 
         match read_into_buf(&mut self.reader, &mut self.read_buf) {
+            Ok(0) => Err(BackendError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Stream disconnected",
+            ))),
             Ok(_) => FixedHeader::parse(&mut self.read_buf, self.opts.max_packet_size)
                 .map_err(BackendError::MqttError),
             Err(e) => match e.kind() {
@@ -446,7 +508,10 @@ where
 
     fn read_next_timeout(&mut self) -> Result<ReadFinished, BackendError> {
         match self.read_next_msg() {
-            Ok(Some((header, buf))) => Ok(ReadFinished::Success(header, buf)),
+            Ok(Some((header, buf))) => {
+                tracing::trace!("Received new packet: header={header:?} body={buf:?}");
+                Ok(ReadFinished::Success(header, buf))
+            }
             Ok(None) => Ok(ReadFinished::TimedOut),
             Err(e) => Err(e),
         }
@@ -524,10 +589,14 @@ impl MqttBackend<MqttV3_1_1> for SyncClientBackend<MqttV3_1_1> {
                 match (msg.qos(), msg.packet_identifier()) {
                     (Qos::AtMostOnce, _) => (),
                     (Qos::AtLeastOnce, Some(packet_identifier)) => {
+                        tracing::trace!("Respond with PubAck (mid={packet_identifier})");
+                        self.receive_inflight.push(packet_identifier);
                         PubAck::new_v3(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::ExactlyOnce, Some(packet_identifier)) => {
-                        PubRel::new_v3(packet_identifier).write_to_buf(&mut self.write_buf);
+                        tracing::trace!("Respond with PubRec (mid={packet_identifier})");
+                        self.receive_inflight.push(packet_identifier);
+                        PubRec::new_v3(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::AtLeastOnce, None) | (Qos::ExactlyOnce, None) => unreachable!(),
                 }
@@ -556,7 +625,10 @@ impl MqttBackend<MqttV3_1_1> for SyncClientBackend<MqttV3_1_1> {
             ControlPacketType::PubRec => {
                 let pubrec = PubRec::try_read_v3(fixed_header, body)?;
                 if let Some(inflight) = self.inflight_msgs.get_mut(&pubrec.packet_identifier()) {
-                    tracing::debug!("Received PubRec for mid {}.", pubrec.packet_identifier());
+                    tracing::debug!(
+                        "Received PubRec for mid {}. Responding with PubComp",
+                        pubrec.packet_identifier()
+                    );
                     if matches!(
                         *inflight.state.read().unwrap(),
                         InflightMessageState::PubRec(_)
@@ -606,6 +678,7 @@ impl MqttBackend<MqttV3_1_1> for SyncClientBackend<MqttV3_1_1> {
 
             ControlPacketType::PubRel => {
                 let pub_rel = PubRel::try_read_v3(fixed_header, body)?;
+                tracing::trace!("Received PubRel: {pub_rel:?}. Responding with PubComp");
                 if let Some(index) = self
                     .receive_inflight
                     .iter()
@@ -613,6 +686,11 @@ impl MqttBackend<MqttV3_1_1> for SyncClientBackend<MqttV3_1_1> {
                 {
                     PubComp::new_v3(pub_rel.packet_identifier()).write_to_buf(&mut self.write_buf);
                     self.receive_inflight.remove(index);
+                } else {
+                    tracing::warn!(
+                        "Received unexpected PubRel for mid {}.",
+                        pub_rel.packet_identifier()
+                    );
                 }
                 Ok(())
             }
@@ -716,6 +794,8 @@ impl MqttBackend<MqttV5_0_0> for SyncClientBackend<MqttV5_0_0> {
                 match (msg.qos(), msg.packet_identifier()) {
                     (Qos::AtMostOnce, _) => (),
                     (Qos::AtLeastOnce, Some(packet_identifier)) => {
+                        tracing::trace!("Respond with PubAck (mid={packet_identifier})");
+                        self.receive_inflight.push(packet_identifier);
                         PubAck::new_v5(
                             packet_identifier,
                             rust_mqtt_protocol::PubAckReasonCode::Success,
@@ -725,9 +805,11 @@ impl MqttBackend<MqttV5_0_0> for SyncClientBackend<MqttV5_0_0> {
                         .write_to_buf(&mut self.write_buf);
                     }
                     (Qos::ExactlyOnce, Some(packet_identifier)) => {
-                        PubRel::new_v5(
+                        tracing::trace!("Respond with PubRec (mid={packet_identifier})");
+                        self.receive_inflight.push(packet_identifier);
+                        PubRec::new_v5(
                             packet_identifier,
-                            PubRelReasonCode::Success,
+                            PubRecReasonCode::Success,
                             None,
                             Vec::new(),
                         )
@@ -760,7 +842,10 @@ impl MqttBackend<MqttV5_0_0> for SyncClientBackend<MqttV5_0_0> {
             ControlPacketType::PubRec => {
                 let pubrec = PubRec::try_read_v5(fixed_header, body)?;
                 if let Some(inflight) = self.inflight_msgs.get_mut(&pubrec.packet_identifier()) {
-                    tracing::debug!("Received PubRec for mid {}.", pubrec.packet_identifier());
+                    tracing::debug!(
+                        "Received PubRec for mid {}. Responding with PubComp",
+                        pubrec.packet_identifier()
+                    );
                     if matches!(
                         *inflight.state.read().unwrap(),
                         InflightMessageState::PubRec(_)
@@ -818,6 +903,7 @@ impl MqttBackend<MqttV5_0_0> for SyncClientBackend<MqttV5_0_0> {
 
             ControlPacketType::PubRel => {
                 let pub_rel = PubRel::try_read_v5(fixed_header, body)?;
+                tracing::trace!("Received PubRel: {pub_rel:?}. Responding with PubComp");
                 if let Some(index) = self
                     .receive_inflight
                     .iter()
@@ -889,11 +975,15 @@ where
     Self: MqttClient<V>,
     V: std::fmt::Debug,
 {
-    pub fn subscribe(&self, topics: Vec<MqttTopic>, qos: Qos) -> Result<SubAck<V>, ClientError> {
+    pub fn subscribe(
+        &self,
+        topics: Vec<impl IntoTopicSubscription>,
+        qos: Qos,
+    ) -> Result<SubAck<V>, ClientError> {
         self.assert_online();
         let subs = topics
             .into_iter()
-            .map(|topic| TopicSubscription::new_v3(topic, qos))
+            .map(|topic| self.topic_subscription(topic, qos))
             .collect();
         let packet_identifier = self.next_packet_identifier();
         let msg = Self::subscribe_packet(packet_identifier, subs);
@@ -918,7 +1008,7 @@ where
     pub fn unsubscribe(&self, topics: Vec<MqttTopic>) -> Result<UnsubAck<V>, ClientError> {
         self.assert_online();
         let packet_identifier = self.next_packet_identifier();
-        let msg = Unsubscribe::new_v3(packet_identifier, topics);
+        let msg = Self::unsubscribe_packet(packet_identifier, topics);
         tracing::debug!("Sending unsubscribe: {msg:?}");
 
         self.with_write_buf(|buf| msg.write_to_buf(buf))?;
@@ -993,7 +1083,7 @@ where
         tracing::debug!("Sending Disconnect");
         self.kill_bg_thread();
 
-        self.with_write_buf(|buf| Disconnect::new_v3().write_to_buf(buf))?;
+        self.with_write_buf(|buf| Self::disconnect_packet().write_to_buf(buf))?;
         let mut stream = self.writer.lock().unwrap();
         *stream = SyncWriter::Disconnected;
         drop(stream);

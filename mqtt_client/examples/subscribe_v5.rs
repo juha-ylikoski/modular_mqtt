@@ -1,5 +1,5 @@
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
-use rust_mqtt_protocol::{Publish, Qos};
+use rust_mqtt_protocol::{MqttTopic, Publish, Qos};
 use tracing::{dispatcher::set_global_default, Level};
 
 #[tokio::main()]
@@ -12,13 +12,7 @@ async fn main() {
     let client = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id-sub".to_string(),
-            keep_alive: 15,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: mqtt_client::client_opts::OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         "127.0.0.1:1883".to_string(),
     )
@@ -26,7 +20,7 @@ async fn main() {
 
     tracing::info!("Subscribing!");
     let suback = client
-        .subscribe(vec!["qos0".try_into().unwrap()], Qos::AtMostOnce)
+        .subscribe(vec![MqttTopic::try_from("qos0").unwrap()], Qos::AtMostOnce)
         .unwrap();
     tracing::info!("Got SubAck {suback:?}");
 

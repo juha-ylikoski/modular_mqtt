@@ -49,12 +49,7 @@ fn publish_qos0() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -122,12 +117,7 @@ fn publish_qos1() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -207,12 +197,7 @@ fn publish_qos2() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -313,12 +298,7 @@ fn publish_resend_qos1() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -428,12 +408,7 @@ fn publish_resend_pub_qos2() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )
@@ -541,12 +516,7 @@ fn publish_resend_pubrel_qos2() {
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
-            clean_session: true,
-            will: None,
-            username: None,
-            password: None,
-            on_disconnect: OnDisconnectBehavior::Panic,
-            max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
+            ..Default::default()
         },
         addr.to_string(),
     )

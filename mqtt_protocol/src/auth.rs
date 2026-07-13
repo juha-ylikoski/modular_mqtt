@@ -51,12 +51,20 @@ pub struct Auth<V> {
 impl Auth<MqttV5_0_0> {
     pub fn write_to_buf(&self, buf: &mut impl BufMut) {
         self.fixed_header.write_to_buf(buf);
-        buf.put_u8(self.reason_code as u8);
 
         let properties_len = self.method.property_len()
             + self.auth_data.property_len()
             + self.reason.property_len()
             + self.user_property.property_len();
+
+        // If reason code == 0x00 and there are no properties, fixed header length = 0 and we don't
+        // send body
+        if self.reason_code == ReasonCode::Success && properties_len == 0 {
+            assert_eq!(self.fixed_header.remaining_length, 0);
+            return;
+        }
+
+        buf.put_u8(self.reason_code as u8);
 
         write_variable_len_int(properties_len as u64, buf);
 
@@ -80,7 +88,11 @@ impl Auth<MqttV5_0_0> {
             + auth_data.property_len()
             + reason.property_len()
             + user_property.property_len();
-        let remaining_length = 1 + variable_len_int_size(properties_len) + properties_len;
+        let remaining_length = if reason_code == ReasonCode::Success && properties_len == 0 {
+            0
+        } else {
+            1 + variable_len_int_size(properties_len) + properties_len
+        };
         Self {
             fixed_header: FixedHeader::new(crate::ControlPacketType::Auth, remaining_length),
             reason_code,
@@ -93,6 +105,19 @@ impl Auth<MqttV5_0_0> {
     }
 
     pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        // If remaining length == 0 -> reason_code == 0x00 and there are no properties
+        if header.remaining_length == 0 {
+            return Ok(Self {
+                fixed_header: header,
+                protocol_level: PhantomData,
+                reason_code: ReasonCode::Success,
+                method: None,
+                auth_data: Bytes::new(),
+                reason: None,
+                user_property: Vec::new(),
+            });
+        }
+
         let reason_code = ReasonCode::try_from(data.try_get_u8()?)?;
 
         let len_properties = read_variable_len_int(data)?;
@@ -196,9 +221,23 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let mut buf = BytesMut::new();
+        let msg = Auth::new_v5(
+            ReasonCode::ContinueAuthentication,
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        msg.write_to_buf(&mut buf);
+        assert_eq!(&buf[..], &[240, 2, 24, 0]);
+    }
+
+    #[test]
+    fn serialize_short() {
+        let mut buf = BytesMut::new();
         let msg = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
         msg.write_to_buf(&mut buf);
-        assert_eq!(&buf[..], &[240, 2, 0, 0]);
+        assert_eq!(&buf[..], &[240, 0]);
     }
 
     #[test]
@@ -231,7 +270,24 @@ mod test_v5 {
 
     #[test]
     fn deserialize() {
-        let msg = [240, 2, 0, 0];
+        let msg = [240, 2, 24, 0];
+        let expected = Auth::new_v5(
+            ReasonCode::ContinueAuthentication,
+            None,
+            None,
+            None,
+            Vec::new(),
+        );
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
+    }
+
+    #[test]
+    fn deserialize_short() {
+        let msg = [240, 0];
         let expected = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
