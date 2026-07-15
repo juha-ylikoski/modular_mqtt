@@ -399,7 +399,7 @@ impl MqttClient<MqttV5_0_0> for SyncClient<MqttV5_0_0> {
                 subscription_retain_handling,
                 ..
             } => topic.into_topic_subscription(
-                true,
+                !true,
                 qos,
                 subscription_no_local,
                 subscription_keep_retain,
@@ -1040,8 +1040,6 @@ where
         );
         tracing::debug!("Sending message: {msg:?}");
 
-        self.with_write_buf(|buf| msg.write_to_buf(buf))?;
-
         let mut inflight = None;
         if let Some(packet_identifier) = msg.packet_identifier() {
             let _inflight = Arc::new(match msg.qos() {
@@ -1058,6 +1056,8 @@ where
                 },
             });
 
+            self.with_write_buf(|buf| _inflight.msg.write_to_buf(buf))?;
+
             if self
                 .inflight_ch
                 .send((packet_identifier, _inflight.clone()))
@@ -1066,6 +1066,8 @@ where
                 return Err(self.handle_recv_error());
             }
             inflight = Some(_inflight);
+        } else {
+            self.with_write_buf(|buf| msg.write_to_buf(buf))?;
         }
         Ok(inflight)
     }
