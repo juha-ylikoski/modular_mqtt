@@ -12,7 +12,7 @@ use super::{
     util::{extract_str, write_str, Qos},
 };
 
-pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq {
+pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync {
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error>;
     fn topic(&self) -> &str;
     fn options(&self) -> u8;

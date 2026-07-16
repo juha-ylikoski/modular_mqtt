@@ -3,7 +3,7 @@ use bytes::{Buf, BufMut, Bytes};
 use super::fixed_header::FixedHeader;
 use crate::{
     util::{extract_bytes, extract_str, read_variable_len_int, write_variable_len_int},
-    version::PacketProperties,
+    version::{IsSuccess, PacketProperties},
     ControlPacketType, Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet,
     Property, PropertyIdentifier, Qos, UserProperty,
 };
@@ -96,6 +96,12 @@ impl From<ConnectRcV3> for u8 {
     }
 }
 
+impl IsSuccess for ConnectRcV3 {
+    fn is_success(&self) -> bool {
+        *self == ConnectRcV3::Accepted
+    }
+}
+
 impl TryFrom<u8> for ConnectRcV5 {
     type Error = Error;
 
@@ -131,6 +137,12 @@ impl TryFrom<u8> for ConnectRcV5 {
 impl From<ConnectRcV5> for u8 {
     fn from(value: ConnectRcV5) -> Self {
         value as u8
+    }
+}
+
+impl IsSuccess for ConnectRcV5 {
+    fn is_success(&self) -> bool {
+        *self == ConnectRcV5::Accepted
     }
 }
 
@@ -483,6 +495,9 @@ impl<V: MqttVersion> Packet for ConnAck<V> {
 impl<V: MqttVersion> ConnAck<V> {
     pub fn session_present(&self) -> bool {
         self.session_present
+    }
+    pub fn rc_is_success(&self) -> bool {
+        self.connect_rc.is_success()
     }
 }
 

@@ -144,6 +144,11 @@ impl<V: MqttVersion> Packet for UnsubAck<V> {
         })
     }
 }
+impl<V: MqttVersion> UnsubAck<V> {
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
+}
 
 impl UnsubAck<MqttV3_1_1> {
     pub fn new_v3(packet_identifier: u16) -> Self {

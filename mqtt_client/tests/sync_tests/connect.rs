@@ -3,12 +3,12 @@ use crate::util::{self, write_packet};
 use std::{net::TcpListener, time::Duration};
 
 use bytes::Bytes;
-use mqtt_client::{
-    client::SyncClient,
-    client_opts::{ClientOpts, MqttLastWill, OnDisconnectBehavior},
-};
+use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
-use rust_mqtt_protocol::{MqttLastWill3_1_1, MqttTopic, MqttV3_1_1, Publish, Qos};
+use rust_mqtt_protocol::{
+    ConnAck, Connect, ConnectRcV3, Disconnect, MqttLastWill, MqttLastWill3_1_1, MqttTopic,
+    MqttV3_1_1, Packet, Publish, Qos, VersionedConnect,
+};
 
 #[test]
 #[timeout(5000)]
@@ -41,14 +41,20 @@ fn connect() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -78,21 +84,20 @@ fn connect_username_password() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(
+            VersionedConnect::V3(Connect::new_v3(
                 true,
                 1,
                 "".to_string(),
                 None,
                 Some("username".to_string()),
                 Some(Bytes::from_static(b"password"))
-            )
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -125,26 +130,25 @@ fn connect_last_will() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(
+            VersionedConnect::V3(Connect::new_v3(
                 true,
                 1,
                 "".to_string(),
                 Some(MqttLastWill3_1_1::new(
                     MqttTopic::try_from("last-will-topic").unwrap(),
                     Bytes::from_static(b"payload"),
-                    rust_mqtt_protocol::Qos::AtMostOnce,
+                    Qos::AtMostOnce,
                     false,
                 )),
                 None,
                 None,
-            )
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -153,12 +157,15 @@ fn connect_last_will() {
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
-            will: Some(MqttLastWill::from(MqttLastWill3_1_1::new(
-                MqttTopic::try_from("last-will-topic").unwrap(),
-                Bytes::from_static(b"payload"),
-                rust_mqtt_protocol::Qos::AtMostOnce,
-                false,
-            ))),
+            will: Some(
+                MqttLastWill3_1_1::new(
+                    MqttTopic::try_from("last-will-topic").unwrap(),
+                    Bytes::from_static(b"payload"),
+                    Qos::AtMostOnce,
+                    false,
+                )
+                .into(),
+            ),
             ..Default::default()
         },
         addr.to_string(),
@@ -179,14 +186,13 @@ fn connect_refused() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "".to_string(), None, None, None,)
+            VersionedConnect::V3(Connect::new_v3(true, 1, "".to_string(), None, None, None,))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Refused)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Refused).write_to_buf(buf)
         });
     });
 
@@ -201,7 +207,7 @@ fn connect_refused() {
         Ok(_) => panic!("Should not get here"),
         Err(e) => match e {
             mqtt_client::error::ConnectError::ConnectFailedV3(connect_rc) => {
-                assert_eq!(connect_rc, rust_mqtt_protocol::ConnectRcV3::Refused)
+                assert_eq!(connect_rc, ConnectRcV3::Refused)
             }
             _ => panic!("Should not get here"),
         },
@@ -220,15 +226,21 @@ fn disconnect() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf);
-            rust_mqtt_protocol::Disconnect::new_v3().write_to_buf(buf);
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf);
+            Disconnect::new_v3().write_to_buf(buf);
         });
     });
 

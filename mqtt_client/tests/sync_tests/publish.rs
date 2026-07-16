@@ -2,12 +2,12 @@ use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
 
-use mqtt_client::{
-    client::SyncClient,
-    client_opts::{ClientOpts, OnDisconnectBehavior},
-};
+use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
-use rust_mqtt_protocol::{ControlPacketType, MqttTopic, Publish, Qos};
+use rust_mqtt_protocol::{
+    ConnAck, Connect, ConnectRcV3, ControlPacketType, MqttTopic, Packet, PingReq, PingResp, PubAck,
+    PubComp, PubRec, PubRel, Publish, Qos, VersionedConnect,
+};
 
 #[test]
 #[timeout(5000)]
@@ -20,21 +20,27 @@ fn publish_qos0() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtMostOnce,
@@ -58,7 +64,7 @@ fn publish_qos0() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::AtMostOnce,
+            Qos::AtMostOnce,
             false
         ))
         .unwrap()
@@ -80,25 +86,31 @@ fn publish_qos1() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
 
         let expected_packet_identifier = recv.recv().unwrap();
 
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -107,8 +119,7 @@ fn publish_qos1() {
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubAck::new_v3(recv_msg.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubAck::new_v3(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -126,7 +137,7 @@ fn publish_qos1() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::AtLeastOnce,
+            Qos::AtLeastOnce,
             false,
         ))
         .unwrap()
@@ -151,23 +162,29 @@ fn publish_qos2() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -176,19 +193,14 @@ fn publish_qos2() {
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubRec::new_v3(recv_pub.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubRec::new_v3(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
-        assert_eq!(
-            pub_rel,
-            rust_mqtt_protocol::PubRel::new_v3(expected_packet_identifier)
-        );
+        let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(pub_rel, PubRel::new_v3(expected_packet_identifier));
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubComp::new_v3(recv_pub.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubComp::new_v3(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -206,7 +218,7 @@ fn publish_qos2() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::ExactlyOnce,
+            Qos::ExactlyOnce,
             false,
         ))
         .unwrap()
@@ -232,23 +244,29 @@ fn publish_resend_qos1() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -261,13 +279,10 @@ fn publish_resend_qos1() {
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let ping_req =
-                        rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
-                    assert_eq!(ping_req, rust_mqtt_protocol::PingReq::default());
+                    let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
+                    assert_eq!(ping_req, PingReq::default());
 
-                    write_packet(&mut stream, |buf| {
-                        rust_mqtt_protocol::PingResp::write_to_buf(buf)
-                    });
+                    write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -275,10 +290,10 @@ fn publish_resend_qos1() {
                 _ => panic!("Should not get here"),
             }
         };
-        let recv_pub2 = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_pub2 = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -288,8 +303,7 @@ fn publish_resend_qos1() {
         );
 
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubAck::new_v3(recv_pub2.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubAck::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -307,7 +321,7 @@ fn publish_resend_qos1() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::AtLeastOnce,
+            Qos::AtLeastOnce,
             false,
         ))
         .unwrap()
@@ -332,23 +346,29 @@ fn publish_resend_pub_qos2() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -361,11 +381,11 @@ fn publish_resend_pub_qos2() {
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
-                    assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
+                    let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
+                    assert_eq!(connect, PingReq::default());
 
                     write_packet(&mut stream, |buf| {
-                        rust_mqtt_protocol::PingResp::write_to_buf(buf);
+                        PingResp::default().write_to_buf(buf);
                     });
                 }
                 ControlPacketType::Publish { .. } => {
@@ -374,10 +394,10 @@ fn publish_resend_pub_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
-        let recv_pub2 = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_pub2 = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -387,19 +407,14 @@ fn publish_resend_pub_qos2() {
         );
 
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubRec::new_v3(recv_pub2.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubRec::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
-        assert_eq!(
-            pub_rel,
-            rust_mqtt_protocol::PubRel::new_v3(expected_packet_identifier)
-        );
+        let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(pub_rel, PubRel::new_v3(expected_packet_identifier));
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubComp::new_v3(recv_pub2.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubComp::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -417,7 +432,7 @@ fn publish_resend_pub_qos2() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::ExactlyOnce,
+            Qos::ExactlyOnce,
             false,
         ))
         .unwrap()
@@ -442,23 +457,29 @@ fn publish_resend_pubrel_qos2() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = rust_mqtt_protocol::Publish::try_read_v3(header, &mut data).unwrap();
+        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_msg,
-            rust_mqtt_protocol::Publish::new_v3(
+            Publish::new_v3(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -468,19 +489,18 @@ fn publish_resend_pubrel_qos2() {
         );
 
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubRec::new_v3(recv_msg.packet_identifier().unwrap())
-                .write_to_buf(buf)
+            PubRec::new_v3(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let pub_rel = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
+        let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_msg.packet_identifier().unwrap(),
             pub_rel.packet_identifier()
         );
         assert_eq!(
             pub_rel,
-            rust_mqtt_protocol::PubRel::new_v3(recv_msg.packet_identifier().unwrap())
+            PubRel::new_v3(recv_msg.packet_identifier().unwrap())
         );
 
         let (header, mut data) = loop {
@@ -488,12 +508,10 @@ fn publish_resend_pubrel_qos2() {
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
-                    let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
-                    assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
+                    let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
+                    assert_eq!(connect, PingReq::default());
 
-                    write_packet(&mut stream, |buf| {
-                        rust_mqtt_protocol::PingResp::write_to_buf(buf)
-                    });
+                    write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -501,13 +519,10 @@ fn publish_resend_pubrel_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
-        let pub_rel2 = rust_mqtt_protocol::PubRel::try_read_v3(header, &mut data).unwrap();
-        assert_eq!(
-            pub_rel2,
-            rust_mqtt_protocol::PubRel::new_v3(pub_rel2.packet_identifier())
-        );
+        let pub_rel2 = PubRel::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(pub_rel2, PubRel::new_v3(pub_rel2.packet_identifier()));
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PubComp::new_v3(expected_packet_identifier).write_to_buf(buf)
+            PubComp::new_v3(expected_packet_identifier).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -525,7 +540,7 @@ fn publish_resend_pubrel_qos2() {
         .publish(Publish::new_v3(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
-            rust_mqtt_protocol::Qos::ExactlyOnce,
+            Qos::ExactlyOnce,
             false,
         ))
         .unwrap()

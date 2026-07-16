@@ -304,12 +304,15 @@ impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
 
         let properties = V::PublishProperties::try_read(data)?;
 
+        let payload = data.clone();
+        data.advance(payload.len());
+
         Ok(Self {
             topic,
             qos,
             retain,
             dup,
-            payload: data.clone(),
+            payload,
             properties,
         })
     }

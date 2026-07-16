@@ -2,12 +2,11 @@ use crate::util::{self, write_packet};
 
 use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::{
-    client::SyncClient,
-    client_opts::{ClientOpts, OnDisconnectBehavior},
-};
+use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
-use rust_mqtt_protocol::MqttV3_1_1;
+use rust_mqtt_protocol::{
+    ConnAck, Connect, ConnectRcV3, MqttV3_1_1, Packet, PingReq, PingResp, VersionedConnect,
+};
 
 #[test]
 #[timeout(15000)]
@@ -20,26 +19,30 @@ fn ping_sequence() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 2, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                2,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         std::thread::sleep(Duration::from_secs(4));
 
         let (header, mut data) = util::read_packet(&mut stream);
         assert_eq!(data.len(), 0);
-        let connect = rust_mqtt_protocol::PingReq::try_read(header, &mut data).unwrap();
-        assert_eq!(connect, rust_mqtt_protocol::PingReq::default());
+        let connect = PingReq::try_read(header, &mut data).unwrap();
+        assert_eq!(connect, PingReq::default());
 
-        write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::PingResp::write_to_buf(buf)
-        });
+        write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
         rx_close.recv().unwrap();
     });
 

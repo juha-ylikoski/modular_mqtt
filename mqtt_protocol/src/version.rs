@@ -13,7 +13,7 @@ mod sealed {
     impl Sealed for MqttV5_0_0 {}
 }
 
-pub trait PacketProperties: Sized + PartialEq + Debug {
+pub trait PacketProperties: Sized + PartialEq + Debug + Send + Sync {
     fn try_read(data: &mut Bytes) -> Result<Self, Error>;
     fn write_properties(&self, buf: &mut impl BufMut);
     fn properties_len(&self) -> usize;
@@ -23,9 +23,13 @@ pub trait PacketProperties: Sized + PartialEq + Debug {
     }
 }
 
-pub trait MqttVersion: sealed::Sealed {
+pub trait IsSuccess {
+    fn is_success(&self) -> bool;
+}
+
+pub trait MqttVersion: sealed::Sealed + Send + Sync + 'static {
     const VERSION: u8;
-    type ConnackRc: Copy + Into<u8> + TryFrom<u8, Error = Error> + PartialEq + Debug;
+    type ConnackRc: Copy + Into<u8> + TryFrom<u8, Error = Error> + PartialEq + Debug + IsSuccess;
     type ConnackProperties: PacketProperties;
     type AckTypeProperties<R: crate::ack_messages::ReasonCode>: PacketProperties;
     type DisconnectData: PacketProperties;

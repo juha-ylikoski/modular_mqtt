@@ -49,8 +49,8 @@ pub trait Packet: Sized {
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error>;
     fn try_read_entire_buf(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let res = Self::try_read(header, data)?;
-        if !data.has_remaining() {
-            Err(MalformedPacket::new("Packet has trailing bytes"))
+        if data.has_remaining() {
+            Err(MalformedPacket::TrailingBytes(data.clone()).into())
         } else {
             Ok(res)
         }
@@ -87,6 +87,7 @@ pub enum MalformedPacket {
     InvalidQos(u8),
     InvalidFlags(u8, ControlPacketType),
     InvalidMqttTopic,
+    TrailingBytes(Bytes),
 }
 
 impl MalformedPacket {

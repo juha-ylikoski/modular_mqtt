@@ -339,7 +339,7 @@ mod v5 {
                     .unwrap(),
                 UnsubAck::new_v5(
                     2,
-                    rust_mqtt_protocol::UnsubAckReasonCode::Success,
+                    vec![rust_mqtt_protocol::UnsubAckReasonCode::Success],
                     None,
                     Vec::new()
                 )

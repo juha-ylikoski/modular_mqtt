@@ -5,7 +5,8 @@ use std::net::TcpListener;
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
 use rust_mqtt_protocol::{
-    MqttTopic, PubAck, PubComp, PubRec, PubRel, Publish, Qos, SubAck, SubRcV3, TopicSubscription,
+    ConnAck, Connect, MqttTopic, Packet, PubAck, PubComp, PubRec, PubRel, Publish, Qos, SubAck,
+    SubRcV3, Subscribe, TopicSubscriptionV3, VersionedConnect,
 };
 
 #[test]
@@ -20,23 +21,29 @@ fn sub_qos0() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::AtMostOnce
                 )]
@@ -44,8 +51,7 @@ fn sub_qos0() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0]).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -84,23 +90,29 @@ fn sub_qos1() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::AtLeastOnce
                 )]
@@ -108,8 +120,7 @@ fn sub_qos1() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0]).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -151,23 +162,29 @@ fn sub_qos2() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::ExactlyOnce
                 )]
@@ -175,8 +192,7 @@ fn sub_qos2() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0]).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -218,23 +234,29 @@ fn sub_qos0_receive_packet() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::AtMostOnce
                 )]
@@ -242,8 +264,7 @@ fn sub_qos0_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos0]).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
@@ -302,23 +323,29 @@ fn sub_qos1_receive_packet() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::AtLeastOnce
                 )]
@@ -326,17 +353,16 @@ fn sub_qos1_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos1])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos1]).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::Publish::new_v3(topic, b"test", Qos::AtLeastOnce, false)
+            Publish::new_v3(topic, b"test", Qos::AtLeastOnce, false)
                 .assign_packet_identifier(|| 42, false)
                 .write_to_buf(buf)
         });
         let (header, mut data) = util::read_packet(&mut stream);
-        let ack = rust_mqtt_protocol::PubAck::try_read_v3(header, &mut data).unwrap();
+        let ack = PubAck::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(ack, PubAck::new_v3(42));
         rx_close.recv().unwrap();
     });
@@ -393,23 +419,29 @@ fn sub_qos2_receive_packet() {
     let handle = std::thread::spawn(move || {
         let (mut stream, _addr) = server.accept().unwrap();
         let (header, mut data) = util::read_packet(&mut stream);
-        let connect = rust_mqtt_protocol::Connect::try_read(header, &mut data).unwrap();
+        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            rust_mqtt_protocol::Connect::new_v3(true, 1, "client-id".to_string(), None, None, None)
+            VersionedConnect::V3(Connect::new_v3(
+                true,
+                1,
+                "client-id".to_string(),
+                None,
+                None,
+                None
+            ))
         );
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted)
-                .write_to_buf(buf)
+            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let sub = rust_mqtt_protocol::Subscribe::try_read_v3(header, &mut data).unwrap();
+        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            rust_mqtt_protocol::Subscribe::new_v3(
+            Subscribe::new_v3(
                 sub.packet_identifier(),
-                vec![TopicSubscription::new_v3(
+                vec![TopicSubscriptionV3::new(
                     "topic".try_into().unwrap(),
                     Qos::ExactlyOnce
                 )]
@@ -417,8 +449,7 @@ fn sub_qos2_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            rust_mqtt_protocol::SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos2])
-                .write_to_buf(buf)
+            SubAck::new_v3(sub.packet_identifier(), vec![SubRcV3::SuccessQos2]).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
@@ -427,12 +458,12 @@ fn sub_qos2_receive_packet() {
                 .write_to_buf(buf)
         });
         let (header, mut data) = util::read_packet(&mut stream);
-        let rec = PubRec::try_read_v3(header, &mut data).unwrap();
+        let rec = PubRec::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(rec, PubRec::new_v3(42));
 
         write_packet(&mut stream, |buf| PubRel::new_v3(42).write_to_buf(buf));
         let (header, mut data) = util::read_packet(&mut stream);
-        let rec = PubComp::try_read_v3(header, &mut data).unwrap();
+        let rec = PubComp::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(rec, PubComp::new_v3(42));
         pub_done_tx.send(()).unwrap();
         rx_close.recv().unwrap();

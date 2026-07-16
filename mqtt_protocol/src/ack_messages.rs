@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub trait ReasonCode:
-    TryFrom<u8, Error = Error> + std::fmt::Debug + Clone + Copy + PartialEq
+    TryFrom<u8, Error = Error> + std::fmt::Debug + Clone + Copy + PartialEq + Send + Sync
 {
     fn as_u8(&self) -> u8;
     fn can_be_omitted() -> bool;
