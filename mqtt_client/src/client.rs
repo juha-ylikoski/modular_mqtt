@@ -88,10 +88,10 @@ pub trait MqttClient<V: MqttVersion>: Sized {
     fn connect_packet(opts: &ClientOpts<V>) -> Connect<V>;
 }
 
-impl<V: MqttVersion> SyncClient<V>
+impl<V> SyncClient<V>
 where
     Self: MqttClient<V>,
-    V: std::fmt::Debug,
+    V: MqttVersion,
 {
     pub fn connect_tcp(opts: ClientOpts<V>, broker: String) -> Result<Self, ConnectError> {
         let stream = TcpStream::connect(&broker)?;
@@ -642,10 +642,10 @@ impl<V: MqttVersion> SyncClient<V> {
     }
 }
 
-impl<V: MqttVersion> SyncClient<V>
+impl<V> SyncClient<V>
 where
     Self: MqttClient<V>,
-    V: std::fmt::Debug,
+    V: MqttVersion,
 {
     pub fn subscribe(
         &self,

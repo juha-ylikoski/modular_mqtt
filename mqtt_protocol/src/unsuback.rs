@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Packet, Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttVersion, Packet, Property,
+    PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,9 +44,9 @@ impl TryFrom<u8> for UnsubAckReasonCode {
 
 #[derive(Debug, PartialEq)]
 pub struct UnSubAckDataV5 {
-    reason_code: Vec<UnsubAckReasonCode>,
-    reason: Option<String>,
-    user_property: Vec<UserProperty>,
+    pub reason_code: Vec<UnsubAckReasonCode>,
+    pub reason: Option<String>,
+    pub user_property: Vec<UserProperty>,
 }
 
 impl PacketProperties for UnSubAckDataV5 {
@@ -148,30 +148,11 @@ impl<V: MqttVersion> UnsubAck<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
-}
 
-impl UnsubAck<MqttV3_1_1> {
-    pub fn new_v3(packet_identifier: u16) -> Self {
+    pub fn new(packet_identifier: u16, properties: V::UnSubAckProperties) -> Self {
         Self {
             packet_identifier,
-            properties: (),
-        }
-    }
-}
-impl UnsubAck<MqttV5_0_0> {
-    pub fn new_v5(
-        packet_identifier: u16,
-        reason_codes: Vec<UnsubAckReasonCode>,
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        Self {
-            packet_identifier,
-            properties: UnSubAckDataV5 {
-                reason_code: reason_codes,
-                reason,
-                user_property,
-            },
+            properties: properties,
         }
     }
 }
@@ -185,14 +166,14 @@ mod v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = UnsubAck::new_v3(42);
+        let msg = UnsubAck::<MqttV3_1_1>::new(42, ());
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[176, 2, 0, 42]);
     }
     #[test]
     fn deserialize() {
         let msg = [176, 2, 0, 42];
-        let expected = UnsubAck::new_v3(42);
+        let expected = UnsubAck::new(42, ());
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -213,14 +194,16 @@ mod v5 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = UnsubAck::new_v5(
+        let msg = UnsubAck::<MqttV5_0_0>::new(
             42,
-            vec![
-                UnsubAckReasonCode::NotAuthorized,
-                UnsubAckReasonCode::Success,
-            ],
-            None,
-            Vec::new(),
+            UnSubAckDataV5 {
+                reason_code: vec![
+                    UnsubAckReasonCode::NotAuthorized,
+                    UnsubAckReasonCode::Success,
+                ],
+                reason: None,
+                user_property: Vec::new(),
+            },
         );
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[176, 5, 0, 42, 0, 135, 0]);
@@ -229,11 +212,13 @@ mod v5 {
     #[test]
     fn serialize_reason() {
         let mut buf = Vec::new();
-        let msg = UnsubAck::new_v5(
+        let msg = UnsubAck::<MqttV5_0_0>::new(
             42,
-            vec![UnsubAckReasonCode::Success],
-            Some("test".to_string()),
-            Vec::new(),
+            UnSubAckDataV5 {
+                reason_code: vec![UnsubAckReasonCode::Success],
+                reason: Some("test".to_string()),
+                user_property: Vec::new(),
+            },
         );
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -244,14 +229,16 @@ mod v5 {
     #[test]
     fn serialize_user_property() {
         let mut buf = Vec::new();
-        let msg = UnsubAck::new_v5(
+        let msg = UnsubAck::<MqttV5_0_0>::new(
             22,
-            vec![UnsubAckReasonCode::NoSubscriptionExisted],
-            None,
-            vec![UserProperty {
-                key: "key".to_string(),
-                value: "value".to_string(),
-            }],
+            UnSubAckDataV5 {
+                reason_code: vec![UnsubAckReasonCode::NoSubscriptionExisted],
+                reason: None,
+                user_property: vec![UserProperty {
+                    key: "key".to_string(),
+                    value: "value".to_string(),
+                }],
+            },
         );
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -265,11 +252,13 @@ mod v5 {
     #[test]
     fn deserialize() {
         let msg = [176, 4, 0, 42, 0, 135];
-        let expected = UnsubAck::new_v5(
+        let expected = UnsubAck::<MqttV5_0_0>::new(
             42,
-            vec![UnsubAckReasonCode::NotAuthorized],
-            None,
-            Vec::new(),
+            UnSubAckDataV5 {
+                reason_code: vec![UnsubAckReasonCode::NotAuthorized],
+                reason: None,
+                user_property: Vec::new(),
+            },
         );
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
@@ -284,11 +273,13 @@ mod v5 {
     #[test]
     fn deserialize_reason() {
         let msg = [176, 11, 0, 42, 7, 31, 0, 4, b't', b'e', b's', b't', 135];
-        let expected = UnsubAck::new_v5(
+        let expected = UnsubAck::<MqttV5_0_0>::new(
             42,
-            vec![UnsubAckReasonCode::NotAuthorized],
-            Some("test".to_string()),
-            Vec::new(),
+            UnSubAckDataV5 {
+                reason_code: vec![UnsubAckReasonCode::NotAuthorized],
+                reason: Some("test".to_string()),
+                user_property: Vec::new(),
+            },
         );
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
@@ -305,14 +296,16 @@ mod v5 {
             176, 18, 0, 42, 13, 38, 0, 3, b'k', b'e', b'y', 0, 5, b'v', b'a', b'l', b'u', b'e', 0,
             0,
         ];
-        let expected = UnsubAck::new_v5(
+        let expected = UnsubAck::<MqttV5_0_0>::new(
             42,
-            vec![UnsubAckReasonCode::Success, UnsubAckReasonCode::Success],
-            None,
-            vec![UserProperty {
-                key: "key".to_string(),
-                value: "value".to_string(),
-            }],
+            UnSubAckDataV5 {
+                reason_code: vec![UnsubAckReasonCode::Success, UnsubAckReasonCode::Success],
+                reason: None,
+                user_property: vec![UserProperty {
+                    key: "key".to_string(),
+                    value: "value".to_string(),
+                }],
+            },
         );
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)

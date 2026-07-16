@@ -5,8 +5,8 @@ use std::net::TcpListener;
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
 use ntest::timeout;
 use rust_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, ControlPacketType, MqttTopic, Packet, PingReq, PingResp, PubAck,
-    PubComp, PubRec, PubRel, Publish, Qos, VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ControlPacketType, MqttTopic, MqttV3_1_1, Packet, PingReq,
+    PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier, VersionedConnect,
 };
 
 #[test]
@@ -37,10 +37,12 @@ fn publish_qos0() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_msg =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert_eq!(
             recv_msg,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtMostOnce,
@@ -51,7 +53,7 @@ fn publish_qos0() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -61,7 +63,7 @@ fn publish_qos0() {
     )
     .unwrap();
     assert!(client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtMostOnce,
@@ -103,14 +105,16 @@ fn publish_qos1() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_msg =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert!(recv_msg.packet_identifier().is_some());
 
         let expected_packet_identifier = recv.recv().unwrap();
 
         assert_eq!(
             recv_msg,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -124,7 +128,7 @@ fn publish_qos1() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -134,7 +138,7 @@ fn publish_qos1() {
     )
     .unwrap();
     let msg = client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtLeastOnce,
@@ -179,12 +183,14 @@ fn publish_qos2() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_pub =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -205,7 +211,7 @@ fn publish_qos2() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -215,7 +221,7 @@ fn publish_qos2() {
     )
     .unwrap();
     let msg = client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,
@@ -261,12 +267,14 @@ fn publish_resend_qos1() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_pub =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -290,10 +298,12 @@ fn publish_resend_qos1() {
                 _ => panic!("Should not get here"),
             }
         };
-        let recv_pub2 = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_pub2 =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert_eq!(
             recv_pub2,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::AtLeastOnce,
@@ -308,7 +318,7 @@ fn publish_resend_qos1() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -318,7 +328,7 @@ fn publish_resend_qos1() {
     )
     .unwrap();
     let msg = client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtLeastOnce,
@@ -363,12 +373,14 @@ fn publish_resend_pub_qos2() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_pub = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_pub =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_pub,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -394,10 +406,12 @@ fn publish_resend_pub_qos2() {
                 _ => panic!("Should not get here"),
             }
         };
-        let recv_pub2 = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_pub2 =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert_eq!(
             recv_pub2,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -419,7 +433,7 @@ fn publish_resend_pub_qos2() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -429,7 +443,7 @@ fn publish_resend_pub_qos2() {
     )
     .unwrap();
     let msg = client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,
@@ -474,12 +488,14 @@ fn publish_resend_pubrel_qos2() {
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
-        let recv_msg = Publish::try_read_entire_buf(header, &mut data).unwrap();
+        let recv_msg =
+            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                .unwrap();
         assert!(recv_msg.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
             recv_msg,
-            Publish::new_v3(
+            Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
                 Qos::ExactlyOnce,
@@ -511,7 +527,7 @@ fn publish_resend_pubrel_qos2() {
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(connect, PingReq::default());
 
-                    write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
+                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -527,7 +543,7 @@ fn publish_resend_pubrel_qos2() {
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -537,7 +553,7 @@ fn publish_resend_pubrel_qos2() {
     )
     .unwrap();
     let msg = client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,

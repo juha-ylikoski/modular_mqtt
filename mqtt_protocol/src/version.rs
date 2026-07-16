@@ -27,7 +27,9 @@ pub trait IsSuccess {
     fn is_success(&self) -> bool;
 }
 
-pub trait MqttVersion: sealed::Sealed + Send + Sync + 'static {
+pub trait MqttVersion:
+    sealed::Sealed + std::fmt::Debug + Send + Sync + 'static + PartialEq
+{
     const VERSION: u8;
     type ConnackRc: Copy + Into<u8> + TryFrom<u8, Error = Error> + PartialEq + Debug + IsSuccess;
     type ConnackProperties: PacketProperties;
@@ -38,7 +40,7 @@ pub trait MqttVersion: sealed::Sealed + Send + Sync + 'static {
     type TopicSubscription: crate::subscribe::TopicSubscription;
     type UnsubscribeProperties: PacketProperties;
     type UnSubAckProperties: PacketProperties;
-    type PublishProperties: PacketProperties;
+    type PublishProperties: PacketProperties + Default;
     type ConnectProperties: PacketProperties;
     type LastWill: crate::connect::MqttLastWill;
 }

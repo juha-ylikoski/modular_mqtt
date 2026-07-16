@@ -16,9 +16,9 @@ pub use disconnect::{Disconnect, DisconnectReasonCode};
 pub use fixed_header::{ControlPacketType, FixedHeader};
 pub use ping::{PingReq, PingResp};
 pub use publish::Publish;
-pub use suback::{SubAck, SubRcV3, SubRcV5};
+pub use suback::{SubAck, SubAckDataV5, SubRcV3, SubRcV5};
 pub use subscribe::{RetainHandling, Subscribe, TopicSubscriptionV3, TopicSubscriptionV5};
-pub use unsuback::{UnsubAck, UnsubAckReasonCode};
+pub use unsuback::{UnSubAckDataV5, UnsubAck, UnsubAckReasonCode};
 pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, Qos, QosPacketIdentifier};
 pub use version::MqttVersion;
@@ -59,6 +59,7 @@ pub trait Packet: Sized {
     fn write_to_buf(&self, buf: &mut impl BufMut);
 }
 
+#[derive(Debug, PartialEq)]
 pub enum MqttPackage<V: MqttVersion, Q> {
     Connect(Connect<V>),
     ConnAck(ConnAck<V>),

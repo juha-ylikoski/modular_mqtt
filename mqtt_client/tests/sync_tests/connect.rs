@@ -244,7 +244,7 @@ fn disconnect() {
         });
     });
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -257,7 +257,7 @@ fn disconnect() {
     std::thread::sleep(Duration::from_secs(1));
     assert!(!client.online());
     client
-        .publish(Publish::new_v3(
+        .publish(Publish::new(
             "foo".try_into().unwrap(),
             b"bar",
             Qos::AtMostOnce,

@@ -1,5 +1,5 @@
 use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
-use rust_mqtt_protocol::{MqttTopic, Publish, Qos};
+use rust_mqtt_protocol::{MqttTopic, MqttV5_0_0, Publish, Qos};
 use tracing::{dispatcher::set_global_default, Level};
 
 #[tokio::main()]
@@ -9,7 +9,7 @@ async fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let client = SyncClient::connect_tcp(
+    let client: SyncClient<MqttV5_0_0> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id-sub".to_string(),
             ..Default::default()
@@ -26,7 +26,7 @@ async fn main() {
 
     tracing::info!("Publish with qos=0");
     assert!(client
-        .publish(Publish::new_v5(
+        .publish(Publish::new(
             "qos0".try_into().unwrap(),
             b"Published message content as utf8 string",
             Qos::AtMostOnce,

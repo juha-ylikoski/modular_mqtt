@@ -120,14 +120,14 @@ impl SubRcV3 {
 
 #[derive(Debug, PartialEq)]
 pub struct SubAckDataV5 {
-    return_codes: Vec<SubRcV5>,
+    pub return_codes: Vec<SubRcV5>,
     /// UTF-8 Encoded String representing the reason associated with this response.
     /// This Reason String is a human readable string designed for diagnostics
     /// and is not intended to be parsed by the receiver
-    reason: Option<String>,
+    pub reason: Option<String>,
     /// UTF-8 String Pair. This property can be used to provide additional
     /// diagnostic or other information
-    user_property: Vec<UserProperty>,
+    pub user_property: Vec<UserProperty>,
 }
 
 impl PacketProperties for SubAckDataV5 {
@@ -231,37 +231,20 @@ impl<V: MqttVersion> SubAck<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
-}
-impl SubAck<MqttV3_1_1> {
-    pub fn new_v3(packet_identifier: u16, return_codes: Vec<SubRcV3>) -> Self {
+    pub fn new(packet_identifier: u16, data: V::SubAckData) -> Self {
         Self {
             packet_identifier,
-            data: return_codes,
+            data,
         }
     }
-
+}
+impl SubAck<MqttV3_1_1> {
     pub fn return_codes(&self) -> &[SubRcV3] {
         &self.data
     }
 }
 
 impl SubAck<MqttV5_0_0> {
-    pub fn new_v5(
-        packet_identifier: u16,
-        return_codes: Vec<SubRcV5>,
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        Self {
-            packet_identifier,
-            data: SubAckDataV5 {
-                return_codes,
-                user_property,
-                reason,
-            },
-        }
-    }
-
     pub fn return_codes(&self) -> &[SubRcV5] {
         &self.data.return_codes
     }
@@ -284,7 +267,7 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = SubAck::new_v3(
+        let msg = SubAck::<MqttV3_1_1>::new(
             42,
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
@@ -295,7 +278,7 @@ mod test_v3 {
     #[test]
     fn deserialize() {
         let msg = [144, 5, 0, 42, 0, 1, 0x80];
-        let expected = SubAck::new_v3(
+        let expected = SubAck::<MqttV3_1_1>::new(
             42,
             vec![SubRcV3::SuccessQos0, SubRcV3::SuccessQos1, SubRcV3::Failure],
         );
@@ -316,11 +299,13 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = SubAck::new_v5(
+        let msg = SubAck::<MqttV5_0_0>::new(
             42,
-            vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
-            None,
-            vec![],
+            SubAckDataV5 {
+                return_codes: vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
+                reason: None,
+                user_property: vec![],
+            },
         );
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[144, 6, 0, 42, 0, 0, 1, 0x80]);
@@ -329,14 +314,16 @@ mod test_v5 {
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let msg = SubAck::new_v5(
+        let msg = SubAck::<MqttV5_0_0>::new(
             42,
-            vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
-            Some("reason".to_string()),
-            vec![UserProperty {
-                key: "property1".to_string(),
-                value: "value1".to_string(),
-            }],
+            SubAckDataV5 {
+                return_codes: vec![SubRcV5::SuccessQos0, SubRcV5::SuccessQos1, SubRcV5::Failure],
+                reason: Some("reason".to_string()),
+                user_property: vec![UserProperty {
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
+                }],
+            },
         );
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -355,15 +342,17 @@ mod test_v5 {
     #[test]
     fn deserialize() {
         let msg = [144, 6, 0, 42, 0, 0, 0x97, 0x80];
-        let expected = SubAck::new_v5(
+        let expected = SubAck::<MqttV5_0_0>::new(
             42,
-            vec![
-                SubRcV5::SuccessQos0,
-                SubRcV5::QuotaExceeded,
-                SubRcV5::Failure,
-            ],
-            None,
-            vec![],
+            SubAckDataV5 {
+                return_codes: vec![
+                    SubRcV5::SuccessQos0,
+                    SubRcV5::QuotaExceeded,
+                    SubRcV5::Failure,
+                ],
+                reason: None,
+                user_property: vec![],
+            },
         );
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
@@ -382,18 +371,20 @@ mod test_v5 {
             b'u', b'e', b'1', // payload
             0, 0x97, 0x80,
         ];
-        let expected = SubAck::new_v5(
+        let expected = SubAck::<MqttV5_0_0>::new(
             42,
-            vec![
-                SubRcV5::SuccessQos0,
-                SubRcV5::QuotaExceeded,
-                SubRcV5::Failure,
-            ],
-            Some("reason".to_string()),
-            vec![UserProperty {
-                key: "property1".to_string(),
-                value: "value1".to_string(),
-            }],
+            SubAckDataV5 {
+                return_codes: vec![
+                    SubRcV5::SuccessQos0,
+                    SubRcV5::QuotaExceeded,
+                    SubRcV5::Failure,
+                ],
+                reason: Some("reason".to_string()),
+                user_property: vec![UserProperty {
+                    key: "property1".to_string(),
+                    value: "value1".to_string(),
+                }],
+            },
         );
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)

@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Packet, PayloadFormat, Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV5_0_0, MqttVersion, Packet,
+    PayloadFormat, Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -221,6 +221,19 @@ impl<V: MqttVersion, Q> Publish<V, Q> {
 }
 
 impl<V: MqttVersion> Publish<V, Qos> {
+    pub fn new(topic: MqttTopic, payload: impl IntoPayload, qos: Qos, retain: bool) -> Self {
+        let payload = payload.into_payload();
+        let topic = topic.0;
+
+        Self {
+            qos,
+            retain,
+            dup: false,
+            topic,
+            payload,
+            properties: V::PublishProperties::default(),
+        }
+    }
     pub fn assign_packet_identifier(
         self,
         id: impl FnOnce() -> u16,
@@ -340,22 +353,6 @@ impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
     }
 }
 
-impl Publish<MqttV3_1_1, Qos> {
-    pub fn new_v3(topic: MqttTopic, payload: impl IntoPayload, qos: Qos, retain: bool) -> Self {
-        let payload = payload.into_payload();
-        let topic = topic.0;
-
-        Self {
-            qos,
-            retain,
-            dup: false,
-            topic,
-            payload,
-            properties: (),
-        }
-    }
-}
-
 impl<Q> Publish<MqttV5_0_0, Q> {
     pub fn payload_format(&self) -> Option<PayloadFormat> {
         self.properties.payload_format
@@ -391,29 +388,6 @@ impl<Q> Publish<MqttV5_0_0, Q> {
 }
 
 impl Publish<MqttV5_0_0, Qos> {
-    pub fn new_v5(topic: MqttTopic, payload: impl IntoPayload, qos: Qos, retain: bool) -> Self {
-        let payload = payload.into_payload();
-        let topic = topic.0;
-
-        Self {
-            topic,
-            qos,
-            dup: false,
-            retain,
-            payload,
-            properties: PublishProperties {
-                payload_format: None,
-                message_expiry_interval: None,
-                topic_alias: None,
-                response_topic: None,
-                correlation_data: Bytes::new(),
-                user_property: Vec::new(),
-                subscription_identifier: None,
-                content_type: None,
-            },
-        }
-    }
-
     pub fn set_payload_format(mut self, value: PayloadFormat) -> Self {
         self.properties.payload_format = Some(value);
         self
@@ -455,12 +429,14 @@ mod test_v3 {
 
     use bytes::BytesMut;
 
+    use crate::MqttV3_1_1;
+
     use super::*;
 
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let msg = Publish::<MqttV3_1_1, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -480,8 +456,13 @@ mod test_v3 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let msg = Publish::new_v3(topic, Bytes::from_static(b"foo"), Qos::AtMostOnce, false)
-            .assign_packet_identifier(|| 0, false);
+        let msg = Publish::<MqttV3_1_1, Qos>::new(
+            topic,
+            Bytes::from_static(b"foo"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -492,7 +473,7 @@ mod test_v3 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let msg = Publish::<MqttV3_1_1, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::ExactlyOnce,
@@ -528,7 +509,7 @@ mod test_v3 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(
+        let msg = Publish::<MqttV3_1_1, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -562,8 +543,13 @@ mod test_v3 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v3(topic, Bytes::from_static(b"payload"), Qos::AtMostOnce, true)
-            .assign_packet_identifier(|| 0, false);
+        let msg = Publish::<MqttV3_1_1, Qos>::new(
+            topic,
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            true,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -590,7 +576,7 @@ mod test_v3 {
     }
     #[test]
     fn deserialize() {
-        let expected = Publish::new_v3(
+        let expected = Publish::<MqttV3_1_1, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -608,7 +594,7 @@ mod test_v3 {
     }
     #[test]
     fn deserialize_qos() {
-        let expected = Publish::new_v3(
+        let expected = Publish::<MqttV3_1_1, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::ExactlyOnce,
@@ -643,7 +629,7 @@ mod test_v3 {
     }
     #[test]
     fn deserialize_dup() {
-        let expected = Publish::new_v3(
+        let expected = Publish::<MqttV3_1_1, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -676,7 +662,7 @@ mod test_v3 {
     }
     #[test]
     fn deserialize_retain() {
-        let expected = Publish::new_v3(
+        let expected = Publish::<MqttV3_1_1, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -719,7 +705,7 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -739,8 +725,13 @@ mod test_v5 {
     #[test]
     fn serialize2() {
         let topic = MqttTopic::try_from("foo2").unwrap();
-        let msg = Publish::new_v5(topic, Bytes::from_static(b"foo"), Qos::AtMostOnce, false)
-            .assign_packet_identifier(|| 0, false);
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
+            topic,
+            Bytes::from_static(b"foo"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -751,7 +742,7 @@ mod test_v5 {
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::ExactlyOnce,
@@ -788,7 +779,7 @@ mod test_v5 {
     #[test]
     fn serialize_dup() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -823,8 +814,13 @@ mod test_v5 {
     #[test]
     fn serialize_retain() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(topic, Bytes::from_static(b"payload"), Qos::AtMostOnce, true)
-            .assign_packet_identifier(|| 0, false);
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
+            topic,
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            true,
+        )
+        .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -852,7 +848,7 @@ mod test_v5 {
     }
     #[test]
     fn deserialize() {
-        let expected = Publish::new_v5(
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -870,7 +866,7 @@ mod test_v5 {
     }
     #[test]
     fn deserialize_qos() {
-        let expected = Publish::new_v5(
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::ExactlyOnce,
@@ -906,7 +902,7 @@ mod test_v5 {
     }
     #[test]
     fn deserialize_dup() {
-        let expected = Publish::new_v5(
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -940,7 +936,7 @@ mod test_v5 {
     }
     #[test]
     fn deserialize_retain() {
-        let expected = Publish::new_v5(
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -976,7 +972,7 @@ mod test_v5 {
     #[test]
     fn serialize_properties() {
         let topic = MqttTopic::try_from("topic").unwrap();
-        let msg = Publish::new_v5(
+        let msg = Publish::new(
             topic,
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
@@ -1035,7 +1031,7 @@ mod test_v5 {
     }
     #[test]
     fn deserialize_properties() {
-        let mut expected = Publish::new_v5(
+        let mut expected = Publish::<MqttV5_0_0, Qos>::new(
             MqttTopic::try_from("topic").unwrap(),
             Bytes::from_static(b"payload"),
             Qos::AtMostOnce,
