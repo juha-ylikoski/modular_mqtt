@@ -1,10 +1,10 @@
-use std::marker::PhantomData;
-
 use bytes::{Buf, BufMut, Bytes};
 
-use crate::util::{read_variable_len_int, variable_len_int_size, write_variable_len_int};
+use crate::util::{read_variable_len_int, write_variable_len_int};
+use crate::version::PacketProperties;
 use crate::{
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Property, PropertyIdentifier,
+    UserProperty,
 };
 
 use crate::{
@@ -13,122 +13,23 @@ use crate::{
 };
 
 #[derive(Debug, PartialEq)]
-pub enum UnsubscribeOptions<V> {
-    V3 {
-        protocol_level: PhantomData<V>,
-    },
-    V5 {
-        protocol_level: PhantomData<V>,
-        user_property: Vec<UserProperty>,
-    },
+pub struct UnsubscribeProperties {
+    user_property: Vec<UserProperty>,
 }
 
-#[derive(Debug, PartialEq)]
-/// An UNSUBSCRIBE Packet is sent by the Client to the Server, to unsubscribe from topics.
-pub struct Unsubscribe<V> {
-    fixed_header: FixedHeader,
-    packet_identifier: u16,
-    options: UnsubscribeOptions<V>,
-    topics: Vec<String>,
-}
-
-impl<V> Unsubscribe<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
-        buf.put_u16(self.packet_identifier);
-
-        if let UnsubscribeOptions::V5 { user_property, .. } = &self.options {
-            let properties_len = user_property.property_len();
-            write_variable_len_int(properties_len as u64, buf);
-            user_property.serialize(crate::PropertyIdentifier::UserProperty, buf);
-        }
-
-        for topic in &self.topics {
-            write_str(topic, buf);
-        }
-    }
-
-    pub fn packet_identifier(&self) -> u16 {
-        self.packet_identifier
-    }
-
-    pub fn topics(&self) -> &[String] {
-        &self.topics
-    }
-}
-impl Unsubscribe<MqttV3_1_1> {
-    pub fn new_v3(packet_identifier: u16, topics: Vec<MqttTopic>) -> Self {
-        Self {
-            fixed_header: FixedHeader::new(
-                ControlPacketType::Unsubscribe,
-                2 + topics.len() * 2 + topics.iter().map(|topic| topic.0.len()).sum::<usize>(),
-            ),
-            packet_identifier,
-            topics: topics
-                .into_iter()
-                .map(|topic| topic.0.to_string())
-                .collect(),
-            options: UnsubscribeOptions::V3 {
-                protocol_level: PhantomData,
-            },
-        }
-    }
-    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let packet_identifier = data.try_get_u16()?;
-        let mut topics = Vec::new();
-        while data.has_remaining() {
-            let topic = extract_str(data)?;
-            topics.push(topic.to_string());
-        }
-        Ok(Self {
-            fixed_header: header,
-            packet_identifier,
-            topics,
-            options: UnsubscribeOptions::V3 {
-                protocol_level: PhantomData,
-            },
-        })
-    }
-}
-
-impl Unsubscribe<MqttV5_0_0> {
-    pub fn new_v5(
-        packet_identifier: u16,
-        topics: Vec<MqttTopic>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        let properties_len = user_property.property_len();
-        Self {
-            fixed_header: FixedHeader::new(
-                ControlPacketType::Unsubscribe,
-                2 + variable_len_int_size(properties_len)
-                    + properties_len
-                    + topics.len() * 2
-                    + topics.iter().map(|topic| topic.0.len()).sum::<usize>(),
-            ),
-            packet_identifier,
-            topics: topics
-                .into_iter()
-                .map(|topic| topic.0.to_string())
-                .collect(),
-            options: UnsubscribeOptions::V5 {
-                protocol_level: PhantomData,
-                user_property,
-            },
-        }
-    }
-    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let packet_identifier = data.try_get_u16()?;
+impl PacketProperties for UnsubscribeProperties {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         let properties_len = read_variable_len_int(data)? as usize;
-
-        let mut user_property: Vec<UserProperty> = Vec::new();
 
         if data.remaining() < properties_len {
             return Err(MalformedPacket::new("Packet too short to read property"));
         }
-        let end_properties = data.remaining() - properties_len;
 
-        while data.remaining() > end_properties {
+        let mut user_property = Vec::new();
+
+        let data = &mut data.split_to(properties_len);
+
+        while data.has_remaining() {
             let property_identifier = read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             if property_identifier == PropertyIdentifier::UserProperty {
@@ -142,27 +43,104 @@ impl Unsubscribe<MqttV5_0_0> {
             }
         }
 
+        Ok(Self { user_property })
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let properties_len = self.properties_len();
+        write_variable_len_int(properties_len as u64, buf);
+        self.user_property
+            .serialize(crate::PropertyIdentifier::UserProperty, buf);
+    }
+
+    fn properties_len(&self) -> usize {
+        self.user_property.property_len()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+/// An UNSUBSCRIBE Packet is sent by the Client to the Server, to unsubscribe from topics.
+pub struct Unsubscribe<V: MqttVersion> {
+    packet_identifier: u16,
+    properties: V::UnsubscribeProperties,
+    topics: Vec<String>,
+}
+
+impl<V: MqttVersion> Unsubscribe<V> {
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        let fixed_header = FixedHeader::new(
+            ControlPacketType::Unsubscribe,
+            2 + self.properties.properties_block_len()
+                + self.topics.len() * 2
+                + self.topics.iter().map(|topic| topic.len()).sum::<usize>(),
+        );
+        fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
+
+        self.properties.write_properties(buf);
+
+        for topic in &self.topics {
+            write_str(topic, buf);
+        }
+    }
+
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert_eq!(header.control_packet_type, ControlPacketType::Unsubscribe);
+        let packet_identifier = data.try_get_u16()?;
+
+        let properties = V::UnsubscribeProperties::try_read(data)?;
+
         let mut topics = Vec::new();
         while data.has_remaining() {
             let topic = extract_str(data)?;
             topics.push(topic.to_string());
         }
         Ok(Self {
-            fixed_header: header,
             packet_identifier,
             topics,
-            options: UnsubscribeOptions::V5 {
-                protocol_level: PhantomData,
-                user_property,
-            },
+            properties,
         })
     }
 
-    pub fn user_property(&self) -> &[UserProperty] {
-        match &self.options {
-            UnsubscribeOptions::V3 { .. } => unreachable!(),
-            UnsubscribeOptions::V5 { user_property, .. } => user_property,
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
+
+    pub fn topics(&self) -> &[String] {
+        &self.topics
+    }
+}
+impl Unsubscribe<MqttV3_1_1> {
+    pub fn new_v3(packet_identifier: u16, topics: Vec<MqttTopic>) -> Self {
+        Self {
+            packet_identifier,
+            topics: topics
+                .into_iter()
+                .map(|topic| topic.0.to_string())
+                .collect(),
+            properties: (),
         }
+    }
+}
+
+impl Unsubscribe<MqttV5_0_0> {
+    pub fn new_v5(
+        packet_identifier: u16,
+        topics: Vec<MqttTopic>,
+        user_property: Vec<UserProperty>,
+    ) -> Self {
+        Self {
+            packet_identifier,
+            topics: topics
+                .into_iter()
+                .map(|topic| topic.0.to_string())
+                .collect(),
+            properties: UnsubscribeProperties { user_property },
+        }
+    }
+
+    pub fn user_property(&self) -> &[UserProperty] {
+        &self.properties.user_property
     }
 }
 
@@ -239,10 +217,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            Unsubscribe::try_read_v3(header, &mut body).unwrap(),
-            expected
-        );
+        assert_eq!(Unsubscribe::try_read(header, &mut body).unwrap(), expected);
     }
 }
 
@@ -384,10 +359,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            Unsubscribe::try_read_v5(header, &mut body).unwrap(),
-            expected
-        );
+        assert_eq!(Unsubscribe::try_read(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -448,9 +420,6 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            Unsubscribe::try_read_v5(header, &mut body).unwrap(),
-            expected
-        );
+        assert_eq!(Unsubscribe::try_read(header, &mut body).unwrap(), expected);
     }
 }

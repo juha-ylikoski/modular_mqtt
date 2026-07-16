@@ -1,11 +1,10 @@
-use std::marker::PhantomData;
-
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
-    PropertyIdentifier, UserProperty,
+    version::PacketProperties,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
+    Property, PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -110,94 +109,160 @@ impl TryFrom<u8> for DisconnectReasonCode {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum DisconnectData<V> {
-    V3 {
-        protocol_level: PhantomData<V>,
-    },
-    V5 {
-        protocol_level: PhantomData<V>,
-        reason_code: DisconnectReasonCode,
-        /// Followed by the Four Byte Integer representing the Session Expiry Interval in seconds. It is a Protocol Error to include the Session Expiry Interval more than once.
-        ///
-        /// If the Session Expiry Interval is absent, the Session Expiry Interval in the CONNECT packet is used.
-        ///
-        /// The Session Expiry Interval MUST NOT be sent on a DISCONNECT by the Server [MQTT-3.14.2-2].
-        ///
-        /// If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client. If such a non-zero Session Expiry Interval is received by the Server, it does not treat it as a valid DISCONNECT packet. The Server uses DISCONNECT with Reason Code 0x82 (Protocol Error) as described in section 4.13.
-        session_expiry_interval: Option<u32>,
-        /// Followed by the UTF-8 Encoded String representing the reason for the disconnect. This Reason String is human readable, designed for diagnostics and SHOULD NOT be parsed by the receiver.
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-        /// Followed by a UTF-8 Encoded String which can be used by the Client to identify another Server to use. It is a Protocol Error to include the Server Reference more than once.
-        /// The Server sends DISCONNECT including a Server Reference and Reason Code 0x9C (Use another server) or 0x9D (Server moved) as described in section 4.13.
-        server_reference: Option<String>,
-    },
+pub struct DisconnectData {
+    reason_code: DisconnectReasonCode,
+    /// Followed by the Four Byte Integer representing the Session Expiry Interval in seconds. It is a Protocol Error to include the Session Expiry Interval more than once.
+    ///
+    /// If the Session Expiry Interval is absent, the Session Expiry Interval in the CONNECT packet is used.
+    ///
+    /// The Session Expiry Interval MUST NOT be sent on a DISCONNECT by the Server [MQTT-3.14.2-2].
+    ///
+    /// If the Session Expiry Interval in the CONNECT packet was zero, then it is a Protocol Error to set a non-zero Session Expiry Interval in the DISCONNECT packet sent by the Client. If such a non-zero Session Expiry Interval is received by the Server, it does not treat it as a valid DISCONNECT packet. The Server uses DISCONNECT with Reason Code 0x82 (Protocol Error) as described in section 4.13.
+    session_expiry_interval: Option<u32>,
+    /// Followed by the UTF-8 Encoded String representing the reason for the disconnect. This Reason String is human readable, designed for diagnostics and SHOULD NOT be parsed by the receiver.
+    reason: Option<String>,
+    user_property: Vec<UserProperty>,
+    /// Followed by a UTF-8 Encoded String which can be used by the Client to identify another Server to use. It is a Protocol Error to include the Server Reference more than once.
+    /// The Server sends DISCONNECT including a Server Reference and Reason Code 0x9C (Use another server) or 0x9D (Server moved) as described in section 4.13.
+    server_reference: Option<String>,
+}
+
+impl PacketProperties for DisconnectData {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
+        // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
+        if !data.has_remaining() {
+            return Ok(DisconnectData {
+                reason_code: DisconnectReasonCode::Normal,
+                session_expiry_interval: None,
+                reason: None,
+                user_property: Vec::new(),
+                server_reference: None,
+            });
+        }
+
+        let reason_code = DisconnectReasonCode::try_from(data.try_get_u8()?)?;
+
+        let len_properties = read_variable_len_int(data)? as usize;
+
+        let mut properties = Self {
+            reason_code,
+            session_expiry_interval: None,
+            reason: None,
+            user_property: Vec::new(),
+            server_reference: None,
+        };
+
+        if data.remaining() < len_properties {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+
+        let data = &mut data.split_to(len_properties);
+        while data.has_remaining() {
+            let property_identifier = crate::util::read_variable_len_int(data)?;
+            let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
+            match property_identifier {
+                PropertyIdentifier::SessionExpiryInterval => {
+                    if properties.session_expiry_interval.is_some() {
+                        return Err(Error::ProtocolError(
+                            "SessionExpiryInterval specified multiple times",
+                        ));
+                    }
+                    properties.session_expiry_interval =
+                        Some(data.try_get_u32().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })?);
+                }
+                PropertyIdentifier::Reason => {
+                    if properties.reason.is_some() {
+                        return Err(Error::ProtocolError("Reason specified multiple times"));
+                    }
+                    properties.reason = Some(extract_str(data)?.to_string());
+                }
+                PropertyIdentifier::UserProperty => {
+                    let key = extract_str(data)?;
+                    let value = extract_str(data)?;
+                    let property = UserProperty {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    };
+                    properties.user_property.push(property);
+                }
+                PropertyIdentifier::ServerReference => {
+                    if properties.server_reference.is_some() {
+                        return Err(Error::ProtocolError(
+                            "ServerReference specified multiple times",
+                        ));
+                    }
+                    let reference = extract_str(data)?;
+                    properties.server_reference = Some(reference.to_string());
+                }
+                _ => {
+                    return Err(MalformedPacket::new(
+                        "Received unexpected property for connect",
+                    ))
+                }
+            }
+        }
+
+        Ok(properties)
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let properties_len = self.properties_len();
+
+        // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
+        if self.reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
+            return;
+        }
+
+        buf.put_u8(self.reason_code as u8);
+
+        write_variable_len_int(properties_len as u64, buf);
+
+        self.session_expiry_interval
+            .serialize(PropertyIdentifier::SessionExpiryInterval, buf);
+        self.reason.serialize(PropertyIdentifier::Reason, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+        self.server_reference
+            .serialize(PropertyIdentifier::ServerReference, buf);
+    }
+
+    fn properties_block_len(&self) -> usize {
+        let l = self.properties_len();
+        if l == 0 && self.reason_code == DisconnectReasonCode::Normal {
+            0
+        } else {
+            1 + variable_len_int_size(l) + l
+        }
+    }
+
+    fn properties_len(&self) -> usize {
+        self.session_expiry_interval.property_len()
+            + self.reason.property_len()
+            + self.user_property.property_len()
+            + self.server_reference.property_len()
+    }
 }
 
 #[derive(Debug, PartialEq)]
 /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
-pub struct Disconnect<V> {
-    fixed_header: FixedHeader,
-    data: DisconnectData<V>,
-}
+pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
 
-impl<V> Disconnect<V> {
+impl<V: MqttVersion> Disconnect<V> {
     pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
-
-        if let DisconnectData::V5 {
-            reason_code,
-            session_expiry_interval,
-            reason,
-            user_property,
-            server_reference,
-            ..
-        } = &self.data
-        {
-            let properties_len = session_expiry_interval.property_len()
-                + reason.property_len()
-                + user_property.property_len()
-                + server_reference.property_len();
-
-            // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
-            if *reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
-                assert_eq!(self.fixed_header.remaining_length, 0);
-                return;
-            }
-
-            buf.put_u8(*reason_code as u8);
-
-            write_variable_len_int(properties_len as u64, buf);
-
-            session_expiry_interval.serialize(PropertyIdentifier::SessionExpiryInterval, buf);
-            reason.serialize(PropertyIdentifier::Reason, buf);
-            user_property.serialize(PropertyIdentifier::UserProperty, buf);
-            server_reference.serialize(PropertyIdentifier::ServerReference, buf);
-        }
+        let header = FixedHeader::new(ControlPacketType::Disconnect, self.0.properties_block_len());
+        header.write_to_buf(buf);
+        self.0.write_properties(buf);
+    }
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert_eq!(header.control_packet_type, ControlPacketType::Disconnect);
+        V::DisconnectData::try_read(data).map(Self)
     }
 }
 impl Disconnect<MqttV3_1_1> {
     pub fn new_v3() -> Self {
-        Self {
-            fixed_header: FixedHeader::new(ControlPacketType::Disconnect, 0),
-            data: DisconnectData::V3 {
-                protocol_level: PhantomData,
-            },
-        }
-    }
-    pub fn try_read_v3(header: FixedHeader, buf: &mut Bytes) -> Result<Self, Error> {
-        if buf.has_remaining() {
-            Err(MalformedPacket::new(
-                "Mqtt v3 disconnect packet contained trailing bytes",
-            ))
-        } else {
-            Ok(Self {
-                fixed_header: header,
-                data: DisconnectData::V3 {
-                    protocol_level: PhantomData,
-                },
-            })
-        }
+        Self(())
     }
 }
 
@@ -209,153 +274,30 @@ impl Disconnect<MqttV5_0_0> {
         user_property: Vec<UserProperty>,
         server_reference: Option<String>,
     ) -> Self {
-        let properties_len = session_expiry_interval.property_len()
-            + reason.property_len()
-            + user_property.property_len()
-            + server_reference.property_len();
-        Self {
-            fixed_header: FixedHeader::new(
-                ControlPacketType::Disconnect,
-                if reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
-                    0
-                } else {
-                    1 + variable_len_int_size(properties_len) + properties_len
-                },
-            ),
-            data: DisconnectData::V5 {
-                protocol_level: PhantomData,
-                reason_code,
-                session_expiry_interval,
-                reason,
-                user_property,
-                server_reference,
-            },
-        }
-    }
-    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
-        if header.remaining_length == 0 {
-            return Ok(Self {
-                fixed_header: header,
-                data: DisconnectData::V5 {
-                    protocol_level: PhantomData,
-                    reason_code: DisconnectReasonCode::Normal,
-                    session_expiry_interval: None,
-                    reason: None,
-                    user_property: Vec::new(),
-                    server_reference: None,
-                },
-            });
-        }
-
-        let reason_code = DisconnectReasonCode::try_from(data.try_get_u8()?)?;
-        let len_properties = read_variable_len_int(data)? as usize;
-
-        let mut session_expiry_interval = None;
-        let mut reason = None;
-        let mut user_property = Vec::new();
-        let mut server_reference = None;
-
-        if data.remaining() < len_properties {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-
-        let end_of_properties = data.remaining() - len_properties;
-        while data.remaining() > end_of_properties {
-            let property_identifier = crate::util::read_variable_len_int(data)?;
-            let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-            match property_identifier {
-                PropertyIdentifier::SessionExpiryInterval => {
-                    if session_expiry_interval.is_some() {
-                        return Err(Error::ProtocolError(
-                            "SessionExpiryInterval specified multiple times",
-                        ));
-                    }
-                    session_expiry_interval =
-                        Some(data.try_get_u32().map_err(|_| {
-                            MalformedPacket::new("Packet too short to read property")
-                        })?);
-                }
-                PropertyIdentifier::Reason => {
-                    if reason.is_some() {
-                        return Err(Error::ProtocolError("Reason specified multiple times"));
-                    }
-                    reason = Some(extract_str(data)?.to_string());
-                }
-                PropertyIdentifier::UserProperty => {
-                    let key = extract_str(data)?;
-                    let value = extract_str(data)?;
-                    let property = UserProperty {
-                        key: key.to_string(),
-                        value: value.to_string(),
-                    };
-                    user_property.push(property);
-                }
-                PropertyIdentifier::ServerReference => {
-                    if server_reference.is_some() {
-                        return Err(Error::ProtocolError(
-                            "ServerReference specified multiple times",
-                        ));
-                    }
-                    let reference = extract_str(data)?;
-                    server_reference = Some(reference.to_string());
-                }
-                _ => {
-                    return Err(MalformedPacket::new(
-                        "Received unexpected property for connect",
-                    ))
-                }
-            }
-        }
-
-        Ok(Self {
-            fixed_header: header,
-            data: DisconnectData::V5 {
-                protocol_level: PhantomData,
-                reason_code,
-                session_expiry_interval,
-                reason,
-                user_property,
-                server_reference,
-            },
+        Self(DisconnectData {
+            reason_code,
+            session_expiry_interval,
+            reason,
+            user_property,
+            server_reference,
         })
     }
 
     pub fn reason_code(&self) -> DisconnectReasonCode {
-        match self.data {
-            DisconnectData::V3 { .. } => unreachable!(),
-            DisconnectData::V5 { reason_code, .. } => reason_code,
-        }
+        self.0.reason_code
     }
 
     pub fn session_expiry_interval(&self) -> Option<u32> {
-        match self.data {
-            DisconnectData::V3 { .. } => unreachable!(),
-            DisconnectData::V5 {
-                session_expiry_interval,
-                ..
-            } => session_expiry_interval,
-        }
+        self.0.session_expiry_interval
     }
     pub fn reason(&self) -> Option<&String> {
-        match &self.data {
-            DisconnectData::V3 { .. } => unreachable!(),
-            DisconnectData::V5 { reason, .. } => reason.as_ref(),
-        }
+        self.0.reason.as_ref()
     }
     pub fn user_property(&self) -> &[UserProperty] {
-        match &self.data {
-            DisconnectData::V3 { .. } => unreachable!(),
-            DisconnectData::V5 { user_property, .. } => user_property.as_ref(),
-        }
+        &self.0.user_property
     }
     pub fn server_reference(&self) -> Option<&String> {
-        match &self.data {
-            DisconnectData::V3 { .. } => unreachable!(),
-            DisconnectData::V5 {
-                server_reference, ..
-            } => server_reference.as_ref(),
-        }
+        self.0.server_reference.as_ref()
     }
 }
 
@@ -381,7 +323,7 @@ mod disconnect_v3 {
             .unwrap()
             .unwrap();
         assert_eq!(
-            Disconnect::try_read_v3(header, &mut body).unwrap(),
+            Disconnect::<MqttV3_1_1>::try_read(header, &mut body).unwrap(),
             expected
         );
     }
@@ -459,7 +401,7 @@ mod disconnect_v5 {
             .unwrap()
             .unwrap();
         assert_eq!(
-            Disconnect::try_read_v5(header, &mut body).unwrap(),
+            Disconnect::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
             expected
         );
     }
@@ -474,7 +416,7 @@ mod disconnect_v5 {
             .unwrap()
             .unwrap();
         assert_eq!(
-            Disconnect::try_read_v5(header, &mut body).unwrap(),
+            Disconnect::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
             expected
         );
     }
@@ -483,7 +425,7 @@ mod disconnect_v5 {
     fn deserialize_properties() {
         let msg = [
             224, 45, 129, // Properties
-            42,  // session expiry interval
+            43,  // session expiry interval
             17, 0, 0, 0, 123, // Reason
             31, 0, 6, b'r', b'e', b'a', b's', b'o', b'n', // user property
             38, 0, 9, b'p', b'r', b'o', b'p', b'e', b'r', b't', b'y', b'1', 0, 6, b'v', b'a', b'l',
@@ -505,7 +447,7 @@ mod disconnect_v5 {
             .unwrap()
             .unwrap();
         assert_eq!(
-            Disconnect::try_read_v5(header, &mut body).unwrap(),
+            Disconnect::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
             expected
         );
     }

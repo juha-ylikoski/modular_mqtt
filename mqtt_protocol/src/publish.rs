@@ -1,11 +1,10 @@
-use std::marker::PhantomData;
-
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV3_1_1, MqttV5_0_0, PayloadFormat,
-    Property, PropertyIdentifier, UserProperty,
+    version::PacketProperties,
+    ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
+    PayloadFormat, Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -13,241 +12,310 @@ use super::{
     util::{extract_str, write_str, MqttTopic, Qos, QosPacketIdentifier},
 };
 
-#[derive(Debug, PartialEq)]
-pub enum PublishProperties<V> {
-    V3 {
-        protocol_level: PhantomData<V>,
-    },
-    V5 {
-        protocol_level: PhantomData<V>,
+#[derive(Debug, PartialEq, Default)]
+pub struct PublishProperties {
+    payload_format: Option<PayloadFormat>,
+    /// If present, the Four Byte value is the lifetime of the Will Message in seconds and is sent as the
+    /// Publication Expiry Interval when the Server publishes the Will Message.
+    /// If absent, no Message Expiry Interval is sent when the Server publishes the Will Message.
+    message_expiry_interval: Option<u32>,
+    /// A Topic Alias is an integer value that is used to identify the Topic instead of using the Topic Name.
+    /// This reduces the size of the PUBLISH packet, and is useful when the Topic Names are long and the same
+    /// Topic Names are used repetitively within a Network Connection.
+    ///
+    /// The sender decides whether to use a Topic Alias and chooses the value. It sets a Topic Alias mapping
+    /// by including a non-zero length Topic Name and a Topic Alias in the PUBLISH packet. The receiver
+    /// processes the PUBLISH as normal but also sets the specified Topic Alias mapping to this Topic Name.
+    ///
+    /// If a Topic Alias mapping has been set at the receiver, a sender can send a PUBLISH packet that
+    /// contains that Topic Alias and a zero length Topic Name. The receiver then treats the incoming
+    /// PUBLISH as if it had contained the Topic Name of the Topic Alias.
+    ///
+    /// A sender can modify the Topic Alias mapping by sending another PUBLISH in the same Network
+    /// Connection with the same Topic Alias value and a different non-zero length Topic Name.
+    ///
+    /// Topic Alias mappings exist only within a Network Connection and last only for the lifetime
+    /// of that Network Connection. A receiver MUST NOT carry forward any Topic Alias mappings from
+    /// one Network Connection to another [MQTT-3.3.2-7].
+    ///
+    /// A Topic Alias of 0 is not permitted. A sender MUST NOT send a PUBLISH packet containing a
+    /// Topic Alias which has the value 0
+    ///
+    /// A Client MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias
+    /// Maximum value returned by the Server in the CONNACK packet. A Client MUST accept all
+    /// Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum
+    /// value that it sent in the CONNECT packet [MQTT-3.3.2-10].
+    ///
+    /// A Server MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic
+    /// Alias Maximum value sent by the Client in the CONNECT packet. A Server MUST accept
+    /// all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum
+    /// value that it returned in the CONNACK packet
+    ///
+    /// The Topic Alias mappings used by the Client and Server are independent from each other.
+    /// Thus, when a Client sends a PUBLISH containing a Topic Alias value of 1 to a Server
+    /// and the Server sends a PUBLISH with a Topic Alias value of 1 to that Client they will
+    /// in general be referring to different Topics.
+    topic_alias: Option<u16>,
+    /// UTF-8 Encoded String which is used as the Topic Name for a response message
+    /// The presence of a Response Topic identifies the Will Message as a Request.
+    response_topic: Option<String>,
+    /// The Correlation Data is used by the sender of the Request Message to identify which request
+    /// the Response Message is for when it is received
+    /// The value of the Correlation Data only has meaning to the sender of the Request Message
+    /// and receiver of the Response Message.
+    correlation_data: Bytes,
+    user_property: Vec<UserProperty>,
+    /// The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if
+    /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
+    /// if the publication is the result of a match to more than one subscription, in this case their
+    /// order is not significant.
+    subscription_identifier: Option<u64>,
+    /// UTF-8 Encoded String describing the content of the Will Message
+    /// The value of the Content Type is defined by the sending and receiving application.
+    content_type: Option<String>,
+}
 
-        payload_format: Option<PayloadFormat>,
-        /// If present, the Four Byte value is the lifetime of the Will Message in seconds and is sent as the
-        /// Publication Expiry Interval when the Server publishes the Will Message.
-        /// If absent, no Message Expiry Interval is sent when the Server publishes the Will Message.
-        message_expiry_interval: Option<u32>,
-        /// A Topic Alias is an integer value that is used to identify the Topic instead of using the Topic Name.
-        /// This reduces the size of the PUBLISH packet, and is useful when the Topic Names are long and the same
-        /// Topic Names are used repetitively within a Network Connection.
-        ///
-        /// The sender decides whether to use a Topic Alias and chooses the value. It sets a Topic Alias mapping
-        /// by including a non-zero length Topic Name and a Topic Alias in the PUBLISH packet. The receiver
-        /// processes the PUBLISH as normal but also sets the specified Topic Alias mapping to this Topic Name.
-        ///
-        /// If a Topic Alias mapping has been set at the receiver, a sender can send a PUBLISH packet that
-        /// contains that Topic Alias and a zero length Topic Name. The receiver then treats the incoming
-        /// PUBLISH as if it had contained the Topic Name of the Topic Alias.
-        ///
-        /// A sender can modify the Topic Alias mapping by sending another PUBLISH in the same Network
-        /// Connection with the same Topic Alias value and a different non-zero length Topic Name.
-        ///
-        /// Topic Alias mappings exist only within a Network Connection and last only for the lifetime
-        /// of that Network Connection. A receiver MUST NOT carry forward any Topic Alias mappings from
-        /// one Network Connection to another [MQTT-3.3.2-7].
-        ///
-        /// A Topic Alias of 0 is not permitted. A sender MUST NOT send a PUBLISH packet containing a
-        /// Topic Alias which has the value 0
-        ///
-        /// A Client MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic Alias
-        /// Maximum value returned by the Server in the CONNACK packet. A Client MUST accept all
-        /// Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum
-        /// value that it sent in the CONNECT packet [MQTT-3.3.2-10].
-        ///
-        /// A Server MUST NOT send a PUBLISH packet with a Topic Alias greater than the Topic
-        /// Alias Maximum value sent by the Client in the CONNECT packet. A Server MUST accept
-        /// all Topic Alias values greater than 0 and less than or equal to the Topic Alias Maximum
-        /// value that it returned in the CONNACK packet
-        ///
-        /// The Topic Alias mappings used by the Client and Server are independent from each other.
-        /// Thus, when a Client sends a PUBLISH containing a Topic Alias value of 1 to a Server
-        /// and the Server sends a PUBLISH with a Topic Alias value of 1 to that Client they will
-        /// in general be referring to different Topics.
-        topic_alias: Option<u16>,
-        /// UTF-8 Encoded String which is used as the Topic Name for a response message
-        /// The presence of a Response Topic identifies the Will Message as a Request.
-        response_topic: Option<String>,
-        /// The Correlation Data is used by the sender of the Request Message to identify which request
-        /// the Response Message is for when it is received
-        /// The value of the Correlation Data only has meaning to the sender of the Request Message
-        /// and receiver of the Response Message.
-        correlation_data: Bytes,
-        user_property: Vec<UserProperty>,
-        /// The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if
-        /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
-        /// if the publication is the result of a match to more than one subscription, in this case their
-        /// order is not significant.
-        subscription_identifier: Option<u64>,
-        /// UTF-8 Encoded String describing the content of the Will Message
-        /// The value of the Content Type is defined by the sending and receiving application.
-        content_type: Option<String>,
-    },
+impl PacketProperties for PublishProperties {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
+        let mut properties = Self::default();
+        let properties_len = read_variable_len_int(data)? as usize;
+
+        if data.remaining() < properties_len {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
+
+        let data = &mut data.split_to(properties_len);
+
+        while data.has_remaining() {
+            let property_identifier = read_variable_len_int(data)?;
+            let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
+            match property_identifier {
+                PropertyIdentifier::PayloadFormatIndicator => {
+                    if properties.payload_format.is_some() {
+                        return Err(Error::ProtocolError(
+                            "PayloadFormatIndicator specified multiple times",
+                        ));
+                    }
+                    properties.payload_format = Some(match data.try_get_u8()? {
+                        0 => PayloadFormat::Binary,
+                        1 => PayloadFormat::Utf8,
+                        _ => return Err(MalformedPacket::new("Invalid payload format")),
+                    });
+                }
+                PropertyIdentifier::MessageExpiryInterval => {
+                    if properties.message_expiry_interval.is_some() {
+                        return Err(Error::ProtocolError(
+                            "MessageExpiryInterval specified multiple times",
+                        ));
+                    }
+                    properties.message_expiry_interval = Some(data.try_get_u32()?);
+                }
+                PropertyIdentifier::TopicAlias => {
+                    if properties.topic_alias.is_some() {
+                        return Err(Error::ProtocolError("TopicAlias specified multiple times"));
+                    }
+                    properties.topic_alias = Some(data.try_get_u16()?);
+                }
+                PropertyIdentifier::ResponseTopic => {
+                    if properties.response_topic.is_some() {
+                        return Err(Error::ProtocolError(
+                            "ResponseTopic specified multiple times",
+                        ));
+                    }
+                    properties.response_topic = Some(extract_str(data)?);
+                }
+                PropertyIdentifier::CorrelationData => {
+                    if !properties.correlation_data.is_empty() {
+                        return Err(Error::ProtocolError(
+                            "CorrelationData specified multiple times",
+                        ));
+                    }
+                    properties.correlation_data = extract_bytes(data)?;
+                }
+                PropertyIdentifier::UserProperty => {
+                    let key = extract_str(data)?;
+                    let value = extract_str(data)?;
+                    properties.user_property.push(UserProperty { key, value });
+                }
+                PropertyIdentifier::SubscriptionIdentifier => {
+                    if properties.subscription_identifier.is_some() {
+                        return Err(Error::ProtocolError(
+                            "SubscriptionIdentifier specified multiple times",
+                        ));
+                    }
+                    properties.subscription_identifier = Some(read_variable_len_int(data)?);
+                }
+                PropertyIdentifier::ContentType => {
+                    if properties.content_type.is_some() {
+                        return Err(Error::ProtocolError("ContentType specified multiple times"));
+                    }
+                    properties.content_type = Some(extract_str(data)?);
+                }
+                _ => {
+                    return Err(MalformedPacket::new(
+                        "Received unexpected property for connect",
+                    ))
+                }
+            }
+        }
+        Ok(properties)
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let properties_len = self.properties_len();
+        write_variable_len_int(properties_len as u64, buf);
+
+        self.payload_format
+            .serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
+        self.message_expiry_interval
+            .serialize(PropertyIdentifier::MessageExpiryInterval, buf);
+        self.topic_alias
+            .serialize(PropertyIdentifier::TopicAlias, buf);
+        self.response_topic
+            .serialize(PropertyIdentifier::ResponseTopic, buf);
+        self.correlation_data
+            .serialize(PropertyIdentifier::CorrelationData, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+        if let Some(id) = self.subscription_identifier {
+            write_variable_len_int(PropertyIdentifier::SubscriptionIdentifier as u64, buf);
+            write_variable_len_int(id, buf);
+        }
+        self.content_type
+            .serialize(PropertyIdentifier::ContentType, buf);
+    }
+
+    fn properties_len(&self) -> usize {
+        self.payload_format.property_len()
+            + self.message_expiry_interval.property_len()
+            + self.topic_alias.property_len()
+            + self.response_topic.property_len()
+            + self.correlation_data.property_len()
+            + self.user_property.property_len()
+            + self
+                .subscription_identifier
+                .map(|id| 1 + variable_len_int_size(id as usize))
+                .unwrap_or_default()
+            + self.content_type.property_len()
+    }
 }
 
 #[derive(Debug, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
-pub struct Publish<V, Q> {
-    fixed_header: FixedHeader,
+pub struct Publish<V: MqttVersion, Q> {
     qos: Q,
+    retain: bool,
+    dup: bool,
     topic: String,
     payload: Bytes,
-    properties: PublishProperties<V>,
+    properties: V::PublishProperties,
 }
 
-impl<V, Q> Publish<V, Q> {
+impl<V: MqttVersion, Q> Publish<V, Q> {
     pub fn dup(&self) -> bool {
-        match self.fixed_header.control_packet_type {
-            ControlPacketType::Publish { dup, .. } => dup,
-            _ => unreachable!(),
-        }
+        self.dup
     }
     pub fn retain(&self) -> bool {
-        match self.fixed_header.control_packet_type {
-            ControlPacketType::Publish { retain, .. } => retain,
-            _ => unreachable!(),
-        }
-    }
-    pub fn qos(&self) -> Qos {
-        match self.fixed_header.control_packet_type {
-            ControlPacketType::Publish { qos, .. } => qos,
-            _ => unreachable!(),
-        }
+        self.retain
     }
 }
 
-impl<V> Publish<V, Qos> {
+impl<V: MqttVersion> Publish<V, Qos> {
     pub fn assign_packet_identifier(
         self,
         id: impl FnOnce() -> u16,
         dup: bool,
     ) -> Publish<V, QosPacketIdentifier> {
-        let mut v = Publish {
-            fixed_header: self.fixed_header,
+        Publish {
             qos: match self.qos {
                 Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
                 Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(id()),
                 Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(id()),
             },
+            retain: self.retain,
+            dup,
             topic: self.topic,
             payload: self.payload,
             properties: self.properties,
-        };
-        let is_dup = dup;
-        match &mut v.fixed_header.control_packet_type {
-            ControlPacketType::Publish { dup, .. } => *dup = is_dup,
-            _ => unreachable!(),
         }
-        v.re_calculate_fixed_header_length();
-        v
+    }
+    pub fn qos(&self) -> Qos {
+        self.qos
     }
 }
 
-impl<V> Publish<V, QosPacketIdentifier> {
-    /// Re-calculate fixed header length
-    ///
-    /// We initially have no properties -> property len == 0
-    /// -> we have 1 byte to store it
-    ///
-    /// if our properties take more than 128 bytes, we need more than
-    /// 1 byte for the length -> we need to modify fixed header
-    ///
-    /// we also need to add length of properties into fixed header and we know them
-    /// only at serialization time due to builder pattern (without finalize)
-    fn re_calculate_fixed_header_length(&mut self) {
-        match &self.properties {
-            PublishProperties::V3 { .. } => (),
-            PublishProperties::V5 { .. } => {
-                let remaining_length = 2
-                    + self.topic.len()
-                    + {
-                        match self.qos {
-                            QosPacketIdentifier::AtMostOnce => 0,
-                            QosPacketIdentifier::AtLeastOnce(_)
-                            | QosPacketIdentifier::ExactlyOnce(_) => 2,
-                        }
-                    }
-                    + self.payload.len();
-                let properties_len = self.properties_len();
-                self.fixed_header.remaining_length =
-                    variable_len_int_size(properties_len) + properties_len + remaining_length;
-            }
-        }
-    }
-
-    fn properties_len(&self) -> usize {
-        match &self.properties {
-            PublishProperties::V3 { .. } => 0,
-            PublishProperties::V5 {
-                payload_format,
-                message_expiry_interval,
-                topic_alias,
-                response_topic,
-                correlation_data,
-                user_property,
-                subscription_identifier,
-                content_type,
-                ..
-            } => {
-                payload_format.property_len()
-                    + message_expiry_interval.property_len()
-                    + topic_alias.property_len()
-                    + response_topic.property_len()
-                    + correlation_data.property_len()
-                    + user_property.property_len()
-                    + subscription_identifier
-                        .map(|id| 1 + variable_len_int_size(id as usize))
-                        .unwrap_or_default()
-                    + content_type.property_len()
-            }
-        }
-    }
-
-    fn write_properties(&self, buf: &mut impl BufMut) {
-        if let PublishProperties::V5 {
-            payload_format,
-            message_expiry_interval,
-            topic_alias,
-            response_topic,
-            correlation_data,
-            user_property,
-            subscription_identifier,
-            content_type,
-            ..
-        } = &self.properties
-        {
-            let properties_len = self.properties_len();
-            write_variable_len_int(properties_len as u64, buf);
-
-            fn add_subscription_identifier(
-                subscription_identifier: Option<u64>,
-                buf: &mut impl BufMut,
-            ) {
-                if let Some(id) = subscription_identifier {
-                    write_variable_len_int(PropertyIdentifier::SubscriptionIdentifier as u64, buf);
-                    write_variable_len_int(id, buf);
+impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        let remaining_length = 2
+            + self.topic.len()
+            + {
+                if matches!(
+                    self.qos,
+                    QosPacketIdentifier::AtLeastOnce(_) | QosPacketIdentifier::ExactlyOnce(_)
+                ) {
+                    assert!(self.packet_identifier().is_some());
+                    2
+                } else {
+                    assert!(self.packet_identifier().is_none());
+                    0
                 }
             }
+            + self.properties.properties_block_len()
+            + self.payload.len();
 
-            payload_format.serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
-            message_expiry_interval.serialize(PropertyIdentifier::MessageExpiryInterval, buf);
-            topic_alias.serialize(PropertyIdentifier::TopicAlias, buf);
-            response_topic.serialize(PropertyIdentifier::ResponseTopic, buf);
-            correlation_data.serialize(PropertyIdentifier::CorrelationData, buf);
-            user_property.serialize(PropertyIdentifier::UserProperty, buf);
-            add_subscription_identifier(*subscription_identifier, buf);
-            content_type.serialize(PropertyIdentifier::ContentType, buf);
-        }
-    }
+        let fixed_header = FixedHeader::new(
+            super::fixed_header::ControlPacketType::Publish {
+                dup: self.dup,
+                qos: self.qos.into(),
+                retain: self.retain,
+            },
+            remaining_length,
+        );
+        fixed_header.write_to_buf(buf);
 
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
         write_str(&self.topic, buf);
         match self.qos {
             QosPacketIdentifier::AtMostOnce => (),
             QosPacketIdentifier::AtLeastOnce(packet_identifier)
             | QosPacketIdentifier::ExactlyOnce(packet_identifier) => buf.put_u16(packet_identifier),
         }
-        self.write_properties(buf);
+        self.properties.write_properties(buf);
         buf.put(&self.payload[..]);
+    }
+
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert!(matches!(
+            header.control_packet_type,
+            ControlPacketType::Publish { .. }
+        ));
+
+        let topic = extract_str(data)?.to_string();
+
+        let (dup, qos, retain) = match header.control_packet_type {
+            fixed_header::ControlPacketType::Publish { dup, qos, retain } => (dup, qos, retain),
+            _ => unreachable!(),
+        };
+
+        let qos = match qos {
+            Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
+            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
+            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
+        };
+
+        let properties = V::PublishProperties::try_read(data)?;
+
+        Ok(Self {
+            topic,
+            qos,
+            retain,
+            dup,
+            payload: data.clone(),
+            properties,
+        })
+    }
+
+    pub fn qos(&self) -> Qos {
+        self.qos.into()
     }
 
     pub fn topic(&self) -> &str {
@@ -272,127 +340,48 @@ impl Publish<MqttV3_1_1, Qos> {
         let payload = payload.into_payload();
         let topic = topic.0;
 
-        let remaining_length = 2
-            + topic.len()
-            + {
-                if qos != Qos::AtMostOnce {
-                    2
-                } else {
-                    0
-                }
-            }
-            + payload.len();
         Self {
-            fixed_header: FixedHeader::new(
-                super::fixed_header::ControlPacketType::Publish {
-                    dup: false,
-                    qos,
-                    retain,
-                },
-                remaining_length,
-            ),
             qos,
+            retain,
+            dup: false,
             topic,
             payload,
-            properties: PublishProperties::V3 {
-                protocol_level: PhantomData,
-            },
+            properties: (),
         }
-    }
-}
-
-impl Publish<MqttV3_1_1, QosPacketIdentifier> {
-    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let topic = extract_str(data)?.to_string();
-
-        let (_, qos, _) = match header.control_packet_type {
-            fixed_header::ControlPacketType::Publish { dup, qos, retain } => (dup, qos, retain),
-            _ => unreachable!(),
-        };
-
-        let qos = match qos {
-            Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
-            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
-            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
-        };
-
-        let payload = data.clone();
-
-        Ok(Self {
-            fixed_header: header,
-            qos,
-            topic,
-            payload,
-            properties: PublishProperties::V3 {
-                protocol_level: PhantomData,
-            },
-        })
     }
 }
 
 impl<Q> Publish<MqttV5_0_0, Q> {
     pub fn payload_format(&self) -> Option<PayloadFormat> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { payload_format, .. } => *payload_format,
-        }
+        self.properties.payload_format
     }
 
     pub fn message_expiry_interval(&self) -> Option<u32> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                message_expiry_interval,
-                ..
-            } => *message_expiry_interval,
-        }
+        self.properties.message_expiry_interval
     }
 
     pub fn topic_alias(&self) -> Option<u16> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { topic_alias, .. } => *topic_alias,
-        }
+        self.properties.topic_alias
     }
 
     pub fn response_topic(&self) -> Option<&str> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { response_topic, .. } => response_topic.as_deref(),
-        }
+        self.properties.response_topic.as_deref()
     }
 
-    pub fn correlation_data(&self) -> &[u8] {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                correlation_data, ..
-            } => correlation_data,
-        }
+    pub fn correlation_data(&self) -> Bytes {
+        self.properties.correlation_data.clone()
     }
 
     pub fn user_property(&self) -> &[UserProperty] {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { user_property, .. } => user_property,
-        }
+        &self.properties.user_property
     }
 
     pub fn subscription_identifier(&self) -> Option<u64> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                subscription_identifier,
-                ..
-            } => *subscription_identifier,
-        }
+        self.properties.subscription_identifier
     }
 
     pub fn content_type(&self) -> Option<&str> {
-        match &self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { content_type, .. } => content_type.as_deref(),
-        }
+        self.properties.content_type.as_deref()
     }
 }
 
@@ -401,31 +390,13 @@ impl Publish<MqttV5_0_0, Qos> {
         let payload = payload.into_payload();
         let topic = topic.0;
 
-        let remaining_length = 2
-            + topic.len()
-            + 1 // properties length is static 0 before we initialize them
-            + {
-                match qos {
-                    Qos::AtMostOnce => 0,
-                    Qos::AtLeastOnce |
-                    Qos::ExactlyOnce => 2,
-                }
-            }
-            + payload.len();
         Self {
-            fixed_header: FixedHeader::new(
-                super::fixed_header::ControlPacketType::Publish {
-                    dup: false,
-                    qos,
-                    retain,
-                },
-                remaining_length,
-            ),
             topic,
             qos,
+            dup: false,
+            retain,
             payload,
-            properties: PublishProperties::V5 {
-                protocol_level: PhantomData,
+            properties: PublishProperties {
                 payload_format: None,
                 message_expiry_interval: None,
                 topic_alias: None,
@@ -439,208 +410,38 @@ impl Publish<MqttV5_0_0, Qos> {
     }
 
     pub fn set_payload_format(mut self, value: PayloadFormat) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { payload_format, .. } => *payload_format = Some(value),
-        }
+        self.properties.payload_format = Some(value);
         self
     }
 
     pub fn set_message_expiry_interval(mut self, interval: u32) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                message_expiry_interval,
-                ..
-            } => *message_expiry_interval = Some(interval),
-        }
+        self.properties.message_expiry_interval = Some(interval);
         self
     }
 
     pub fn set_response_topic(mut self, topic: String) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { response_topic, .. } => *response_topic = Some(topic),
-        }
+        self.properties.response_topic = Some(topic);
         self
     }
     pub fn set_topic_alias(mut self, alias: u16) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { topic_alias, .. } => *topic_alias = Some(alias),
-        }
+        self.properties.topic_alias = Some(alias);
         self
     }
     pub fn set_correlation_data(mut self, data: Bytes) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                correlation_data, ..
-            } => *correlation_data = data,
-        }
+        self.properties.correlation_data = data;
         self
     }
     pub fn set_user_property(mut self, user_properties: Vec<UserProperty>) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { user_property, .. } => *user_property = user_properties,
-        }
+        self.properties.user_property = user_properties;
         self
     }
-    pub fn set_subscription_identifier(mut self, value: u64) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                subscription_identifier,
-                ..
-            } => *subscription_identifier = Some(value),
-        }
+    pub fn set_subscription_identifier(mut self, identifier: u64) -> Self {
+        self.properties.subscription_identifier = Some(identifier);
         self
     }
-    pub fn set_content_type(mut self, value: String) -> Self {
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 { content_type, .. } => *content_type = Some(value),
-        }
+    pub fn set_content_type(mut self, content_type: String) -> Self {
+        self.properties.content_type = Some(content_type);
         self
-    }
-}
-
-impl Publish<MqttV5_0_0, QosPacketIdentifier> {
-    fn read_property(&mut self, data: &mut Bytes) -> Result<(), Error> {
-        let property_identifier = read_variable_len_int(data)?;
-        let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-
-        match &mut self.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                payload_format,
-                message_expiry_interval,
-                topic_alias,
-                response_topic,
-                correlation_data,
-                user_property,
-                subscription_identifier,
-                content_type,
-                ..
-            } => match property_identifier {
-                PropertyIdentifier::PayloadFormatIndicator => {
-                    if payload_format.is_some() {
-                        return Err(Error::ProtocolError(
-                            "PayloadFormatIndicator specified multiple times",
-                        ));
-                    }
-                    *payload_format = Some(match data.try_get_u8()? {
-                        0 => PayloadFormat::Binary,
-                        1 => PayloadFormat::Utf8,
-                        _ => return Err(MalformedPacket::new("Invalid payload format")),
-                    });
-                }
-                PropertyIdentifier::MessageExpiryInterval => {
-                    if message_expiry_interval.is_some() {
-                        return Err(Error::ProtocolError(
-                            "MessageExpiryInterval specified multiple times",
-                        ));
-                    }
-                    *message_expiry_interval = Some(data.try_get_u32()?);
-                }
-                PropertyIdentifier::TopicAlias => {
-                    if topic_alias.is_some() {
-                        return Err(Error::ProtocolError("TopicAlias specified multiple times"));
-                    }
-                    *topic_alias = Some(data.try_get_u16()?);
-                }
-                PropertyIdentifier::ResponseTopic => {
-                    if response_topic.is_some() {
-                        return Err(Error::ProtocolError(
-                            "ResponseTopic specified multiple times",
-                        ));
-                    }
-                    *response_topic = Some(extract_str(data)?);
-                }
-                PropertyIdentifier::CorrelationData => {
-                    if !correlation_data.is_empty() {
-                        return Err(Error::ProtocolError(
-                            "CorrelationData specified multiple times",
-                        ));
-                    }
-                    *correlation_data = extract_bytes(data)?;
-                }
-                PropertyIdentifier::UserProperty => {
-                    let key = extract_str(data)?;
-                    let value = extract_str(data)?;
-                    user_property.push(UserProperty { key, value });
-                }
-                PropertyIdentifier::SubscriptionIdentifier => {
-                    if subscription_identifier.is_some() {
-                        return Err(Error::ProtocolError(
-                            "SubscriptionIdentifier specified multiple times",
-                        ));
-                    }
-                    *subscription_identifier = Some(read_variable_len_int(data)?);
-                }
-                PropertyIdentifier::ContentType => {
-                    if content_type.is_some() {
-                        return Err(Error::ProtocolError("ContentType specified multiple times"));
-                    }
-                    *content_type = Some(extract_str(data)?);
-                }
-                _ => {
-                    return Err(MalformedPacket::new(
-                        "Received unexpected property for connect",
-                    ))
-                }
-            },
-        };
-        Ok(())
-    }
-
-    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let topic = extract_str(data)?.to_string();
-
-        let (_, qos, _) = match header.control_packet_type {
-            fixed_header::ControlPacketType::Publish { dup, qos, retain } => (dup, qos, retain),
-            _ => unreachable!(),
-        };
-
-        let qos = match qos {
-            Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
-            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
-            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
-        };
-
-        let properties_len = read_variable_len_int(data)? as usize;
-
-        if data.remaining() < properties_len {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let properties_end = data.remaining() - properties_len;
-
-        let mut publish = Self {
-            fixed_header: header,
-            topic,
-            qos,
-            payload: Bytes::new(),
-            properties: PublishProperties::V5 {
-                protocol_level: PhantomData,
-                payload_format: None,
-                message_expiry_interval: None,
-                topic_alias: None,
-                response_topic: None,
-                correlation_data: Bytes::new(),
-                user_property: Vec::new(),
-                subscription_identifier: None,
-                content_type: None,
-            },
-        };
-
-        while data.remaining() > properties_end {
-            publish.read_property(data)?;
-        }
-
-        publish.payload = data.clone();
-
-        Ok(publish)
     }
 }
 
@@ -798,7 +599,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_qos() {
@@ -833,7 +634,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_dup() {
@@ -866,7 +667,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_retain() {
@@ -899,7 +700,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v3(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
 }
 
@@ -1060,7 +861,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_qos() {
@@ -1096,7 +897,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_dup() {
@@ -1130,7 +931,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
     #[test]
     fn deserialize_retain() {
@@ -1164,7 +965,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -1237,38 +1038,24 @@ mod test_v5 {
         )
         .assign_packet_identifier(|| 0, false);
 
-        match &mut expected.properties {
-            PublishProperties::V3 { .. } => unreachable!(),
-            PublishProperties::V5 {
-                payload_format,
-                message_expiry_interval,
-                topic_alias,
-                response_topic,
-                correlation_data,
-                user_property,
-                subscription_identifier,
-                content_type,
-                ..
-            } => {
-                *payload_format = Some(PayloadFormat::Binary);
-                *message_expiry_interval = Some(10);
-                *topic_alias = Some(11);
-                *response_topic = Some("response".to_string());
-                *correlation_data = Bytes::from_static(b"badcafee");
-                *user_property = vec![
-                    UserProperty {
-                        key: "property0".to_string(),
-                        value: "value0".to_string(),
-                    },
-                    UserProperty {
-                        key: "property1".to_string(),
-                        value: "value1".to_string(),
-                    },
-                ];
-                *subscription_identifier = Some(12);
-                *content_type = Some("test".to_string());
-            }
-        }
+        expected.properties.payload_format = Some(PayloadFormat::Binary);
+        expected.properties.message_expiry_interval = Some(10);
+        expected.properties.topic_alias = Some(11);
+        expected.properties.response_topic = Some("response".to_string());
+        expected.properties.correlation_data = Bytes::from_static(b"badcafee");
+        expected.properties.user_property = vec![
+            UserProperty {
+                key: "property0".to_string(),
+                value: "value0".to_string(),
+            },
+            UserProperty {
+                key: "property1".to_string(),
+                value: "value1".to_string(),
+            },
+        ];
+        expected.properties.subscription_identifier = Some(12);
+        expected.properties.content_type = Some("test".to_string());
+
         let msg = [
             48, 96, 0, 5, b't', b'o', b'p', b'i', b'c', //
             // Properties
@@ -1300,7 +1087,6 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        expected.re_calculate_fixed_header_length();
-        assert_eq!(Publish::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
 }

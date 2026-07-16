@@ -1,35 +1,25 @@
+use bytes::BufMut;
 use bytes::Bytes;
-use bytes::{Buf, BufMut};
 
 use crate::fixed_header::{ControlPacketType, FixedHeader};
-use crate::{Error, MalformedPacket};
+use crate::Error;
 
 macro_rules! create_ping_package {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
         #[derive(Debug, PartialEq)]
         #[doc = $doc]
-        pub struct $name {
-            #[allow(unused)]
-            fixed_header: FixedHeader,
-        }
+        pub struct $name;
 
         impl Default for $name {
             fn default() -> Self {
-                Self {
-                    fixed_header: FixedHeader::new($packet_type, 0),
-                }
+                Self
             }
         }
 
         impl $name {
-            pub fn try_read(header: FixedHeader, buf: &mut Bytes) -> Result<Self, Error> {
-                if buf.has_remaining() {
-                    Err(MalformedPacket::new("Ping packet contained trailing bytes"))
-                } else {
-                    Ok(Self {
-                        fixed_header: header,
-                    })
-                }
+            pub fn try_read(header: FixedHeader, _buf: &mut Bytes) -> Result<Self, Error> {
+                assert_eq!(header.control_packet_type, $packet_type);
+                Ok(Self)
             }
             pub fn write_to_buf(buf: &mut impl BufMut) {
                 let fixed_header = FixedHeader::new($packet_type, 0);

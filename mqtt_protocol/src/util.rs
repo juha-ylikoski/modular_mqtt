@@ -33,7 +33,7 @@ impl From<QosPacketIdentifier> for Qos {
 }
 
 /// Type for type safe construction of packet identifier
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum QosPacketIdentifier {
     AtMostOnce,
     AtLeastOnce(u16),

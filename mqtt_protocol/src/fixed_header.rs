@@ -4,7 +4,7 @@ use crate::{Error, MalformedPacket};
 
 use super::util::Qos;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlPacketType {
     /// Client request to connect to Server
     Connect,

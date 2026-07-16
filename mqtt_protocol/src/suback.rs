@@ -1,10 +1,10 @@
-use std::marker::PhantomData;
-
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
+    version::PacketProperties,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Property, PropertyIdentifier,
+    UserProperty,
 };
 
 use super::fixed_header::{ControlPacketType, FixedHeader};
@@ -15,6 +15,30 @@ pub enum SubRcV3 {
     SuccessQos1 = 1,
     SuccessQos2 = 2,
     Failure = 0x80,
+}
+
+impl PacketProperties for Vec<SubRcV3> {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
+        let mut return_codes = Vec::new();
+        while data.has_remaining() {
+            return_codes.push(SubRcV3::try_from(data.try_get_u8()?)?);
+        }
+        Ok(return_codes)
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        for rc in self {
+            buf.put_u8(*rc as u8);
+        }
+    }
+
+    fn properties_block_len(&self) -> usize {
+        self.len()
+    }
+
+    fn properties_len(&self) -> usize {
+        unimplemented!()
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -95,122 +119,19 @@ impl SubRcV3 {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum SubAckData<V> {
-    V3 {
-        protocol_level: PhantomData<V>,
-        return_codes: Vec<SubRcV3>,
-    },
-    V5 {
-        protocol_level: PhantomData<V>,
-        return_codes: Vec<SubRcV5>,
-        /// UTF-8 Encoded String representing the reason associated with this response.
-        /// This Reason String is a human readable string designed for diagnostics
-        /// and is not intended to be parsed by the receiver
-        reason: Option<String>,
-        /// UTF-8 String Pair. This property can be used to provide additional
-        /// diagnostic or other information
-        user_property: Vec<UserProperty>,
-    },
+pub struct SubAckDataV5 {
+    return_codes: Vec<SubRcV5>,
+    /// UTF-8 Encoded String representing the reason associated with this response.
+    /// This Reason String is a human readable string designed for diagnostics
+    /// and is not intended to be parsed by the receiver
+    reason: Option<String>,
+    /// UTF-8 String Pair. This property can be used to provide additional
+    /// diagnostic or other information
+    user_property: Vec<UserProperty>,
 }
 
-#[derive(Debug, PartialEq)]
-/// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
-pub struct SubAck<V> {
-    fixed_header: FixedHeader,
-    packet_identifier: u16,
-    data: SubAckData<V>,
-}
-
-impl<V> SubAck<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
-        buf.put_u16(self.packet_identifier);
-        match &self.data {
-            SubAckData::V3 { return_codes, .. } => {
-                for rc in return_codes {
-                    buf.put_u8(*rc as u8);
-                }
-            }
-            SubAckData::V5 {
-                return_codes,
-                reason,
-                user_property,
-                ..
-            } => {
-                let property_len = user_property.property_len() + reason.property_len();
-                write_variable_len_int(property_len as u64, buf);
-                reason.serialize(PropertyIdentifier::Reason, buf);
-                user_property.serialize(PropertyIdentifier::UserProperty, buf);
-                for rc in return_codes {
-                    buf.put_u8((*rc) as u8);
-                }
-            }
-        }
-    }
-
-    pub fn packet_identifier(&self) -> u16 {
-        self.packet_identifier
-    }
-}
-impl SubAck<MqttV3_1_1> {
-    pub fn new_v3(packet_identifier: u16, return_codes: Vec<SubRcV3>) -> Self {
-        Self {
-            fixed_header: FixedHeader::new(ControlPacketType::SubAck, 2 + return_codes.len()),
-            packet_identifier,
-            data: SubAckData::V3 {
-                protocol_level: PhantomData,
-                return_codes,
-            },
-        }
-    }
-    pub fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let packet_identifier = data.try_get_u16()?;
-        let mut return_codes = Vec::new();
-        while data.has_remaining() {
-            return_codes.push(SubRcV3::try_from(data.try_get_u8()?)?);
-        }
-        Ok(Self {
-            fixed_header: header,
-            packet_identifier,
-            data: SubAckData::V3 {
-                protocol_level: PhantomData,
-                return_codes,
-            },
-        })
-    }
-    pub fn return_codes(&self) -> &[SubRcV3] {
-        match &self.data {
-            SubAckData::V3 { return_codes, .. } => return_codes,
-            SubAckData::V5 { .. } => unreachable!(),
-        }
-    }
-}
-
-impl SubAck<MqttV5_0_0> {
-    pub fn new_v5(
-        packet_identifier: u16,
-        return_codes: Vec<SubRcV5>,
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        let property_len = user_property.property_len() + reason.property_len();
-        Self {
-            fixed_header: FixedHeader::new(
-                ControlPacketType::SubAck,
-                2 + variable_len_int_size(property_len) + property_len + return_codes.len(),
-            ),
-            packet_identifier,
-            data: SubAckData::V5 {
-                protocol_level: PhantomData,
-                return_codes,
-                user_property,
-                reason,
-            },
-        }
-    }
-    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let packet_identifier = data.try_get_u16()?;
-
+impl PacketProperties for SubAckDataV5 {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         let len_properties = read_variable_len_int(data)? as usize;
         let mut reason = None;
         let mut user_property = Vec::new();
@@ -218,21 +139,21 @@ impl SubAck<MqttV5_0_0> {
         if data.remaining() < len_properties {
             return Err(MalformedPacket::new("Packet too short to parse"));
         }
-        let end_of_properties = data.remaining() - len_properties;
+        let properties = &mut data.split_to(len_properties);
 
-        while data.remaining() > end_of_properties {
-            let property_identifier = crate::util::read_variable_len_int(data)?;
+        while properties.has_remaining() {
+            let property_identifier = crate::util::read_variable_len_int(properties)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             match property_identifier {
                 PropertyIdentifier::Reason => {
                     if reason.is_some() {
                         return Err(Error::ProtocolError("Reason specified multiple times"));
                     }
-                    reason = Some(extract_str(data)?.to_string());
+                    reason = Some(extract_str(properties)?.to_string());
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(data)?.to_string();
-                    let value = extract_str(data)?.to_string();
+                    let key = extract_str(properties)?.to_string();
+                    let value = extract_str(properties)?.to_string();
                     let property = UserProperty { key, value };
                     user_property.push(property);
                 }
@@ -250,36 +171,105 @@ impl SubAck<MqttV5_0_0> {
         }
 
         Ok(Self {
-            fixed_header: header,
-            packet_identifier,
-            data: SubAckData::V5 {
-                protocol_level: PhantomData,
-                return_codes,
-                reason,
-                user_property,
-            },
+            return_codes,
+            reason,
+            user_property,
         })
     }
 
-    pub fn return_codes(&self) -> &[SubRcV5] {
-        match &self.data {
-            SubAckData::V3 { .. } => unreachable!(),
-            SubAckData::V5 { return_codes, .. } => return_codes,
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let property_len = self.properties_len();
+        write_variable_len_int(property_len as u64, buf);
+        self.reason.serialize(PropertyIdentifier::Reason, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+        for rc in &self.return_codes {
+            buf.put_u8((*rc) as u8);
         }
+    }
+
+    fn properties_block_len(&self) -> usize {
+        let l = self.properties_len();
+        variable_len_int_size(l) + l + self.return_codes.len()
+    }
+    fn properties_len(&self) -> usize {
+        self.user_property.property_len() + self.reason.property_len()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+/// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
+pub struct SubAck<V: MqttVersion> {
+    packet_identifier: u16,
+    data: V::SubAckData,
+}
+
+impl<V: MqttVersion> SubAck<V> {
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        let fixed_header = FixedHeader::new(
+            ControlPacketType::SubAck,
+            2 + self.data.properties_block_len(),
+        );
+        fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
+
+        self.data.write_properties(buf);
+    }
+
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert_eq!(header.control_packet_type, ControlPacketType::SubAck);
+        let packet_identifier = data.try_get_u16()?;
+
+        Ok(Self {
+            packet_identifier,
+            data: V::SubAckData::try_read(data)?,
+        })
+    }
+
+    pub fn packet_identifier(&self) -> u16 {
+        self.packet_identifier
+    }
+}
+impl SubAck<MqttV3_1_1> {
+    pub fn new_v3(packet_identifier: u16, return_codes: Vec<SubRcV3>) -> Self {
+        Self {
+            packet_identifier,
+            data: return_codes,
+        }
+    }
+
+    pub fn return_codes(&self) -> &[SubRcV3] {
+        &self.data
+    }
+}
+
+impl SubAck<MqttV5_0_0> {
+    pub fn new_v5(
+        packet_identifier: u16,
+        return_codes: Vec<SubRcV5>,
+        reason: Option<String>,
+        user_property: Vec<UserProperty>,
+    ) -> Self {
+        Self {
+            packet_identifier,
+            data: SubAckDataV5 {
+                return_codes,
+                user_property,
+                reason,
+            },
+        }
+    }
+
+    pub fn return_codes(&self) -> &[SubRcV5] {
+        &self.data.return_codes
     }
 
     pub fn reason(&self) -> Option<&String> {
-        match &self.data {
-            SubAckData::V3 { .. } => unreachable!(),
-            SubAckData::V5 { reason, .. } => reason.as_ref(),
-        }
+        self.data.reason.as_ref()
     }
 
     pub fn user_property(&self) -> &[UserProperty] {
-        match &self.data {
-            SubAckData::V3 { .. } => unreachable!(),
-            SubAckData::V5 { user_property, .. } => user_property,
-        }
+        &self.data.user_property
     }
 }
 
@@ -311,7 +301,7 @@ mod test_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(SubAck::try_read_v3(header, &mut body).unwrap(), expected);
+        assert_eq!(SubAck::try_read(header, &mut body).unwrap(), expected);
     }
 }
 
@@ -377,7 +367,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(SubAck::try_read(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -407,6 +397,6 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(SubAck::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(SubAck::try_read(header, &mut body).unwrap(), expected);
     }
 }

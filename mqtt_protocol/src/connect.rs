@@ -1,14 +1,26 @@
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::fixed_header::ControlPacketType;
-use crate::util::variable_len_int_size;
+use crate::util::{variable_len_int_size, write_variable_len_int};
+use crate::version::PacketProperties;
 use crate::{
-    Error, MalformedPacket, MqttTopic, PayloadFormat, Property, PropertyIdentifier, UserProperty,
-    MQTT_VERSION_3_1_1, MQTT_VERSION_5_0_0, SUPPORTED_PROTOCOL_VERSION,
+    Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion, PayloadFormat,
+    Property, PropertyIdentifier, UserProperty,
 };
 
 use super::fixed_header::FixedHeader;
 use super::util::{extract_bytes, extract_str, write_str, Qos};
+
+pub trait MqttLastWill: Sized + std::fmt::Debug + Clone + PartialEq {
+    fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self;
+    fn try_read(flags: u8, data: &mut Bytes) -> Result<Self, Error>;
+    fn write_to_buf(&self, buf: &mut impl BufMut);
+    fn topic(&self) -> &str;
+    fn qos(&self) -> Qos;
+    fn retain(&self) -> bool;
+    fn payload(&self) -> Bytes;
+    fn block_size(&self) -> usize;
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MqttLastWill3_1_1 {
@@ -18,14 +30,48 @@ pub struct MqttLastWill3_1_1 {
     qos: Qos,
 }
 
-impl MqttLastWill3_1_1 {
-    pub fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self {
+impl MqttLastWill for MqttLastWill3_1_1 {
+    fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self {
         Self {
             topic: topic.0,
             payload,
             retain,
             qos,
         }
+    }
+
+    fn try_read(flags: u8, data: &mut Bytes) -> Result<Self, Error> {
+        let topic = extract_str(data)?;
+        let payload = extract_bytes(data)?;
+        Ok(MqttLastWill3_1_1 {
+            topic,
+            payload,
+            retain: Flags::WillRetain.flag_set(flags),
+            qos: Qos::try_from((flags & 0b00011000) >> 3)?,
+        })
+    }
+
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
+        write_str(&self.topic, buf);
+        let pl_len = self.payload.len();
+        buf.put_u16(pl_len as u16);
+        buf.put(&self.payload[..]);
+    }
+
+    fn topic(&self) -> &str {
+        &self.topic
+    }
+    fn qos(&self) -> Qos {
+        self.qos
+    }
+    fn retain(&self) -> bool {
+        self.retain
+    }
+    fn payload(&self) -> Bytes {
+        self.payload.clone()
+    }
+    fn block_size(&self) -> usize {
+        2 + self.topic.len() + 2 + self.payload.len()
     }
 }
 
@@ -64,43 +110,10 @@ pub struct MqttLastWill5_0_0 {
     user_property: Vec<UserProperty>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum MqttLastWill {
-    V3(MqttLastWill3_1_1),
-    V5(MqttLastWill5_0_0),
-}
-
-impl MqttLastWill {
-    pub fn topic(&self) -> &str {
-        match self {
-            MqttLastWill::V3(mqtt_last_will3_1_1) => &mqtt_last_will3_1_1.topic,
-            MqttLastWill::V5(mqtt_v5_0_0) => &mqtt_v5_0_0.topic,
-        }
-    }
-    pub fn qos(&self) -> Qos {
-        match self {
-            MqttLastWill::V3(mqtt_last_will3_1_1) => mqtt_last_will3_1_1.qos,
-            MqttLastWill::V5(mqtt_v5_0_0) => mqtt_v5_0_0.qos,
-        }
-    }
-    pub fn retain(&self) -> bool {
-        match self {
-            MqttLastWill::V3(mqtt_last_will3_1_1) => mqtt_last_will3_1_1.retain,
-            MqttLastWill::V5(mqtt_v5_0_0) => mqtt_v5_0_0.retain,
-        }
-    }
-    pub fn payload(&self) -> Bytes {
-        match self {
-            MqttLastWill::V3(mqtt_last_will3_1_1) => mqtt_last_will3_1_1.payload.clone(),
-            MqttLastWill::V5(mqtt_v5_0_0) => mqtt_v5_0_0.payload.clone(),
-        }
-    }
-}
-
-impl MqttLastWill5_0_0 {
-    pub fn new(topic: String, payload: Bytes, qos: Qos, retain: bool) -> Self {
+impl MqttLastWill for MqttLastWill5_0_0 {
+    fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self {
         Self {
-            topic,
+            topic: topic.0,
             payload,
             retain,
             qos,
@@ -113,6 +126,163 @@ impl MqttLastWill5_0_0 {
             user_property: Vec::new(),
         }
     }
+    fn try_read(flags: u8, data: &mut Bytes) -> Result<Self, Error> {
+        let properties_len = crate::util::read_variable_len_int(data)? as usize;
+
+        let mut delay_interval = None;
+        let mut payload_format = None;
+        let mut message_expiry_interval = None;
+        let mut content_type = None;
+        let mut response_topic = None;
+        let mut correlation_data = Bytes::new();
+        let mut user_property = Vec::new();
+
+        if data.remaining() < properties_len {
+            return Err(MalformedPacket::new(
+                "Packet too short to read will properties",
+            ));
+        }
+
+        let properties = &mut data.split_to(properties_len);
+        while properties.has_remaining() {
+            let property_identifier = crate::util::read_variable_len_int(properties)?;
+            let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
+
+            match property_identifier {
+                PropertyIdentifier::WillDelayInterval => {
+                    if delay_interval.is_some() {
+                        return Err(Error::ProtocolError(
+                            "WillDelayInterval specified multiple times",
+                        ));
+                    }
+                    delay_interval =
+                        Some(properties.try_get_u32().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })?);
+                }
+                PropertyIdentifier::PayloadFormatIndicator => {
+                    if payload_format.is_some() {
+                        return Err(Error::ProtocolError(
+                            "PayloadFormatIndicator specified multiple times",
+                        ));
+                    }
+                    payload_format = Some(
+                        match properties.try_get_u8().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })? {
+                            0 => PayloadFormat::Binary,
+                            1 => PayloadFormat::Utf8,
+                            _ => return Err(MalformedPacket::new("Invalid payload format")),
+                        },
+                    );
+                }
+                PropertyIdentifier::MessageExpiryInterval => {
+                    if message_expiry_interval.is_some() {
+                        return Err(Error::ProtocolError(
+                            "MessageExpiryInterval specified multiple times",
+                        ));
+                    }
+                    message_expiry_interval =
+                        Some(properties.try_get_u32().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })?);
+                }
+                PropertyIdentifier::ContentType => {
+                    if content_type.is_some() {
+                        return Err(Error::ProtocolError("ContentType specified multiple times"));
+                    }
+                    content_type = Some(extract_str(properties)?);
+                }
+                PropertyIdentifier::ResponseTopic => {
+                    if response_topic.is_some() {
+                        return Err(Error::ProtocolError(
+                            "ResponseTopic specified multiple times",
+                        ));
+                    }
+                    response_topic = Some(extract_str(properties)?);
+                }
+                PropertyIdentifier::CorrelationData => {
+                    if !correlation_data.is_empty() {
+                        return Err(Error::ProtocolError(
+                            "CorrelationData specified multiple times",
+                        ));
+                    }
+                    correlation_data = extract_bytes(properties)?;
+                }
+                PropertyIdentifier::UserProperty => {
+                    let key = extract_str(properties)?;
+                    let value = extract_str(properties)?;
+                    user_property.push(UserProperty {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                _ => {
+                    return Err(MalformedPacket::new(
+                        "Received unexpected property for will",
+                    ))
+                }
+            }
+        }
+        let topic = extract_str(data)?;
+        let payload = extract_bytes(data)?;
+
+        Ok(MqttLastWill5_0_0 {
+            topic,
+            payload,
+            retain: Flags::WillRetain.flag_set(flags),
+            qos: Qos::try_from((flags & 0b00011000) >> 3)?,
+            delay_interval,
+            payload_format,
+            message_expiry_interval,
+            content_type,
+            response_topic,
+            correlation_data,
+            user_property,
+        })
+    }
+
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
+        write_variable_len_int(self.properties_len() as u64, buf);
+        self.delay_interval
+            .serialize(PropertyIdentifier::WillDelayInterval, buf);
+        self.payload_format
+            .serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
+        self.message_expiry_interval
+            .serialize(PropertyIdentifier::MessageExpiryInterval, buf);
+        self.content_type
+            .serialize(PropertyIdentifier::ContentType, buf);
+        self.response_topic
+            .serialize(PropertyIdentifier::ResponseTopic, buf);
+        self.correlation_data
+            .serialize(PropertyIdentifier::CorrelationData, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+
+        write_str(&self.topic, buf);
+        let pl_len = self.payload.len();
+        buf.put_u16(pl_len as u16);
+        buf.put(&self.payload[..]);
+    }
+    fn topic(&self) -> &str {
+        &self.topic
+    }
+    fn qos(&self) -> Qos {
+        self.qos
+    }
+    fn retain(&self) -> bool {
+        self.retain
+    }
+    fn payload(&self) -> Bytes {
+        self.payload.clone()
+    }
+    fn block_size(&self) -> usize {
+        let l = self.properties_len();
+        variable_len_int_size(l) + l + 2 + self.topic.len() + 2 + self.payload.len()
+    }
+}
+
+impl MqttLastWill5_0_0 {
     pub fn set_delay_interval(mut self, new_delay_interval: u32) -> Self {
         self.delay_interval = Some(new_delay_interval);
         self
@@ -177,128 +347,227 @@ impl MqttLastWill5_0_0 {
             + self.correlation_data.property_len()
             + self.user_property.property_len()
     }
+}
 
-    pub fn write_properties(&self, buf: &mut impl BufMut) {
-        let properties_len = self.properties_len();
-        crate::util::write_variable_len_int(properties_len as u64, buf);
+#[derive(Debug, PartialEq, Default)]
+pub struct ConnectProperties {
+    // v5 properties
+    /// If the Session Expiry Interval is absent the value 0 is used. If it is set to 0, or is absent,
+    /// the Session ends when the Network Connection is closed.
+    /// If the Session Expiry Interval is 0xFFFFFFFF (UINT_MAX), the Session does not expire.
+    session_expiry_interval: Option<u32>,
 
-        self.delay_interval
-            .serialize(PropertyIdentifier::WillDelayInterval, buf);
-        self.payload_format
-            .serialize(PropertyIdentifier::PayloadFormatIndicator, buf);
-        self.message_expiry_interval
-            .serialize(PropertyIdentifier::MessageExpiryInterval, buf);
-        self.content_type
-            .serialize(PropertyIdentifier::ContentType, buf);
-        self.response_topic
-            .serialize(PropertyIdentifier::ResponseTopic, buf);
-        self.correlation_data
-            .serialize(PropertyIdentifier::CorrelationData, buf);
-        self.user_property
-            .serialize(PropertyIdentifier::UserProperty, buf);
-    }
+    /// The Client uses this value to limit the number of QoS 1 and QoS 2 publications that it is willing
+    /// to process concurrently. There is no mechanism to limit the QoS 0 publications that the Server might try to send.
+    /// The value of Receive Maximum applies only to the current Network Connection. If the Receive Maximum
+    /// value is absent then its value defaults to 65,535.
+    receive_maximum: Option<u16>,
+    /// If the Maximum Packet Size is not present, no limit on the packet size is imposed beyond the limitations
+    /// in the protocol as a result of the remaining length encoding and the protocol header sizes.
+    /// The packet size is the total number of bytes in an MQTT Control Packet, as defined in section 2.1.4.
+    /// The Client uses the Maximum Packet Size to inform the Server that it will not process packets exceeding this limit.
+    maximum_packet_size: Option<u32>,
+    /// If the Topic Alias Maximum property is absent, the default value is 0.
+    /// This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server.
+    /// The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection
+    /// A value of 0 indicates that the Client does not accept any Topic Aliases on this connection. If Topic
+    /// Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client
+    topic_alias_maximum: Option<u16>,
+    /// If the Request Response Information is absent, the value of 0 is used.
+    /// The Client uses this value to request the Server to return Response Information in the CONNACK. A value of 0
+    /// indicates that the Server MUST NOT return Response Information
+    /// If the value is 1 the Server MAY return Response Information in the CONNACK packet.
+    request_response_information: Option<bool>,
+    /// The Client uses this value to indicate whether the Reason String or User Properties are sent in the case of failures.
+    /// If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on
+    /// a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT
+    request_problem_information: Option<bool>,
+    /// The User Property is allowed to appear multiple times to represent multiple name, value pairs. The same name is allowed to appear more than once.
+    user_property: Vec<UserProperty>,
+    /// If Authentication Method is absent, extended authentication is not performed
+    authentication_method: Option<String>,
+    /// Binary Data containing authentication data
+    /// The contents of this data are defined by the authentication method
+    authentication_data: Bytes,
+}
 
-    fn read_properties(mut self, properties: &mut Bytes) -> Result<Self, Error> {
-        let len_properties = properties.len();
+impl PacketProperties for ConnectProperties {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
+        let mut properties = Self::default();
 
-        if properties.remaining() < len_properties {
-            return Err(MalformedPacket::new(
-                "Packet too short to read will properties",
-            ));
+        let properties_len = crate::util::read_variable_len_int(data)? as usize;
+        if data.remaining() < properties_len {
+            return Err(MalformedPacket::new("Packet too short to read properties"));
         }
-
-        let properties_end = properties.remaining() - len_properties;
-        while properties.remaining() > properties_end {
-            let property_identifier = crate::util::read_variable_len_int(properties)?;
+        let end_of_properties = data.remaining() - properties_len;
+        while data.remaining() > end_of_properties {
+            let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-
             match property_identifier {
-                PropertyIdentifier::WillDelayInterval => {
-                    if self.delay_interval.is_some() {
+                PropertyIdentifier::SessionExpiryInterval => {
+                    if properties.session_expiry_interval.is_some() {
                         return Err(Error::ProtocolError(
-                            "WillDelayInterval specified multiple times",
+                            "SessionExpiryInterval specified multiple times",
                         ));
                     }
-                    self.delay_interval =
-                        Some(properties.try_get_u32().map_err(|_| {
+                    properties.session_expiry_interval =
+                        Some(data.try_get_u32().map_err(|_| {
                             MalformedPacket::new("Packet too short to read property")
                         })?);
                 }
-                PropertyIdentifier::PayloadFormatIndicator => {
-                    if self.payload_format.is_some() {
+                PropertyIdentifier::ReceiveMaximum => {
+                    if properties.receive_maximum.is_some() {
                         return Err(Error::ProtocolError(
-                            "PayloadFormatIndicator specified multiple times",
+                            "ReceiveMaximum specified multiple times",
                         ));
                     }
-                    self.payload_format = Some(
-                        match properties.try_get_u8().map_err(|_| {
-                            MalformedPacket::new("Packet too short to read property")
-                        })? {
-                            0 => PayloadFormat::Binary,
-                            1 => PayloadFormat::Utf8,
-                            _ => return Err(MalformedPacket::new("Invalid payload format")),
-                        },
-                    );
-                }
-                PropertyIdentifier::MessageExpiryInterval => {
-                    if self.message_expiry_interval.is_some() {
-                        return Err(Error::ProtocolError(
-                            "MessageExpiryInterval specified multiple times",
-                        ));
-                    }
-                    self.message_expiry_interval =
-                        Some(properties.try_get_u32().map_err(|_| {
+                    properties.receive_maximum =
+                        Some(data.try_get_u16().map_err(|_| {
                             MalformedPacket::new("Packet too short to read property")
                         })?);
                 }
-                PropertyIdentifier::ContentType => {
-                    if self.content_type.is_some() {
-                        return Err(Error::ProtocolError("ContentType specified multiple times"));
-                    }
-                    self.content_type = Some(extract_str(properties)?);
-                }
-                PropertyIdentifier::ResponseTopic => {
-                    if self.response_topic.is_some() {
+                PropertyIdentifier::MaximumPacketSize => {
+                    if properties.maximum_packet_size.is_some() {
                         return Err(Error::ProtocolError(
-                            "ResponseTopic specified multiple times",
+                            "MaximumPacketSize specified multiple times",
                         ));
                     }
-                    self.response_topic = Some(extract_str(properties)?);
+                    properties.maximum_packet_size =
+                        Some(data.try_get_u32().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })?);
                 }
-                PropertyIdentifier::CorrelationData => {
-                    if !self.correlation_data.is_empty() {
+                PropertyIdentifier::TopicAliasMaximum => {
+                    if properties.topic_alias_maximum.is_some() {
                         return Err(Error::ProtocolError(
-                            "CorrelationData specified multiple times",
+                            "TopicAliasmaximum specified multiple times",
                         ));
                     }
-                    self.correlation_data = extract_bytes(properties)?;
+                    properties.topic_alias_maximum =
+                        Some(data.try_get_u16().map_err(|_| {
+                            MalformedPacket::new("Packet too short to read property")
+                        })?);
+                }
+                PropertyIdentifier::RequestResponseInformation => {
+                    if properties.request_response_information.is_some() {
+                        return Err(Error::ProtocolError(
+                            "RequestResponseInformation specified multiple times",
+                        ));
+                    }
+                    properties.request_response_information = Some(data.try_get_u8()? == 1);
+                }
+                PropertyIdentifier::RequestProblemInformation => {
+                    if properties.request_problem_information.is_some() {
+                        return Err(Error::ProtocolError(
+                            "RequestProblemInformation specified multiple times",
+                        ));
+                    }
+                    properties.request_problem_information = Some(data.try_get_u8()? == 1);
                 }
                 PropertyIdentifier::UserProperty => {
-                    let key = extract_str(properties)?;
-                    let value = extract_str(properties)?;
-                    self.user_property.push(UserProperty {
+                    let key = extract_str(data)?;
+                    let value = extract_str(data)?;
+                    let property = UserProperty {
                         key: key.to_string(),
                         value: value.to_string(),
-                    });
+                    };
+                    properties.user_property.push(property);
+                }
+                PropertyIdentifier::AuthenticationMethod => {
+                    if properties.authentication_method.is_some() {
+                        return Err(Error::ProtocolError(
+                            "AuthenticationMethod specified multiple times",
+                        ));
+                    }
+                    properties.authentication_method = Some(extract_str(data)?);
+                }
+                PropertyIdentifier::AuthenticationData => {
+                    if !properties.authentication_data.is_empty() {
+                        return Err(Error::ProtocolError(
+                            "AuthenticationData specified multiple times",
+                        ));
+                    }
+                    properties.authentication_data = extract_bytes(data)?;
                 }
                 _ => {
                     return Err(MalformedPacket::new(
-                        "Received unexpected property for will",
+                        "Received unexpected property for connect",
                     ))
                 }
             }
         }
-        Ok(self)
+        Ok(properties)
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let l = self.properties_len();
+        write_variable_len_int(l as u64, buf);
+        self.session_expiry_interval
+            .serialize(PropertyIdentifier::SessionExpiryInterval, buf);
+        self.receive_maximum
+            .serialize(PropertyIdentifier::ReceiveMaximum, buf);
+        self.maximum_packet_size
+            .serialize(PropertyIdentifier::MaximumPacketSize, buf);
+        self.topic_alias_maximum
+            .serialize(PropertyIdentifier::TopicAliasMaximum, buf);
+        self.request_response_information
+            .serialize(PropertyIdentifier::RequestResponseInformation, buf);
+        self.request_problem_information
+            .serialize(PropertyIdentifier::RequestProblemInformation, buf);
+        self.user_property
+            .serialize(PropertyIdentifier::UserProperty, buf);
+        self.authentication_method
+            .serialize(PropertyIdentifier::AuthenticationMethod, buf);
+        self.authentication_data
+            .serialize(PropertyIdentifier::AuthenticationData, buf);
+    }
+
+    fn properties_len(&self) -> usize {
+        self.session_expiry_interval.property_len()
+            + self.receive_maximum.property_len()
+            + self.maximum_packet_size.property_len()
+            + self.topic_alias_maximum.property_len()
+            + self.request_response_information.property_len()
+            + self.request_problem_information.property_len()
+            + self.user_property.property_len()
+            + self.authentication_method.property_len()
+            + self.authentication_data.property_len()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum VersionedConnect {
+    V3(Connect<MqttV3_1_1>),
+    V5(Connect<MqttV5_0_0>),
+}
+
+impl VersionedConnect {
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert_eq!(header.control_packet_type, ControlPacketType::Connect);
+        let protocol_length = data.try_get_u16()? as usize;
+        if data.remaining() < protocol_length {
+            return Err(MalformedPacket::new("Packet too short to read property"));
+        }
+        if data[..protocol_length] != b"MQTT"[..] {
+            return Err(MalformedPacket::new(
+                "Connect packet bytes 3..6 did not contain 'MQTT'.",
+            ));
+        }
+        data.advance(4);
+        let protocol_level = data.try_get_u8()?;
+
+        match protocol_level {
+            4 => Connect::<MqttV3_1_1>::try_read_after_level(header, data).map(Self::V3),
+            5 => Connect::<MqttV5_0_0>::try_read_after_level(header, data).map(Self::V5),
+            _ => Err(MalformedPacket::UnexpectedMqttVersion(protocol_level).into()),
+        }
     }
 }
 
 #[derive(Debug, PartialEq)]
 /// After a Network Connection is established by a Client to a Server, the first
 /// Packet sent from the Client to the Server MUST be a CONNECT Packet
-pub struct Connect {
-    fixed_header: FixedHeader,
-    protocol_level: u8,
-
+pub struct Connect<V: MqttVersion> {
     /// This bit specifies the handling of the Session state.
     ///
     /// The Client and Server can store Session state to enable reliable messaging to
@@ -341,7 +610,7 @@ pub struct Connect {
     ///  the Will Message has been deleted by the Server on receipt of a DISCONNECT Packet [MQTT-3.1.2-8].
     ///
     /// <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html#_Toc398718030>
-    will: Option<MqttLastWill>,
+    will: Option<V::LastWill>,
     /// The Client Identifier (ClientId) identifies the Client to the Server. Each Client connecting to
     /// the Server has a unique ClientId. The ClientId MUST be used by Clients and by Servers to identify
     /// state that they hold relating to this MQTT Session between the Client and the Server [MQTT-3.1.3-2].
@@ -350,45 +619,7 @@ pub struct Connect {
     client_identifier: String,
     username: Option<String>,
     password: Option<Bytes>,
-
-    // v5 properties
-    /// If the Session Expiry Interval is absent the value 0 is used. If it is set to 0, or is absent,
-    /// the Session ends when the Network Connection is closed.
-    /// If the Session Expiry Interval is 0xFFFFFFFF (UINT_MAX), the Session does not expire.
-    session_expiry_interval: Option<u32>,
-
-    /// The Client uses this value to limit the number of QoS 1 and QoS 2 publications that it is willing
-    /// to process concurrently. There is no mechanism to limit the QoS 0 publications that the Server might try to send.
-    /// The value of Receive Maximum applies only to the current Network Connection. If the Receive Maximum
-    /// value is absent then its value defaults to 65,535.
-    receive_maximum: Option<u16>,
-    /// If the Maximum Packet Size is not present, no limit on the packet size is imposed beyond the limitations
-    /// in the protocol as a result of the remaining length encoding and the protocol header sizes.
-    /// The packet size is the total number of bytes in an MQTT Control Packet, as defined in section 2.1.4.
-    /// The Client uses the Maximum Packet Size to inform the Server that it will not process packets exceeding this limit.
-    maximum_packet_size: Option<u32>,
-    /// If the Topic Alias Maximum property is absent, the default value is 0.
-    /// This value indicates the highest value that the Client will accept as a Topic Alias sent by the Server.
-    /// The Client uses this value to limit the number of Topic Aliases that it is willing to hold on this Connection
-    /// A value of 0 indicates that the Client does not accept any Topic Aliases on this connection. If Topic
-    /// Alias Maximum is absent or zero, the Server MUST NOT send any Topic Aliases to the Client
-    topic_alias_maximum: Option<u16>,
-    /// If the Request Response Information is absent, the value of 0 is used.
-    /// The Client uses this value to request the Server to return Response Information in the CONNACK. A value of 0
-    /// indicates that the Server MUST NOT return Response Information
-    /// If the value is 1 the Server MAY return Response Information in the CONNACK packet.
-    request_response_information: Option<bool>,
-    /// The Client uses this value to indicate whether the Reason String or User Properties are sent in the case of failures.
-    /// If the value of Request Problem Information is 0, the Server MAY return a Reason String or User Properties on
-    /// a CONNACK or DISCONNECT packet, but MUST NOT send a Reason String or User Properties on any packet other than PUBLISH, CONNACK, or DISCONNECT
-    request_problem_information: Option<bool>,
-    /// The User Property is allowed to appear multiple times to represent multiple name, value pairs. The same name is allowed to appear more than once.
-    user_property: Vec<UserProperty>,
-    /// If Authentication Method is absent, extended authentication is not performed
-    authentication_method: Option<String>,
-    /// Binary Data containing authentication data
-    /// The contents of this data are defined by the authentication method
-    authentication_data: Bytes,
+    properties: V::ConnectProperties,
 }
 
 #[derive(PartialEq)]
@@ -410,207 +641,65 @@ impl From<Flags> for u8 {
     }
 }
 
-impl Connect {
-    fn read_property(
-        &mut self,
-        property_identifier: PropertyIdentifier,
-        data: &mut Bytes,
-    ) -> Result<(), crate::Error> {
-        match property_identifier {
-            PropertyIdentifier::SessionExpiryInterval => {
-                if self.session_expiry_interval.is_some() {
-                    return Err(Error::ProtocolError(
-                        "SessionExpiryInterval specified multiple times",
-                    ));
-                }
-                self.session_expiry_interval = Some(
-                    data.try_get_u32()
-                        .map_err(|_| MalformedPacket::new("Packet too short to read property"))?,
-                );
-            }
-            PropertyIdentifier::ReceiveMaximum => {
-                if self.receive_maximum.is_some() {
-                    return Err(Error::ProtocolError(
-                        "ReceiveMaximum specified multiple times",
-                    ));
-                }
-                self.receive_maximum = Some(
-                    data.try_get_u16()
-                        .map_err(|_| MalformedPacket::new("Packet too short to read property"))?,
-                );
-            }
-            PropertyIdentifier::MaximumPacketSize => {
-                if self.maximum_packet_size.is_some() {
-                    return Err(Error::ProtocolError(
-                        "MaximumPacketSize specified multiple times",
-                    ));
-                }
-                self.maximum_packet_size = Some(
-                    data.try_get_u32()
-                        .map_err(|_| MalformedPacket::new("Packet too short to read property"))?,
-                );
-            }
-            PropertyIdentifier::TopicAliasMaximum => {
-                if self.topic_alias_maximum.is_some() {
-                    return Err(Error::ProtocolError(
-                        "TopicAliasmaximum specified multiple times",
-                    ));
-                }
-                self.topic_alias_maximum = Some(
-                    data.try_get_u16()
-                        .map_err(|_| MalformedPacket::new("Packet too short to read property"))?,
-                );
-            }
-            PropertyIdentifier::RequestResponseInformation => {
-                if self.request_response_information.is_some() {
-                    return Err(Error::ProtocolError(
-                        "RequestResponseInformation specified multiple times",
-                    ));
-                }
-                self.request_response_information = Some(data.try_get_u8()? == 1);
-            }
-            PropertyIdentifier::RequestProblemInformation => {
-                if self.request_problem_information.is_some() {
-                    return Err(Error::ProtocolError(
-                        "RequestProblemInformation specified multiple times",
-                    ));
-                }
-                self.request_problem_information = Some(data.try_get_u8()? == 1);
-            }
-            PropertyIdentifier::UserProperty => {
-                let key = extract_str(data)?;
-                let value = extract_str(data)?;
-                let property = UserProperty {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                };
-                self.user_property.push(property);
-            }
-            PropertyIdentifier::AuthenticationMethod => {
-                if self.authentication_method.is_some() {
-                    return Err(Error::ProtocolError(
-                        "AuthenticationMethod specified multiple times",
-                    ));
-                }
-                self.authentication_method = Some(extract_str(data)?);
-            }
-            PropertyIdentifier::AuthenticationData => {
-                if !self.authentication_data.is_empty() {
-                    return Err(Error::ProtocolError(
-                        "AuthenticationData specified multiple times",
-                    ));
-                }
-                self.authentication_data = extract_bytes(data)?;
-            }
-            _ => {
-                return Err(MalformedPacket::new(
-                    "Received unexpected property for connect",
-                ))
-            }
-        }
-        Ok(())
-    }
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let protocol_length = data.try_get_u16()? as usize;
-        if data.remaining() < protocol_length {
-            return Err(MalformedPacket::new("Packet too short to read property"));
-        }
-        if data[..protocol_length] != b"MQTT"[..] {
-            return Err(MalformedPacket::new(
-                "Connect packet bytes 3..6 did not contain 'MQTT'.",
-            ));
-        }
-        data.advance(4);
-        let protocol_level = data.try_get_u8()?;
-        if !SUPPORTED_PROTOCOL_VERSION.contains(&protocol_level) {
-            return Err(MalformedPacket::UnexpectedMqttVersion(protocol_level).into());
-        }
-
+impl<V: MqttVersion> Connect<V> {
+    fn try_read_after_level(_header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let flags = data.try_get_u8()?;
         let keep_alive = data.try_get_u16()?;
 
-        let mut connect = Self {
-            fixed_header: header,
-            protocol_level,
-            clean_session: Flags::CleanSession.flag_set(flags),
-            keep_alive,
-            username: None,
-            password: None,
-            will: None,
-            client_identifier: String::new(),
-            session_expiry_interval: None,
-            receive_maximum: None,
-            maximum_packet_size: None,
-            topic_alias_maximum: None,
-            request_response_information: None,
-            request_problem_information: None,
-            user_property: Vec::new(),
-            authentication_method: None,
-            authentication_data: Bytes::new(),
-        };
-
-        if protocol_level == MQTT_VERSION_5_0_0 {
-            let properties_len = crate::util::read_variable_len_int(data)?;
-            let properties_len = properties_len as usize;
-            if data.remaining() < properties_len {
-                return Err(MalformedPacket::new("Packet too short to read properties"));
-            }
-            let end_of_properties = data.remaining() - properties_len;
-            while data.remaining() > end_of_properties {
-                let property_identifier = crate::util::read_variable_len_int(data)?;
-                let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
-                connect.read_property(property_identifier, data)?;
-            }
-        }
+        let properties = V::ConnectProperties::try_read(data)?;
 
         // Payload
-        connect.client_identifier = extract_str(data)?;
+        let client_identifier = extract_str(data)?;
 
-        if Flags::Will.flag_set(flags) {
-            if connect.protocol_level == MQTT_VERSION_5_0_0 {
-                let properties_len = crate::util::read_variable_len_int(data)?;
-                let properties_len = properties_len as usize;
-                let mut properties = data.slice(0..properties_len);
-                data.advance(properties_len);
-                let topic = extract_str(data)?;
-                let payload = extract_bytes(data)?;
-                connect.will = Some(MqttLastWill::V5(
-                    MqttLastWill5_0_0::new(
-                        topic,
-                        payload,
-                        Qos::try_from((flags & 0b00011000) >> 3)?,
-                        Flags::WillRetain.flag_set(flags),
-                    )
-                    .read_properties(&mut properties)?,
-                ));
-            } else {
-                let topic = extract_str(data)?;
-                let payload = extract_bytes(data)?;
-                connect.will = Some(MqttLastWill::V3(MqttLastWill3_1_1 {
-                    topic,
-                    payload,
-                    retain: Flags::WillRetain.flag_set(flags),
-                    qos: Qos::try_from((flags & 0b00011000) >> 3)?,
-                }));
-            }
+        let will = if Flags::Will.flag_set(flags) {
+            Some(V::LastWill::try_read(flags, data)?)
+        } else {
+            None
+        };
+        let username = if Flags::Username.flag_set(flags) {
+            Some(extract_str(data)?)
+        } else {
+            None
         };
 
-        if Flags::Username.flag_set(flags) {
-            let username = extract_str(data)?;
-            connect.username = Some(username);
-        };
-        if Flags::Password.flag_set(flags) {
-            let password = extract_bytes(data)?;
-            connect.password = Some(password);
+        let password = if Flags::Password.flag_set(flags) {
+            Some(extract_bytes(data)?)
+        } else {
+            None
         };
 
-        Ok(connect)
+        Ok(Self {
+            clean_session: Flags::CleanSession.flag_set(flags),
+            keep_alive,
+            username,
+            password,
+            properties,
+            will,
+            client_identifier,
+        })
     }
 
-    fn write_until_properties(&mut self, buf: &mut impl BufMut) {
-        self.re_calculate_fixed_header_length();
+    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+        let variable_header_len = 10;
+        let payload_len = {
+            let mut len = self.properties.properties_block_len() + 2 + self.client_identifier.len();
+            if let Some(will) = &self.will {
+                len += will.block_size();
+            }
+            if let Some(username) = &self.username {
+                len += username.len() + 2;
+            }
+            if let Some(password) = &self.password {
+                len += password.len() + 2;
+            }
+            len
+        };
+        let fixed_header = FixedHeader::new(
+            ControlPacketType::Connect,
+            variable_header_len + payload_len,
+        );
 
-        self.fixed_header.write_to_buf(buf);
+        fixed_header.write_to_buf(buf);
         let mut flags = 0;
         if self.username.is_some() {
             flags |= u8::from(Flags::Username);
@@ -640,22 +729,30 @@ impl Connect {
                 b'T',
                 b'T',
                 // Protocol level
-                self.protocol_level,
+                V::VERSION,
                 flags,
                 ((self.keep_alive & 0xff00) >> 8) as u8,
                 (self.keep_alive & 0xff) as u8,
             ]
             .as_slice(),
         );
-    }
 
-    pub fn write_to_buf(&mut self, buf: &mut impl BufMut) {
-        self.write_until_properties(buf);
-        match self.protocol_level {
-            MQTT_VERSION_3_1_1 => self.write_to_buf_v3(buf),
-            MQTT_VERSION_5_0_0 => self.write_to_buf_v5(buf),
-            _ => unreachable!(),
-        };
+        self.properties.write_properties(buf);
+
+        // Payload
+        write_str(&self.client_identifier, buf);
+
+        if let Some(will) = &self.will {
+            will.write_to_buf(buf);
+        }
+        if let Some(username) = &self.username {
+            write_str(username, buf);
+        }
+        if let Some(password) = &self.password {
+            let pl_len = password.len();
+            buf.put_u16(pl_len as u16);
+            buf.put(&password[..]);
+        }
     }
 
     pub fn set_clean_session(&mut self, clean_session: bool) {
@@ -674,11 +771,11 @@ impl Connect {
         self.keep_alive
     }
 
-    pub fn set_will(&mut self, will: Option<MqttLastWill>) {
+    pub fn set_will(&mut self, will: Option<V::LastWill>) {
         self.will = will;
     }
 
-    pub fn will(&self) -> Option<&MqttLastWill> {
+    pub fn will(&self) -> Option<&V::LastWill> {
         self.will.as_ref()
     }
 
@@ -707,7 +804,7 @@ impl Connect {
     }
 }
 
-impl Connect {
+impl Connect<MqttV3_1_1> {
     pub fn new_v3(
         clean_session: bool,
         keep_alive: u16,
@@ -716,68 +813,19 @@ impl Connect {
         username: Option<String>,
         password: Option<Bytes>,
     ) -> Self {
-        let will = will.map(MqttLastWill::V3);
-        let variable_header_len = 10;
-        let payload_len = {
-            let mut len = client_identifier.len() + 2;
-            if let Some(will) = &will {
-                len += will.topic().len() + 2 + will.payload().len() + 2;
-            }
-            if let Some(username) = &username {
-                len += username.len() + 2;
-            }
-            if let Some(password) = &password {
-                len += password.len() + 2;
-            }
-            len
-        };
-        let fixed_header = FixedHeader::new(
-            ControlPacketType::Connect,
-            variable_header_len + payload_len,
-        );
         Self {
-            fixed_header,
-            protocol_level: 4,
             clean_session,
             keep_alive,
             client_identifier,
             will,
             username,
             password,
-            session_expiry_interval: None,
-            receive_maximum: None,
-            maximum_packet_size: None,
-            topic_alias_maximum: None,
-            request_response_information: None,
-            request_problem_information: None,
-            user_property: Vec::new(),
-            authentication_method: None,
-            authentication_data: Bytes::new(),
-        }
-    }
-
-    fn write_to_buf_v3(&self, buf: &mut impl BufMut) {
-        // Payload
-        write_str(&self.client_identifier, buf);
-
-        if let Some(will) = &self.will {
-            write_str(will.topic(), buf);
-            let pl_len = will.payload().len();
-            buf.put_u16(pl_len as u16);
-            buf.put(&will.payload()[..]);
-        }
-        if let Some(username) = &self.username {
-            write_str(username, buf);
-        }
-        if let Some(password) = &self.password {
-            let pl_len = password.len();
-            buf.put_u16(pl_len as u16);
-            buf.put(&password[..]);
+            properties: (),
         }
     }
 }
 
-impl Connect {
+impl Connect<MqttV5_0_0> {
     pub fn new_v5(
         clean_session: bool,
         keep_alive: u16,
@@ -786,225 +834,91 @@ impl Connect {
         username: Option<String>,
         password: Option<Bytes>,
     ) -> Self {
-        let will = will.map(MqttLastWill::V5);
-        let variable_header_len = 10;
-        let payload_len = {
-            let mut len = client_identifier.len() + 2;
-            if let Some(will) = &will {
-                len += will.topic().len() + 2 + will.payload().len() + 2;
-            }
-            if let Some(username) = &username {
-                len += username.len() + 2;
-            }
-            if let Some(password) = &password {
-                len += password.len() + 2;
-            }
-            len
-        };
-        let fixed_header = FixedHeader::new(
-            ControlPacketType::Connect,
-            // + 1 for property length
-            variable_header_len + 1 + payload_len,
-        );
         Self {
-            fixed_header,
-            protocol_level: 5,
             clean_session,
             keep_alive,
             client_identifier,
             will,
             username,
             password,
-            session_expiry_interval: None,
-            receive_maximum: None,
-            maximum_packet_size: None,
-            topic_alias_maximum: None,
-            request_response_information: None,
-            request_problem_information: None,
-            user_property: Vec::new(),
-            authentication_method: None,
-            authentication_data: Bytes::new(),
-        }
-    }
-    /// Re-calculate fixed header length
-    ///
-    /// We initially have no properties -> property len == 0
-    /// -> we have 1 byte to store it
-    ///
-    /// if our properties take more than 128 bytes, we need more than
-    /// 1 byte for the length -> we need to modify fixed header
-    ///
-    /// we also need to add length of properties into fixed header and we know them
-    /// only at serialization time due to builder pattern (without finalize)
-    fn re_calculate_fixed_header_length(&mut self) {
-        if self.protocol_level == MQTT_VERSION_5_0_0 {
-            let payload_len = {
-                let mut len = self.client_identifier.len() + 2;
-                if let Some(will) = &self.will {
-                    len += will.topic().len() + 2 + will.payload().len() + 2;
-                }
-                if let Some(username) = &self.username {
-                    len += username.len() + 2;
-                }
-                if let Some(password) = &self.password {
-                    len += password.len() + 2;
-                }
-                len
-            };
-
-            let properties_size = self.properties_len();
-            self.fixed_header.remaining_length = 10
-                + variable_len_int_size(properties_size)
-                + properties_size
-                + self
-                    .will
-                    .as_ref()
-                    .map(|will| {
-                        let will = match will {
-                            MqttLastWill::V3(_) => unreachable!(),
-                            MqttLastWill::V5(will) => will,
-                        };
-                        let len = will.properties_len();
-                        variable_len_int_size(len) + len
-                    })
-                    .unwrap_or_default()
-                + payload_len;
+            properties: ConnectProperties::default(),
         }
     }
 
     pub fn set_session_expiry_interval(mut self, expiry_interval: u32) -> Self {
-        self.session_expiry_interval = Some(expiry_interval);
+        self.properties.session_expiry_interval = Some(expiry_interval);
         self
     }
 
     pub fn set_receive_maximum(mut self, receive_maximum: u16) -> Self {
-        self.receive_maximum = Some(receive_maximum);
+        self.properties.receive_maximum = Some(receive_maximum);
         self
     }
 
     pub fn set_maximum_packet_size(mut self, maximum_packet_size: u32) -> Self {
-        self.maximum_packet_size = Some(maximum_packet_size);
+        self.properties.maximum_packet_size = Some(maximum_packet_size);
         self
     }
 
     pub fn set_topic_alias_maximum(mut self, topic_alias_maximum: u16) -> Self {
-        self.topic_alias_maximum = Some(topic_alias_maximum);
+        self.properties.topic_alias_maximum = Some(topic_alias_maximum);
         self
     }
 
     pub fn set_request_response_information(mut self, request_response_information: bool) -> Self {
-        self.request_response_information = Some(request_response_information);
+        self.properties.request_response_information = Some(request_response_information);
         self
     }
 
     pub fn set_request_problem_information(mut self, request_problem_information: bool) -> Self {
-        self.request_problem_information = Some(request_problem_information);
+        self.properties.request_problem_information = Some(request_problem_information);
         self
     }
 
     pub fn set_user_property(mut self, user_property: Vec<UserProperty>) -> Self {
-        self.user_property = user_property;
+        self.properties.user_property = user_property;
         self
     }
 
     pub fn set_authentication_method(mut self, authentication_method: String) -> Self {
-        self.authentication_method = Some(authentication_method);
+        self.properties.authentication_method = Some(authentication_method);
         self
     }
 
     pub fn set_authentication_data(mut self, authentication_method: Bytes) -> Self {
-        self.authentication_data = authentication_method;
+        self.properties.authentication_data = authentication_method;
         self
     }
 
-    fn write_properties(&self, buf: &mut impl BufMut) {
-        self.session_expiry_interval
-            .serialize(PropertyIdentifier::SessionExpiryInterval, buf);
-        self.receive_maximum
-            .serialize(PropertyIdentifier::ReceiveMaximum, buf);
-        self.maximum_packet_size
-            .serialize(PropertyIdentifier::MaximumPacketSize, buf);
-        self.topic_alias_maximum
-            .serialize(PropertyIdentifier::TopicAliasMaximum, buf);
-        self.request_response_information
-            .serialize(PropertyIdentifier::RequestResponseInformation, buf);
-        self.request_problem_information
-            .serialize(PropertyIdentifier::RequestProblemInformation, buf);
-        self.user_property
-            .serialize(PropertyIdentifier::UserProperty, buf);
-        self.authentication_method
-            .serialize(PropertyIdentifier::AuthenticationMethod, buf);
-        self.authentication_data
-            .serialize(PropertyIdentifier::AuthenticationData, buf);
-    }
-
-    fn properties_len(&self) -> usize {
-        self.session_expiry_interval.property_len()
-            + self.receive_maximum.property_len()
-            + self.maximum_packet_size.property_len()
-            + self.topic_alias_maximum.property_len()
-            + self.request_response_information.property_len()
-            + self.request_problem_information.property_len()
-            + self.user_property.property_len()
-            + self.authentication_method.property_len()
-            + self.authentication_data.property_len()
-    }
-
-    fn write_to_buf_v5(&self, buf: &mut impl BufMut) {
-        crate::util::write_variable_len_int(self.properties_len() as u64, buf);
-        self.write_properties(buf);
-
-        // Payload
-        write_str(&self.client_identifier, buf);
-
-        if let Some(will) = &self.will {
-            let will = match will {
-                MqttLastWill::V3(_) => unreachable!(),
-                MqttLastWill::V5(will) => will,
-            };
-            will.write_properties(buf);
-            write_str(&will.topic, buf);
-            let pl_len = will.payload.len();
-            buf.put_u16(pl_len as u16);
-            buf.put(&will.payload[..]);
-        }
-        if let Some(username) = &self.username {
-            write_str(username, buf);
-        }
-        if let Some(password) = &self.password {
-            let pl_len = password.len();
-            buf.put_u16(pl_len as u16);
-            buf.put(&password[..]);
-        }
-    }
-
     pub fn session_expiry_interval(&self) -> Option<u32> {
-        self.session_expiry_interval
+        self.properties.session_expiry_interval
     }
 
     pub fn receive_maximum(&self) -> u16 {
-        self.receive_maximum.unwrap_or(65535)
+        self.properties.receive_maximum.unwrap_or(65535)
     }
     pub fn maximum_packet_size(&self) -> Option<u32> {
-        self.maximum_packet_size
+        self.properties.maximum_packet_size
     }
     pub fn topic_alias_maximum(&self) -> u16 {
-        self.topic_alias_maximum.unwrap_or_default()
+        self.properties.topic_alias_maximum.unwrap_or_default()
     }
     pub fn request_response_information(&self) -> bool {
-        self.request_response_information.unwrap_or_default()
+        self.properties
+            .request_response_information
+            .unwrap_or_default()
     }
     pub fn request_problem_information(&self) -> bool {
-        self.request_problem_information.unwrap_or(true)
+        self.properties.request_problem_information.unwrap_or(true)
     }
     pub fn user_property(&self) -> &[UserProperty] {
-        &self.user_property
+        &self.properties.user_property
     }
     pub fn authentication_method(&self) -> &Option<String> {
-        &self.authentication_method
+        &self.properties.authentication_method
     }
     pub fn authentication_data(&self) -> Bytes {
-        self.authentication_data.clone()
+        self.properties.authentication_data.clone()
     }
 }
 
@@ -1016,7 +930,7 @@ mod test_ser_v3 {
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
+        let msg = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1032,7 +946,7 @@ mod test_ser_v3 {
     #[test]
     fn will() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(
+        let msg = Connect::new_v3(
             false,
             0,
             "client2".to_string(),
@@ -1098,7 +1012,7 @@ mod test_ser_v3 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(
+        let msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1152,7 +1066,7 @@ mod test_ser_v3 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(
+        let msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1206,7 +1120,7 @@ mod test_ser_v3 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(
+        let msg = Connect::new_v3(
             false,
             0,
             "client".to_string(),
@@ -1271,7 +1185,7 @@ mod test_ser_v3 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
+        let msg = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1307,7 +1221,7 @@ mod test_ser_v3 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
+        let msg = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1329,7 +1243,7 @@ mod test_ser_v5 {
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
+        let msg = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1348,12 +1262,12 @@ mod test_ser_v5 {
     #[test]
     fn will_no_properties() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(
+        let msg = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
             Some(MqttLastWill5_0_0::new(
-                "will".to_string(),
+                MqttTopic::try_from("will").unwrap(),
                 Bytes::from_static(b"payload"),
                 Qos::ExactlyOnce,
                 true,
@@ -1420,13 +1334,13 @@ mod test_ser_v5 {
     #[test]
     fn will_properties() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(
+        let msg = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
             Some(
                 MqttLastWill5_0_0::new(
-                    "will".to_string(),
+                    MqttTopic::try_from("will").unwrap(),
                     Bytes::from_static(b"payload"),
                     Qos::ExactlyOnce,
                     true,
@@ -1598,7 +1512,7 @@ mod test_ser_v5 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(
+        let msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1655,7 +1569,7 @@ mod test_ser_v5 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(
+        let msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1712,7 +1626,7 @@ mod test_ser_v5 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(
+        let msg = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -1780,7 +1694,7 @@ mod test_ser_v5 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
+        let msg = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1819,7 +1733,7 @@ mod test_ser_v5 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
+        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1838,7 +1752,7 @@ mod test_ser_v5 {
     #[test]
     fn properties() {
         let mut buf = Vec::new();
-        let mut msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
+        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
             .set_session_expiry_interval(42)
             .set_receive_maximum(24)
             .set_maximum_packet_size(100)
@@ -1910,7 +1824,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn will() {
@@ -1976,7 +1893,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn username() {
@@ -2030,7 +1950,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn password() {
@@ -2084,7 +2007,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn username_and_password() {
@@ -2149,7 +2075,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn clean_session() {
@@ -2185,7 +2114,10 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
     #[test]
     fn client_id() {
@@ -2201,12 +2133,16 @@ mod test_de_v3 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
     }
 }
 
 #[cfg(test)]
 mod test_de_v5 {
+
     use bytes::BytesMut;
 
     use super::*;
@@ -2223,13 +2159,15 @@ mod test_de_v5 {
             // client identifier
             0, 6, b'c', b'l', b'i', b'e', b'n', b't',
         ];
-        let mut expected = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
-        expected.re_calculate_fixed_header_length();
+        let expected = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn will_no_properties() {
@@ -2282,12 +2220,12 @@ mod test_de_v5 {
             b'a',
             b'd',
         ];
-        let mut expected = Connect::new_v5(
+        let expected = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
             Some(MqttLastWill5_0_0::new(
-                "will".to_string(),
+                MqttTopic::try_from("will").unwrap(),
                 Bytes::from_static(b"payload"),
                 Qos::ExactlyOnce,
                 true,
@@ -2295,12 +2233,14 @@ mod test_de_v5 {
             None,
             None,
         );
-        expected.re_calculate_fixed_header_length();
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
 
     #[test]
@@ -2444,13 +2384,13 @@ mod test_de_v5 {
             b'a',
             b'd',
         ];
-        let mut expected = Connect::new_v5(
+        let expected = Connect::new_v5(
             false,
             0,
             "client2".to_string(),
             Some(
                 MqttLastWill5_0_0::new(
-                    "will".to_string(),
+                    MqttTopic::try_from("will").unwrap(),
                     Bytes::from_static(b"payload"),
                     Qos::ExactlyOnce,
                     true,
@@ -2475,12 +2415,14 @@ mod test_de_v5 {
             None,
             None,
         );
-        expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn username() {
@@ -2524,7 +2466,7 @@ mod test_de_v5 {
             b'm',
             b'e',
         ];
-        let mut expected = Connect::new_v5(
+        let expected = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -2532,12 +2474,14 @@ mod test_de_v5 {
             Some("username".to_string()),
             None,
         );
-        expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn password() {
@@ -2581,7 +2525,7 @@ mod test_de_v5 {
             b'r',
             b'd',
         ];
-        let mut expected = Connect::new_v5(
+        let expected = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -2589,12 +2533,14 @@ mod test_de_v5 {
             None,
             Some(Bytes::from_static(b"password")),
         );
-        expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn username_and_password() {
@@ -2649,7 +2595,7 @@ mod test_de_v5 {
             b'r',
             b'd',
         ];
-        let mut expected = Connect::new_v5(
+        let expected = Connect::new_v5(
             false,
             0,
             "client".to_string(),
@@ -2657,12 +2603,14 @@ mod test_de_v5 {
             Some("username".to_string()),
             Some(Bytes::from_static(b"password")),
         );
-        expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn clean_session() {
@@ -2700,7 +2648,10 @@ mod test_de_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
     #[test]
     fn client_id() {
@@ -2714,13 +2665,15 @@ mod test_de_v5 {
             // Client identifier
             0, 6, b'c', b'l', b'i', b'e', b'n', b't',
         ];
-        let mut expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
-        expected.re_calculate_fixed_header_length();
+        let expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
 
     #[test]
@@ -2751,7 +2704,7 @@ mod test_de_v5 {
             0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
         ];
 
-        let mut expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
+        let expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
             .set_session_expiry_interval(42)
             .set_receive_maximum(24)
             .set_maximum_packet_size(100)
@@ -2770,11 +2723,13 @@ mod test_de_v5 {
             ])
             .set_authentication_method("auth".to_string())
             .set_authentication_data(Bytes::from_static(b"secret"));
-        expected.re_calculate_fixed_header_length();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Connect::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
     }
 }

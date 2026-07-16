@@ -7,7 +7,8 @@ use crate::{
         extract_bytes, extract_str, read_variable_len_int, variable_len_int_size,
         write_variable_len_int,
     },
-    Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property,
+    PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -36,7 +37,6 @@ impl TryFrom<u8> for ReasonCode {
 /// An AUTH packet is sent from Client to Server or Server to Client as part of an extended authentication exchange, such as challenge / response authentication. It is a Protocol Error for the Client or Server to send an AUTH packet if the CONNECT packet did not contain the same Authentication Method.
 #[derive(Debug, PartialEq)]
 pub struct Auth<V> {
-    fixed_header: FixedHeader,
     protocol_level: PhantomData<V>,
     reason_code: ReasonCode,
     /// Followed by a UTF-8 Encoded String containing the name of the authentication method. It is a Protocol Error to omit the Authentication Method or to include it more than once. Refer to section 4.12 for more information about extended authentication.
@@ -50,7 +50,20 @@ pub struct Auth<V> {
 
 impl Auth<MqttV5_0_0> {
     pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
+        let properties_len = self.method.property_len()
+            + self.auth_data.property_len()
+            + self.reason.property_len()
+            + self.user_property.property_len();
+        //
+        // If remaining length == 0 -> reason_code == 0x00 and there are no properties
+        let remaining_length = if self.reason_code == ReasonCode::Success && properties_len == 0 {
+            0
+        } else {
+            1 + variable_len_int_size(properties_len) + properties_len
+        };
+
+        let fixed_header = FixedHeader::new(crate::ControlPacketType::Auth, remaining_length);
+        fixed_header.write_to_buf(buf);
 
         let properties_len = self.method.property_len()
             + self.auth_data.property_len()
@@ -60,7 +73,7 @@ impl Auth<MqttV5_0_0> {
         // If reason code == 0x00 and there are no properties, fixed header length = 0 and we don't
         // send body
         if self.reason_code == ReasonCode::Success && properties_len == 0 {
-            assert_eq!(self.fixed_header.remaining_length, 0);
+            assert_eq!(fixed_header.remaining_length, 0);
             return;
         }
 
@@ -84,17 +97,7 @@ impl Auth<MqttV5_0_0> {
         reason: Option<String>,
         user_property: Vec<UserProperty>,
     ) -> Self {
-        let properties_len = method.property_len()
-            + auth_data.property_len()
-            + reason.property_len()
-            + user_property.property_len();
-        let remaining_length = if reason_code == ReasonCode::Success && properties_len == 0 {
-            0
-        } else {
-            1 + variable_len_int_size(properties_len) + properties_len
-        };
         Self {
-            fixed_header: FixedHeader::new(crate::ControlPacketType::Auth, remaining_length),
             reason_code,
             protocol_level: PhantomData,
             method,
@@ -104,11 +107,11 @@ impl Auth<MqttV5_0_0> {
         }
     }
 
-    pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        // If remaining length == 0 -> reason_code == 0x00 and there are no properties
+    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        assert_eq!(header.control_packet_type, ControlPacketType::Auth);
+
         if header.remaining_length == 0 {
             return Ok(Self {
-                fixed_header: header,
                 protocol_level: PhantomData,
                 reason_code: ReasonCode::Success,
                 method: None,
@@ -131,9 +134,9 @@ impl Auth<MqttV5_0_0> {
         if data.remaining() < len_properties {
             return Err(MalformedPacket::new("Packet too short to parse"));
         }
-        let properties_end = data.remaining() - len_properties;
+        let data = &mut data.split_to(len_properties);
 
-        while data.remaining() > properties_end {
+        while data.has_remaining() {
             let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             match property_identifier {
@@ -173,14 +176,7 @@ impl Auth<MqttV5_0_0> {
             };
         }
 
-        if data.has_remaining() {
-            return Err(MalformedPacket::new(
-                "Trailing bytes after properties in auth",
-            ));
-        }
-
         Ok(Self {
-            fixed_header: header,
             protocol_level: PhantomData,
             reason_code,
             method,
@@ -282,7 +278,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Auth::try_read(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -293,7 +289,7 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Auth::try_read(header, &mut body).unwrap(), expected);
     }
 
     #[test]
@@ -321,6 +317,6 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Auth::try_read_v5(header, &mut body).unwrap(), expected);
+        assert_eq!(Auth::try_read(header, &mut body).unwrap(), expected);
     }
 }

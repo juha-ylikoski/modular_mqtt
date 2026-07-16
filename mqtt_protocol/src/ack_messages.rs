@@ -1,14 +1,15 @@
-use std::marker::PhantomData;
-
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
-    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, Property,
-    PropertyIdentifier, UserProperty,
+    version::PacketProperties,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
+    Property, PropertyIdentifier, UserProperty,
 };
 
-trait ReasonCode: TryFrom<u8> + Copy {
+pub trait ReasonCode:
+    TryFrom<u8, Error = Error> + std::fmt::Debug + Clone + Copy + PartialEq
+{
     fn as_u8(&self) -> u8;
     fn can_be_omitted() -> bool;
 }
@@ -52,24 +53,6 @@ pub enum PubRelReasonCode {
 }
 
 pub type PubCompReasonCode = PubRelReasonCode;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum UnsubAckReasonCode {
-    /// The subscription is deleted.
-    Success = 0,
-    /// No matching Topic Filter is being used by the Client.
-    NoSubscriptionExisted = 17,
-    /// The unsubscribe could not be completed and the Server either does not wish to reveal the reason or none of the other Reason Codes apply.
-    UnspecifiedError = 128,
-    /// The UNSUBSCRIBE is valid but the Server does not accept it.
-    ImplementationSpecificError = 131,
-    /// The Client is not authorized to unsubscribe.
-    NotAuthorized = 135,
-    /// The Topic Filter is correctly formed but is not allowed for this Client.
-    TopicFilterInvalid = 143,
-    /// The specified Packet Identifier is already in use.
-    PacketIdentifierInUse = 145,
-}
 
 impl TryFrom<u8> for PubAckReasonCode {
     type Error = crate::Error;
@@ -118,156 +101,27 @@ impl ReasonCode for PubRelReasonCode {
     }
 }
 
-impl TryFrom<u8> for UnsubAckReasonCode {
-    type Error = Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Success),
-            17 => Ok(Self::NoSubscriptionExisted),
-            128 => Ok(Self::UnspecifiedError),
-            131 => Ok(Self::ImplementationSpecificError),
-            135 => Ok(Self::NotAuthorized),
-            143 => Ok(Self::TopicFilterInvalid),
-            145 => Ok(Self::PacketIdentifierInUse),
-            _ => Err(MalformedPacket::new("Invalid UnsubAck reason code")),
-        }
-    }
-}
-impl ReasonCode for UnsubAckReasonCode {
-    fn as_u8(&self) -> u8 {
-        *self as u8
-    }
-    fn can_be_omitted() -> bool {
-        false
-    }
-}
-
 #[derive(Debug, PartialEq)]
-enum PubAckData<V, R> {
-    V3,
-    V5 {
-        procol_version: PhantomData<V>,
-        reason_code: R,
-        /// UTF-8 Encoded String representing the reason associated with this response.
-        /// This Reason String is a human readable string designed for diagnostics
-        /// and is not intended to be parsed by the receiver
-        reason: Option<String>,
-        /// UTF-8 String Pair. This property can be used to provide additional
-        /// diagnostic or other information
-        user_property: Vec<UserProperty>,
-    },
+pub struct PubAckData<R> {
+    reason_code: R,
+    /// UTF-8 Encoded String representing the reason associated with this response.
+    /// This Reason String is a human readable string designed for diagnostics
+    /// and is not intended to be parsed by the receiver
+    reason: Option<String>,
+    /// UTF-8 String Pair. This property can be used to provide additional
+    /// diagnostic or other information
+    user_property: Vec<UserProperty>,
 }
 
-#[derive(Debug, PartialEq)]
-struct PubAckType<V, R> {
-    fixed_header: FixedHeader,
-    packet_identifier: u16,
-    // v5
-    data: PubAckData<V, R>,
-}
-
-impl<V, R: ReasonCode> PubAckType<V, R>
-where
-    crate::Error: From<<R as TryFrom<u8>>::Error>,
-{
-    fn properties_len(&self) -> usize {
-        match &self.data {
-            PubAckData::V3 => 0,
-            PubAckData::V5 {
-                reason,
-                user_property,
-                ..
-            } => reason.property_len() + user_property.property_len(),
-        }
-    }
-    fn write_to_buf(&self, buf: &mut impl BufMut) {
-        self.fixed_header.write_to_buf(buf);
-        buf.put_u16(self.packet_identifier);
-
-        let property_len = self.properties_len();
-        match &self.data {
-            PubAckData::V3 => (),
-            PubAckData::V5 {
-                reason_code,
-                reason,
-                user_property,
-                ..
-            } => {
-                // If fixed header remaining length == 2 -> reason code = 0x00 + everything is omitted
-                // (except for unsuback for some reason)
-                if R::can_be_omitted() && reason_code.as_u8() == 0 && property_len == 0 {
-                    assert_eq!(self.fixed_header.remaining_length, 2);
-                    return;
-                }
-                buf.put_u8(reason_code.as_u8());
-                write_variable_len_int(property_len as u64, buf);
-                reason.serialize(crate::PropertyIdentifier::Reason, buf);
-                user_property.serialize(crate::PropertyIdentifier::UserProperty, buf);
-            }
-        };
-    }
-
-    fn try_read_v3(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        Ok(PubAckType {
-            fixed_header: header,
-            packet_identifier: data.try_get_u16()?,
-            data: PubAckData::V3,
-        })
-    }
-
-    fn new_v3(packet_type: ControlPacketType, packet_identifier: u16) -> Self {
-        PubAckType {
-            fixed_header: FixedHeader::new(packet_type, 2),
-            packet_identifier,
-            data: PubAckData::V3,
-        }
-    }
-
-    fn new_v5(
-        packet_type: ControlPacketType,
-        packet_identifier: u16,
-        reason_code: R,
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        let mut msg = PubAckType {
-            fixed_header: FixedHeader::new(packet_type, 0),
-            packet_identifier,
-            data: PubAckData::V5 {
-                procol_version: PhantomData,
-                reason_code,
-                reason,
-                user_property,
-            },
-        };
-        let property_len = msg.properties_len();
-        let property_len_int_size = variable_len_int_size(property_len);
-        let remaining_length = 2 + 1 + property_len_int_size + property_len;
-        msg.fixed_header.remaining_length =
-            if R::can_be_omitted() && reason_code.as_u8() == 0 && property_len == 0 {
-                2
-            } else {
-                remaining_length
-            };
-        msg
-    }
-
-    fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        let packet_identifier = data.try_get_u16()?;
-
+impl<R: ReasonCode> PacketProperties for PubAckData<R> {
+    fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         // If fixed header remaining length == 2 -> reason code = 0x00 and everything is omitted
         // (except for unsuback for some reason)
         if R::can_be_omitted() && !data.has_remaining() {
             return Ok(Self {
-                fixed_header: header,
-                packet_identifier,
-                data: PubAckData::V5 {
-                    procol_version: PhantomData,
-                    reason_code: R::try_from(0)?,
-                    reason: None,
-                    user_property: Vec::new(),
-                },
+                reason_code: R::try_from(0)?,
+                reason: None,
+                user_property: Vec::new(),
             });
         }
 
@@ -275,30 +129,33 @@ where
 
         let len_properties = read_variable_len_int(data)? as usize;
 
-        let mut reason = None;
-        let mut user_property = Vec::new();
+        let mut properties = PubAckData {
+            reason_code,
+            reason: None,
+            user_property: Vec::new(),
+        };
 
         if data.remaining() < len_properties {
             return Err(MalformedPacket::new("Packet too short to parse"));
         }
 
-        let properties_end = data.remaining() - len_properties;
+        let data = &mut data.split_to(len_properties);
 
-        while data.remaining() > properties_end {
+        while data.has_remaining() {
             let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             match property_identifier {
                 PropertyIdentifier::Reason => {
-                    if reason.is_some() {
+                    if properties.reason.is_some() {
                         return Err(Error::ProtocolError("Reason specified multiple times"));
                     }
-                    reason = Some(extract_str(data)?.to_string());
+                    properties.reason = Some(extract_str(data)?.to_string());
                 }
                 PropertyIdentifier::UserProperty => {
                     let key = extract_str(data)?.to_string();
                     let value = extract_str(data)?.to_string();
                     let property = UserProperty { key, value };
-                    user_property.push(property);
+                    properties.user_property.push(property);
                 }
                 _ => {
                     return Err(MalformedPacket::new(
@@ -307,17 +164,110 @@ where
                 }
             };
         }
+        Ok(properties)
+    }
+
+    fn write_properties(&self, buf: &mut impl BufMut) {
+        let property_len = self.properties_len();
+        // If fixed header remaining length == 2 -> reason code = 0x00 + everything is omitted
+        // (except for unsuback for some reason)
+        if R::can_be_omitted() && self.reason_code.as_u8() == 0 && property_len == 0 {
+            return;
+        }
+        buf.put_u8(self.reason_code.as_u8());
+        write_variable_len_int(property_len as u64, buf);
+        self.reason
+            .serialize(crate::PropertyIdentifier::Reason, buf);
+        self.user_property
+            .serialize(crate::PropertyIdentifier::UserProperty, buf);
+    }
+
+    fn properties_block_len(&self) -> usize {
+        let l = self.properties_len();
+        if R::can_be_omitted() && l == 0 && self.reason_code.as_u8() == 0 {
+            0
+        } else {
+            1 + variable_len_int_size(l) + l
+        }
+    }
+
+    fn properties_len(&self) -> usize {
+        self.reason.property_len() + self.user_property.property_len()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct PubAckType<V: MqttVersion, R: ReasonCode> {
+    packet_type: ControlPacketType,
+    packet_identifier: u16,
+    // v5
+    properties: V::AckTypeProperties<R>,
+}
+
+impl<V, R: ReasonCode> PubAckType<V, R>
+where
+    V: MqttVersion,
+{
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
+        let remaining_length = if self.properties.properties_block_len() == 0 {
+            2
+        } else {
+            2 + self.properties.properties_block_len()
+        };
+        let fixed_header = FixedHeader::new(self.packet_type, remaining_length);
+        fixed_header.write_to_buf(buf);
+        buf.put_u16(self.packet_identifier);
+        self.properties.write_properties(buf);
+    }
+
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let packet_identifier = data.try_get_u16()?;
+
+        let properties = V::AckTypeProperties::try_read(data)?;
 
         Ok(PubAckType {
-            fixed_header: header,
+            packet_type: header.control_packet_type,
             packet_identifier,
-            data: PubAckData::V5 {
-                procol_version: PhantomData,
-                reason_code,
-                reason,
-                user_property,
-            },
+            properties,
         })
+    }
+}
+
+impl<R: ReasonCode> PubAckType<MqttV3_1_1, R>
+where
+    crate::Error: From<<R as TryFrom<u8>>::Error>,
+{
+    fn new_v3(packet_type: ControlPacketType, packet_identifier: u16) -> Self {
+        PubAckType {
+            packet_type,
+            packet_identifier,
+            properties: (),
+        }
+    }
+}
+
+impl<R: ReasonCode> PubAckType<MqttV5_0_0, R>
+where
+    crate::Error: From<<R as TryFrom<u8>>::Error>,
+{
+    fn new_v5(
+        packet_type: ControlPacketType,
+        packet_identifier: u16,
+        reason_code: R,
+        reason: Option<String>,
+        user_property: Vec<UserProperty>,
+    ) -> Self {
+        let properties = PubAckData {
+            reason_code,
+            reason,
+            user_property,
+        };
+
+        PubAckType {
+            packet_type,
+            packet_identifier,
+            properties,
+        }
     }
 }
 
@@ -325,14 +275,22 @@ macro_rules! create_pub_ack_type {
     (#[doc = $doc:expr] $name:ident, $control_packet_type:ident, $reason_code:ty) => {
         #[derive(Debug, PartialEq)]
         #[doc = $doc]
-        pub struct $name<V>(PubAckType<V, $reason_code>);
+        pub struct $name<V: MqttVersion>(PubAckType<V, $reason_code>);
 
-        impl<V> $name<V> {
+        impl<V: MqttVersion> $name<V> {
             pub fn write_to_buf(&self, buf: &mut impl BufMut) {
                 self.0.write_to_buf(buf)
             }
             pub fn packet_identifier(&self) -> u16 {
                 self.0.packet_identifier
+            }
+
+            pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, crate::Error> {
+                assert_eq!(
+                    header.control_packet_type,
+                    ControlPacketType::$control_packet_type
+                );
+                PubAckType::try_read(header, data).map(Self)
             }
         }
 
@@ -342,12 +300,6 @@ macro_rules! create_pub_ack_type {
                     ControlPacketType::$control_packet_type,
                     packet_identifier,
                 ))
-            }
-            pub fn try_read_v3(
-                header: FixedHeader,
-                data: &mut Bytes,
-            ) -> Result<Self, crate::Error> {
-                PubAckType::try_read_v3(header, data).map(Self)
             }
         }
 
@@ -366,27 +318,15 @@ macro_rules! create_pub_ack_type {
                     user_property,
                 ))
             }
-            pub fn try_read_v5(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-                PubAckType::try_read_v5(header, data).map(Self)
-            }
 
             pub fn reason(&self) -> Option<&String> {
-                match &self.0.data {
-                    PubAckData::V3 { .. } => unreachable!(),
-                    PubAckData::V5 { reason, .. } => reason.as_ref(),
-                }
+                self.0.properties.reason.as_ref()
             }
             pub fn reason_code(&self) -> $reason_code {
-                match &self.0.data {
-                    PubAckData::V3 { .. } => unreachable!(),
-                    PubAckData::V5 { reason_code, .. } => *reason_code,
-                }
+                self.0.properties.reason_code
             }
             pub fn user_property(&self) -> &[UserProperty] {
-                match &self.0.data {
-                    PubAckData::V3 { .. } => unreachable!(),
-                    PubAckData::V5 { user_property, .. } => &user_property,
-                }
+                &self.0.properties.user_property
             }
         }
     };
@@ -417,13 +357,6 @@ create_pub_ack_type!(
     PubCompReasonCode
 );
 
-create_pub_ack_type!(
-    /// The UNSUBACK Packet is sent by the Server to the Client to confirm receipt of an UNSUBSCRIBE Packet.
-    UnsubAck,
-    UnsubscribeAck,
-    UnsubAckReasonCode
-);
-
 macro_rules! make_tests {
     ($name:ident, $test_name:ident, $test_packet_type:expr, $reason_type:ty, $reason_code:ident) => {
         #[cfg(test)]
@@ -452,7 +385,10 @@ macro_rules! make_tests {
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
                             .unwrap()
                             .unwrap();
-                    assert_eq!($name::try_read_v3(header, &mut body).unwrap(), expected);
+                    assert_eq!(
+                        $name::<MqttV3_1_1>::try_read(header, &mut body).unwrap(),
+                        expected
+                    );
                 }
             }
 
@@ -577,7 +513,10 @@ macro_rules! make_tests {
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
                             .unwrap()
                             .unwrap();
-                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
+                    assert_eq!(
+                        $name::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
+                        expected
+                    );
                 }
 
                 #[test]
@@ -594,7 +533,10 @@ macro_rules! make_tests {
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
                             .unwrap()
                             .unwrap();
-                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
+                    assert_eq!(
+                        $name::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
+                        expected
+                    );
                 }
 
                 #[test]
@@ -625,7 +567,10 @@ macro_rules! make_tests {
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
                             .unwrap()
                             .unwrap();
-                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
+                    assert_eq!(
+                        $name::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
+                        expected
+                    );
                 }
                 #[test]
                 fn deserialize_user_property() {
@@ -664,7 +609,7 @@ macro_rules! make_tests {
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
                             .unwrap()
                             .unwrap();
-                    assert_eq!($name::try_read_v5(header, &mut body).unwrap(), expected);
+                    assert_eq!($name::try_read(header, &mut body).unwrap(), expected);
                 }
             }
         }
@@ -692,12 +637,4 @@ make_tests!(
     112,
     PubCompReasonCode,
     PacketIdentifierNotFound
-);
-
-make_tests!(
-    UnsubAck,
-    test_unsuback,
-    176,
-    UnsubAckReasonCode,
-    NotAuthorized
 );

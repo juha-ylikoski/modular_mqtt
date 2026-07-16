@@ -6,20 +6,22 @@
 
 pub use ack_messages::{
     PubAck, PubAckReasonCode, PubComp, PubCompReasonCode, PubRec, PubRecReasonCode, PubRel,
-    PubRelReasonCode, UnsubAck, UnsubAckReasonCode,
+    PubRelReasonCode,
 };
 pub use auth::Auth;
 use bytes::{BufMut, Bytes};
-pub use connack::{ConnAck, ConnectRc, ConnectRcV3, ConnectRcV5};
-pub use connect::{Connect, MqttLastWill, MqttLastWill3_1_1, MqttLastWill5_0_0};
+pub use connack::{ConnAck, ConnectRcV3, ConnectRcV5};
+pub use connect::{Connect, MqttLastWill, MqttLastWill3_1_1, MqttLastWill5_0_0, VersionedConnect};
 pub use disconnect::{Disconnect, DisconnectReasonCode};
 pub use fixed_header::{ControlPacketType, FixedHeader};
 pub use ping::{PingReq, PingResp};
 pub use publish::Publish;
 pub use suback::{SubAck, SubRcV3, SubRcV5};
-pub use subscribe::{RetainHandling, Subscribe, TopicSubscription};
+pub use subscribe::{RetainHandling, Subscribe, TopicSubscriptionV3, TopicSubscriptionV5};
+pub use unsuback::{UnsubAck, UnsubAckReasonCode};
 pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, Qos, QosPacketIdentifier};
+pub use version::MqttVersion;
 
 mod ack_messages;
 mod auth;
@@ -31,23 +33,20 @@ mod ping;
 mod publish;
 mod suback;
 mod subscribe;
+mod unsuback;
 mod unsubscribe;
 mod util;
+mod version;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MqttV3_1_1;
 #[derive(Debug, PartialEq, Clone)]
 pub struct MqttV5_0_0;
 
-pub(crate) const MQTT_VERSION_3_1_1: u8 = 4;
-pub(crate) const MQTT_VERSION_5_0_0: u8 = 5;
-
 pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
 
-const SUPPORTED_PROTOCOL_VERSION: &[u8] = &[MQTT_VERSION_3_1_1, MQTT_VERSION_5_0_0];
-
-pub enum MqttPackage<V, Q> {
-    Connect(Connect),
+pub enum MqttPackage<V: MqttVersion, Q> {
+    Connect(Connect<V>),
     ConnAck(ConnAck<V>),
     Publish(Publish<V, Q>),
     PubAck(PubAck<V>),
