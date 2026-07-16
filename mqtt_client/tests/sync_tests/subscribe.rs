@@ -2,16 +2,25 @@ use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
 
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
-use ntest::timeout;
+use mqtt_client::{
+    client::{MqttClient, SyncClient},
+    client_opts::ClientOpts,
+    util::IntoTopicSubscription,
+};
 use rust_mqtt_protocol::{
-    ConnAck, Connect, MqttTopic, MqttV3_1_1, Packet, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
-    SubAck, SubRcV3, Subscribe, TopicSubscriptionV3, VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, MqttTopic, MqttVersion, Packet, PubAck, PubComp,
+    PubRec, PubRel, Publish, Qos, SubAck, SubAckDataV5, SubRcV3, SubRcV5, Subscribe,
+    TopicSubscription, VersionedConnect,
 };
 
-#[test]
-#[timeout(5000)]
-fn sub_qos0() {
+fn test_sub_qos0<V>(connack_rc: V::ConnackRc, sub_rc: V::SubAckData, sub_rc2: V::SubAckData)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+    MqttTopic: IntoTopicSubscription<V>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -24,26 +33,19 @@ fn sub_qos0() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            Subscribe::new_v3(
+            Subscribe::<V>::new(
                 sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
+                vec![V::TopicSubscription::new(
                     "topic".try_into().unwrap(),
                     Qos::AtMostOnce
                 )]
@@ -51,13 +53,12 @@ fn sub_qos0() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -70,91 +71,46 @@ fn sub_qos0() {
         .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::new(packet_identifier, vec![SubRcV3::SuccessQos0])
-    );
+    assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
     client.disconnect().unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
-
-#[test]
-#[timeout(5000)]
-fn sub_qos1() {
-    util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
-
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
-        );
-        write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
-        });
-
-        let (header, mut data) = util::read_packet(&mut stream);
-        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            sub,
-            Subscribe::new_v3(
-                sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
-                    "topic".try_into().unwrap(),
-                    Qos::AtLeastOnce
-                )]
-            )
-        );
-        send.send(sub.packet_identifier()).unwrap();
-        write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
-    });
-
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
-        ClientOpts {
-            client_id: "client-id".to_string(),
-            keep_alive: 1,
-            ..Default::default()
+test!(
+    sub_qos0,
+    test_sub_qos0,
+    5000,
+    (
+        ConnectRcV3::Accepted,
+        vec![SubRcV3::SuccessQos0],
+        vec![SubRcV3::SuccessQos0]
+    ),
+    (
+        ConnectRcV5::Accepted,
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos0],
+            reason: None,
+            user_property: Vec::new()
         },
-        addr.to_string(),
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos0],
+            reason: None,
+            user_property: Vec::new()
+        }
     )
-    .unwrap();
-    let suback = client
-        .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
-            Qos::AtLeastOnce,
-        )
-        .unwrap();
-    let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::new(packet_identifier, vec![SubRcV3::SuccessQos0])
-    );
-    client.disconnect().unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
-}
+);
 
-#[test]
-#[timeout(5000)]
-fn sub_qos2() {
+fn test_sub_qos0_receive_packet<V>(
+    connack_rc: V::ConnackRc,
+    sub_rc: V::SubAckData,
+    sub_rc2: V::SubAckData,
+) where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+    MqttTopic: IntoTopicSubscription<V>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -167,99 +123,19 @@ fn sub_qos2() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            Subscribe::new_v3(
+            Subscribe::<V>::new(
                 sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
-                    "topic".try_into().unwrap(),
-                    Qos::ExactlyOnce
-                )]
-            )
-        );
-        send.send(sub.packet_identifier()).unwrap();
-        write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
-    });
-
-    let client = SyncClient::connect_tcp(
-        ClientOpts {
-            client_id: "client-id".to_string(),
-            keep_alive: 1,
-            ..Default::default()
-        },
-        addr.to_string(),
-    )
-    .unwrap();
-    let suback = client
-        .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
-            Qos::ExactlyOnce,
-        )
-        .unwrap();
-    let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::<MqttV3_1_1>::new(packet_identifier, vec![SubRcV3::SuccessQos0])
-    );
-    client.disconnect().unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
-}
-
-#[test]
-#[timeout(5000)]
-fn sub_qos0_receive_packet() {
-    util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
-
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
-        );
-        write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
-        });
-
-        let (header, mut data) = util::read_packet(&mut stream);
-        let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            sub,
-            Subscribe::new_v3(
-                sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
+                vec![V::TopicSubscription::new(
                     "topic".try_into().unwrap(),
                     Qos::AtMostOnce
                 )]
@@ -267,19 +143,18 @@ fn sub_qos0_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos0])
-                .write_to_buf(buf)
+            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
-            Publish::<MqttV3_1_1, Qos>::new(topic, b"test", Qos::AtMostOnce, false)
+            Publish::<V, Qos>::new(topic, b"test", Qos::AtMostOnce, false)
                 .assign_packet_identifier(|| 1, false)
                 .write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -295,10 +170,7 @@ fn sub_qos0_receive_packet() {
         .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::new(packet_identifier, vec![SubRcV3::SuccessQos0])
-    );
+    assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
@@ -314,10 +186,41 @@ fn sub_qos0_receive_packet() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    sub_qos0_receive_packet,
+    test_sub_qos0_receive_packet,
+    5000,
+    (
+        ConnectRcV3::Accepted,
+        vec![SubRcV3::SuccessQos0],
+        vec![SubRcV3::SuccessQos0]
+    ),
+    (
+        ConnectRcV5::Accepted,
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos0],
+            reason: None,
+            user_property: Vec::new()
+        },
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos0],
+            reason: None,
+            user_property: Vec::new()
+        }
+    )
+);
 
-#[test]
-#[timeout(5000)]
-fn sub_qos1_receive_packet() {
+fn test_sub_qos1_receive_packet<V>(
+    connack_rc: V::ConnackRc,
+    sub_rc: V::SubAckData,
+    sub_rc2: V::SubAckData,
+) where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+    MqttTopic: IntoTopicSubscription<V>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -330,26 +233,19 @@ fn sub_qos1_receive_packet() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            Subscribe::new_v3(
+            Subscribe::<V>::new(
                 sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
+                vec![V::TopicSubscription::new(
                     "topic".try_into().unwrap(),
                     Qos::AtLeastOnce
                 )]
@@ -357,22 +253,21 @@ fn sub_qos1_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos1])
-                .write_to_buf(buf)
+            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
-            Publish::<MqttV3_1_1, Qos>::new(topic, b"test", Qos::AtLeastOnce, false)
+            Publish::<V, Qos>::new(topic, b"test", Qos::AtLeastOnce, false)
                 .assign_packet_identifier(|| 42, false)
                 .write_to_buf(buf)
         });
         let (header, mut data) = util::read_packet(&mut stream);
-        let ack = PubAck::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(ack, PubAck::new_v3(42));
+        let ack = PubAck::<V>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(ack, PubAck::new_ok(42));
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -391,10 +286,7 @@ fn sub_qos1_receive_packet() {
         )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::new(packet_identifier, vec![SubRcV3::SuccessQos1])
-    );
+    assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
@@ -410,10 +302,41 @@ fn sub_qos1_receive_packet() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    sub_qos1_receive_packet,
+    test_sub_qos1_receive_packet,
+    5000,
+    (
+        ConnectRcV3::Accepted,
+        vec![SubRcV3::SuccessQos0],
+        vec![SubRcV3::SuccessQos0]
+    ),
+    (
+        ConnectRcV5::Accepted,
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos1],
+            reason: None,
+            user_property: Vec::new()
+        },
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos1],
+            reason: None,
+            user_property: Vec::new()
+        }
+    )
+);
 
-#[test]
-#[timeout(5000)]
-fn sub_qos2_receive_packet() {
+fn test_sub_qos2_receive_packet<V>(
+    connack_rc: V::ConnackRc,
+    sub_rc: V::SubAckData,
+    sub_rc2: V::SubAckData,
+) where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+    MqttTopic: IntoTopicSubscription<V>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -427,26 +350,19 @@ fn sub_qos2_receive_packet() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
-            Subscribe::new_v3(
+            Subscribe::<V>::new(
                 sub.packet_identifier(),
-                vec![TopicSubscriptionV3::new(
+                vec![V::TopicSubscription::new(
                     "topic".try_into().unwrap(),
                     Qos::ExactlyOnce
                 )]
@@ -454,28 +370,27 @@ fn sub_qos2_receive_packet() {
         );
         send.send(sub.packet_identifier()).unwrap();
         write_packet(&mut stream, |buf| {
-            SubAck::<MqttV3_1_1>::new(sub.packet_identifier(), vec![SubRcV3::SuccessQos2])
-                .write_to_buf(buf)
+            SubAck::<V>::new(sub.packet_identifier(), sub_rc2).write_to_buf(buf)
         });
         let topic = MqttTopic::try_from("topic").unwrap();
         write_packet(&mut stream, |buf| {
-            Publish::<MqttV3_1_1, Qos>::new(topic, b"test", Qos::ExactlyOnce, false)
+            Publish::<V, Qos>::new(topic, b"test", Qos::ExactlyOnce, false)
                 .assign_packet_identifier(|| 42, false)
                 .write_to_buf(buf)
         });
         let (header, mut data) = util::read_packet(&mut stream);
-        let rec = PubRec::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(rec, PubRec::new_v3(42));
+        let rec = PubRec::<V>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(rec, PubRec::new_ok(42));
 
-        write_packet(&mut stream, |buf| PubRel::new_v3(42).write_to_buf(buf));
+        write_packet(&mut stream, |buf| PubRel::<V>::new_ok(42).write_to_buf(buf));
         let (header, mut data) = util::read_packet(&mut stream);
-        let rec = PubComp::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(rec, PubComp::new_v3(42));
+        let rec = PubComp::<V>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(rec, PubComp::new_ok(42));
         pub_done_tx.send(()).unwrap();
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -494,10 +409,7 @@ fn sub_qos2_receive_packet() {
         )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
-    assert_eq!(
-        suback,
-        SubAck::new(packet_identifier, vec![SubRcV3::SuccessQos2])
-    );
+    assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc));
     let msg = stream.recv().unwrap();
     assert_eq!(
         msg,
@@ -514,3 +426,26 @@ fn sub_qos2_receive_packet() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    sub_qos2_receive_packet,
+    test_sub_qos2_receive_packet,
+    5000,
+    (
+        ConnectRcV3::Accepted,
+        vec![SubRcV3::SuccessQos0],
+        vec![SubRcV3::SuccessQos0]
+    ),
+    (
+        ConnectRcV5::Accepted,
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos2],
+            reason: None,
+            user_property: Vec::new()
+        },
+        SubAckDataV5 {
+            return_codes: vec![SubRcV5::SuccessQos2],
+            reason: None,
+            user_property: Vec::new()
+        }
+    )
+);

@@ -11,7 +11,7 @@ use crate::{
 use super::fixed_header::FixedHeader;
 use super::util::{extract_bytes, extract_str, write_str, Qos};
 
-pub trait MqttLastWill: Sized + std::fmt::Debug + Clone + PartialEq {
+pub trait MqttLastWill: Sized + std::fmt::Debug + Clone + PartialEq + Send + Sync {
     fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self;
     fn try_read(flags: u8, data: &mut Bytes) -> Result<Self, Error>;
     fn write_to_buf(&self, buf: &mut impl BufMut);
@@ -542,6 +542,18 @@ pub enum VersionedConnect {
     V5(Connect<MqttV5_0_0>),
 }
 
+impl From<Connect<MqttV3_1_1>> for VersionedConnect {
+    fn from(value: Connect<MqttV3_1_1>) -> Self {
+        VersionedConnect::V3(value)
+    }
+}
+
+impl From<Connect<MqttV5_0_0>> for VersionedConnect {
+    fn from(value: Connect<MqttV5_0_0>) -> Self {
+        VersionedConnect::V5(value)
+    }
+}
+
 impl Packet for VersionedConnect {
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Connect);
@@ -649,6 +661,24 @@ impl From<Flags> for u8 {
 }
 
 impl<V: MqttVersion> Connect<V> {
+    pub fn new(
+        clean_session: bool,
+        keep_alive: u16,
+        client_identifier: String,
+        will: Option<V::LastWill>,
+        username: Option<String>,
+        password: Option<Bytes>,
+    ) -> Self {
+        Self {
+            clean_session,
+            keep_alive,
+            client_identifier,
+            will,
+            username,
+            password,
+            properties: V::ConnectProperties::default(),
+        }
+    }
     fn try_read_after_level(_header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let flags = data.try_get_u8()?;
         let keep_alive = data.try_get_u16()?;
@@ -811,47 +841,7 @@ impl<V: MqttVersion> Connect<V> {
     }
 }
 
-impl Connect<MqttV3_1_1> {
-    pub fn new_v3(
-        clean_session: bool,
-        keep_alive: u16,
-        client_identifier: String,
-        will: Option<MqttLastWill3_1_1>,
-        username: Option<String>,
-        password: Option<Bytes>,
-    ) -> Self {
-        Self {
-            clean_session,
-            keep_alive,
-            client_identifier,
-            will,
-            username,
-            password,
-            properties: (),
-        }
-    }
-}
-
 impl Connect<MqttV5_0_0> {
-    pub fn new_v5(
-        clean_session: bool,
-        keep_alive: u16,
-        client_identifier: String,
-        will: Option<MqttLastWill5_0_0>,
-        username: Option<String>,
-        password: Option<Bytes>,
-    ) -> Self {
-        Self {
-            clean_session,
-            keep_alive,
-            client_identifier,
-            will,
-            username,
-            password,
-            properties: ConnectProperties::default(),
-        }
-    }
-
     pub fn set_session_expiry_interval(mut self, expiry_interval: u32) -> Self {
         self.properties.session_expiry_interval = Some(expiry_interval);
         self
@@ -937,7 +927,7 @@ mod test_ser_v3 {
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV3_1_1>::new(false, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -953,7 +943,7 @@ mod test_ser_v3 {
     #[test]
     fn will() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(
+        let msg = Connect::<MqttV3_1_1>::new(
             false,
             0,
             "client2".to_string(),
@@ -1019,7 +1009,7 @@ mod test_ser_v3 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(
+        let msg = Connect::<MqttV3_1_1>::new(
             false,
             0,
             "client".to_string(),
@@ -1073,7 +1063,7 @@ mod test_ser_v3 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(
+        let msg = Connect::<MqttV3_1_1>::new(
             false,
             0,
             "client".to_string(),
@@ -1127,7 +1117,7 @@ mod test_ser_v3 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(
+        let msg = Connect::<MqttV3_1_1>::new(
             false,
             0,
             "client".to_string(),
@@ -1192,7 +1182,7 @@ mod test_ser_v3 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV3_1_1>::new(true, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1228,7 +1218,7 @@ mod test_ser_v3 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV3_1_1>::new(false, 1800, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1250,7 +1240,7 @@ mod test_ser_v5 {
     #[test]
     fn connect() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV5_0_0>::new(false, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1269,7 +1259,7 @@ mod test_ser_v5 {
     #[test]
     fn will_no_properties() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(
+        let msg = Connect::<MqttV5_0_0>::new(
             false,
             0,
             "client2".to_string(),
@@ -1341,7 +1331,7 @@ mod test_ser_v5 {
     #[test]
     fn will_properties() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(
+        let msg = Connect::<MqttV5_0_0>::new(
             false,
             0,
             "client2".to_string(),
@@ -1519,7 +1509,7 @@ mod test_ser_v5 {
     #[test]
     fn username() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(
+        let msg = Connect::<MqttV5_0_0>::new(
             false,
             0,
             "client".to_string(),
@@ -1576,7 +1566,7 @@ mod test_ser_v5 {
     #[test]
     fn password() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(
+        let msg = Connect::<MqttV5_0_0>::new(
             false,
             0,
             "client".to_string(),
@@ -1633,7 +1623,7 @@ mod test_ser_v5 {
     #[test]
     fn username_and_password() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(
+        let msg = Connect::<MqttV5_0_0>::new(
             false,
             0,
             "client".to_string(),
@@ -1701,7 +1691,7 @@ mod test_ser_v5 {
     #[test]
     fn clean_session() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV5_0_0>::new(true, 0, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1740,7 +1730,7 @@ mod test_ser_v5 {
     #[test]
     fn client_id() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
+        let msg = Connect::<MqttV5_0_0>::new(false, 1800, "client".to_string(), None, None, None);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -1759,7 +1749,7 @@ mod test_ser_v5 {
     #[test]
     fn properties() {
         let mut buf = Vec::new();
-        let msg = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
+        let msg = Connect::new(false, 1800, "client".to_string(), None, None, None)
             .set_session_expiry_interval(42)
             .set_receive_maximum(24)
             .set_maximum_packet_size(100)
@@ -1826,7 +1816,7 @@ mod test_de_v3 {
             0, 0, // Keep alive
             0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
         ];
-        let expected = Connect::new_v3(false, 0, "client".to_string(), None, None, None);
+        let expected = Connect::new(false, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -1883,7 +1873,7 @@ mod test_de_v3 {
             b'a',
             b'd',
         ];
-        let expected = Connect::new_v3(
+        let expected = Connect::new(
             false,
             0,
             "client2".to_string(),
@@ -1945,7 +1935,7 @@ mod test_de_v3 {
             b'm',
             b'e',
         ];
-        let expected = Connect::new_v3(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2002,7 +1992,7 @@ mod test_de_v3 {
             b'r',
             b'd',
         ];
-        let expected = Connect::new_v3(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2070,7 +2060,7 @@ mod test_de_v3 {
             b'r',
             b'd',
         ];
-        let expected = Connect::new_v3(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2116,7 +2106,7 @@ mod test_de_v3 {
             b'n',
             b't',
         ];
-        let expected = Connect::new_v3(true, 0, "client".to_string(), None, None, None);
+        let expected = Connect::new(true, 0, "client".to_string(), None, None, None);
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -2135,7 +2125,7 @@ mod test_de_v3 {
             0x07, 0x08, // Keep alive
             0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
         ];
-        let expected = Connect::new_v3(false, 1800, "client".to_string(), None, None, None);
+        let expected = Connect::new(false, 1800, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -2166,7 +2156,7 @@ mod test_de_v5 {
             // client identifier
             0, 6, b'c', b'l', b'i', b'e', b'n', b't',
         ];
-        let expected = Connect::new_v5(false, 0, "client".to_string(), None, None, None);
+        let expected = Connect::new(false, 0, "client".to_string(), None, None, None);
         let mut reader = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -2227,7 +2217,7 @@ mod test_de_v5 {
             b'a',
             b'd',
         ];
-        let expected = Connect::new_v5(
+        let expected = Connect::new(
             false,
             0,
             "client2".to_string(),
@@ -2391,7 +2381,7 @@ mod test_de_v5 {
             b'a',
             b'd',
         ];
-        let expected = Connect::new_v5(
+        let expected = Connect::new(
             false,
             0,
             "client2".to_string(),
@@ -2473,7 +2463,7 @@ mod test_de_v5 {
             b'm',
             b'e',
         ];
-        let expected = Connect::new_v5(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2532,7 +2522,7 @@ mod test_de_v5 {
             b'r',
             b'd',
         ];
-        let expected = Connect::new_v5(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2602,7 +2592,7 @@ mod test_de_v5 {
             b'r',
             b'd',
         ];
-        let expected = Connect::new_v5(
+        let expected = Connect::new(
             false,
             0,
             "client".to_string(),
@@ -2650,7 +2640,7 @@ mod test_de_v5 {
             b'n',
             b't',
         ];
-        let expected = Connect::new_v5(true, 0, "client".to_string(), None, None, None);
+        let expected = Connect::new(true, 0, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -2672,7 +2662,7 @@ mod test_de_v5 {
             // Client identifier
             0, 6, b'c', b'l', b'i', b'e', b'n', b't',
         ];
-        let expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None);
+        let expected = Connect::new(false, 1800, "client".to_string(), None, None, None);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -2711,7 +2701,7 @@ mod test_de_v5 {
             0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
         ];
 
-        let expected = Connect::new_v5(false, 1800, "client".to_string(), None, None, None)
+        let expected = Connect::new(false, 1800, "client".to_string(), None, None, None)
             .set_session_expiry_interval(42)
             .set_receive_maximum(24)
             .set_maximum_packet_size(100)

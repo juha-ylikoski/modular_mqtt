@@ -2,15 +2,23 @@ use crate::util::{self, write_packet};
 
 use std::{net::TcpListener, time::Duration};
 
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use mqtt_client::{
+    client::{MqttClient, SyncClient},
+    client_opts::ClientOpts,
+};
 use ntest::timeout;
 use rust_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, MqttV3_1_1, Packet, PingReq, PingResp, VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet,
+    PingReq, PingResp, VersionedConnect,
 };
 
-#[test]
-#[timeout(15000)]
-fn ping_sequence() {
+fn ping_sequence<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -22,17 +30,10 @@ fn ping_sequence() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                2,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::<V>::new(true, 2, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         std::thread::sleep(Duration::from_secs(4));
@@ -40,13 +41,13 @@ fn ping_sequence() {
         let (header, mut data) = util::read_packet(&mut stream);
         assert_eq!(data.len(), 0);
         let connect = PingReq::try_read(header, &mut data).unwrap();
-        assert_eq!(connect, PingReq::default());
+        assert_eq!(connect, PingReq);
 
-        write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
+        write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
+    let client = SyncClient::<V>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 2,
@@ -60,4 +61,16 @@ fn ping_sequence() {
     client.disconnect().unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
+}
+
+#[test]
+#[timeout(15000)]
+fn v3() {
+    ping_sequence::<MqttV3_1_1>(ConnectRcV3::Accepted);
+}
+
+#[test]
+#[timeout(15000)]
+fn v5() {
+    ping_sequence::<MqttV5_0_0>(ConnectRcV5::Accepted);
 }

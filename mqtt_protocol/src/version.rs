@@ -31,17 +31,24 @@ pub trait MqttVersion:
     sealed::Sealed + std::fmt::Debug + Send + Sync + 'static + PartialEq
 {
     const VERSION: u8;
-    type ConnackRc: Copy + Into<u8> + TryFrom<u8, Error = Error> + PartialEq + Debug + IsSuccess;
-    type ConnackProperties: PacketProperties;
-    type AckTypeProperties<R: crate::ack_messages::ReasonCode>: PacketProperties;
+    type ConnackRc: Copy
+        + Into<u8>
+        + TryFrom<u8, Error = Error>
+        + PartialEq
+        + Debug
+        + IsSuccess
+        + Send
+        + Sync;
+    type ConnackProperties: PacketProperties + Default;
+    type AckTypeProperties<R: crate::ack_messages::ReasonCode>: PacketProperties + Default;
     type DisconnectData: PacketProperties;
-    type SubscribeData: PacketProperties;
+    type SubscribeData: PacketProperties + Default;
     type SubAckData: PacketProperties;
     type TopicSubscription: crate::subscribe::TopicSubscription;
     type UnsubscribeProperties: PacketProperties;
     type UnSubAckProperties: PacketProperties;
     type PublishProperties: PacketProperties + Default;
-    type ConnectProperties: PacketProperties;
+    type ConnectProperties: PacketProperties + Default;
     type LastWill: crate::connect::MqttLastWill;
 }
 

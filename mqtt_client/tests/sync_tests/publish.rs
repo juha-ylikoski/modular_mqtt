@@ -2,16 +2,23 @@ use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
 
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
-use ntest::timeout;
+use mqtt_client::{
+    client::{MqttClient, SyncClient},
+    client_opts::ClientOpts,
+};
 use rust_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, ControlPacketType, MqttTopic, MqttV3_1_1, Packet, PingReq,
-    PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier, VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
+    PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
+    VersionedConnect,
 };
 
-#[test]
-#[timeout(5000)]
-fn publish_qos0() {
+fn test_publish_qos0<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -23,23 +30,15 @@ fn publish_qos0() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_msg =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_msg,
             Publish::new(
@@ -53,7 +52,7 @@ fn publish_qos0() {
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -75,10 +74,21 @@ fn publish_qos0() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_qos0,
+    test_publish_qos0,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(5000)]
-fn publish_qos1() {
+fn test_publish_qos1<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -91,23 +101,15 @@ fn publish_qos1() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_msg =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
 
         let expected_packet_identifier = recv.recv().unwrap();
@@ -123,12 +125,12 @@ fn publish_qos1() {
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
         write_packet(&mut stream, |buf| {
-            PubAck::new_v3(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
+            PubAck::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -153,10 +155,21 @@ fn publish_qos1() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_qos1,
+    test_publish_qos1,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(5000)]
-fn publish_qos2() {
+fn test_publish_qos2<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -169,23 +182,15 @@ fn publish_qos2() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_pub =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
@@ -199,19 +204,19 @@ fn publish_qos2() {
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
         write_packet(&mut stream, |buf| {
-            PubRec::new_v3(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
+            PubRec::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(pub_rel, PubRel::new_v3(expected_packet_identifier));
+        assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
         write_packet(&mut stream, |buf| {
-            PubComp::new_v3(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
+            PubComp::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -236,10 +241,21 @@ fn publish_qos2() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_qos2,
+    test_publish_qos2,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(15000)]
-fn publish_resend_qos1() {
+fn test_publish_resend_qos1<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
 
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -253,23 +269,15 @@ fn publish_resend_qos1() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_pub =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
@@ -288,9 +296,9 @@ fn publish_resend_qos1() {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
-                    assert_eq!(ping_req, PingReq::default());
+                    assert_eq!(ping_req, PingReq);
 
-                    write_packet(&mut stream, |buf| PingResp::default().write_to_buf(buf));
+                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -299,8 +307,7 @@ fn publish_resend_qos1() {
             }
         };
         let recv_pub2 =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
             Publish::new(
@@ -313,12 +320,12 @@ fn publish_resend_qos1() {
         );
 
         write_packet(&mut stream, |buf| {
-            PubAck::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            PubAck::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -343,10 +350,21 @@ fn publish_resend_qos1() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_resend_qos1,
+    test_publish_resend_qos1,
+    15000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(15000)]
-fn publish_resend_pub_qos2() {
+fn test_publish_resend_qos2<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -359,23 +377,15 @@ fn publish_resend_pub_qos2() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_pub =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
@@ -394,10 +404,10 @@ fn publish_resend_pub_qos2() {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
-                    assert_eq!(connect, PingReq::default());
+                    assert_eq!(connect, PingReq);
 
                     write_packet(&mut stream, |buf| {
-                        PingResp::default().write_to_buf(buf);
+                        PingResp.write_to_buf(buf);
                     });
                 }
                 ControlPacketType::Publish { .. } => {
@@ -407,8 +417,7 @@ fn publish_resend_pub_qos2() {
             }
         };
         let recv_pub2 =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_pub2,
             Publish::new(
@@ -421,19 +430,19 @@ fn publish_resend_pub_qos2() {
         );
 
         write_packet(&mut stream, |buf| {
-            PubRec::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            PubRec::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(pub_rel, PubRel::new_v3(expected_packet_identifier));
+        assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
         write_packet(&mut stream, |buf| {
-            PubComp::new_v3(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            PubComp::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -458,10 +467,21 @@ fn publish_resend_pub_qos2() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_resend_qos2,
+    test_publish_resend_qos2,
+    15000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(15000)]
-fn publish_resend_pubrel_qos2() {
+fn test_publish_resend_pubrel_qos2<V>(connack_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -474,23 +494,15 @@ fn publish_resend_pubrel_qos2() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
         let recv_msg =
-            Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
-                .unwrap();
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().unwrap();
         assert_eq!(
@@ -505,7 +517,7 @@ fn publish_resend_pubrel_qos2() {
         );
 
         write_packet(&mut stream, |buf| {
-            PubRec::new_v3(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
+            PubRec::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
         let (header, mut data) = util::read_packet(&mut stream);
@@ -516,7 +528,7 @@ fn publish_resend_pubrel_qos2() {
         );
         assert_eq!(
             pub_rel,
-            PubRel::new_v3(recv_msg.packet_identifier().unwrap())
+            PubRel::<V>::new_ok(recv_msg.packet_identifier().unwrap())
         );
 
         let (header, mut data) = loop {
@@ -525,7 +537,7 @@ fn publish_resend_pubrel_qos2() {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
-                    assert_eq!(connect, PingReq::default());
+                    assert_eq!(connect, PingReq);
 
                     write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
                 }
@@ -536,14 +548,14 @@ fn publish_resend_pubrel_qos2() {
             }
         };
         let pub_rel2 = PubRel::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(pub_rel2, PubRel::new_v3(pub_rel2.packet_identifier()));
+        assert_eq!(pub_rel2, PubRel::<V>::new_ok(pub_rel2.packet_identifier()));
         write_packet(&mut stream, |buf| {
-            PubComp::new_v3(expected_packet_identifier).write_to_buf(buf)
+            PubComp::<V>::new_ok(expected_packet_identifier).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
+    let client: SyncClient<V> = SyncClient::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -568,3 +580,10 @@ fn publish_resend_pubrel_qos2() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    publish_resend_pubrel_qos2,
+    test_publish_resend_pubrel_qos2,
+    15000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);

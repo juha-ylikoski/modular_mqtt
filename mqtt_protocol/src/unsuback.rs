@@ -152,13 +152,15 @@ impl<V: MqttVersion> UnsubAck<V> {
     pub fn new(packet_identifier: u16, properties: V::UnSubAckProperties) -> Self {
         Self {
             packet_identifier,
-            properties: properties,
+            properties,
         }
     }
 }
 
 #[cfg(test)]
 mod v3 {
+    use crate::MqttV3_1_1;
+
     use super::*;
 
     use bytes::BytesMut;
@@ -187,6 +189,8 @@ mod v3 {
 
 #[cfg(test)]
 mod v5 {
+    use crate::MqttV5_0_0;
+
     use super::*;
 
     use bytes::BytesMut;

@@ -493,6 +493,13 @@ impl<V: MqttVersion> Packet for ConnAck<V> {
 }
 
 impl<V: MqttVersion> ConnAck<V> {
+    pub fn new(session_present: bool, connect_rc: V::ConnackRc) -> Self {
+        Self {
+            session_present,
+            connect_rc,
+            properties: V::ConnackProperties::default(),
+        }
+    }
     pub fn session_present(&self) -> bool {
         self.session_present
     }
@@ -502,28 +509,12 @@ impl<V: MqttVersion> ConnAck<V> {
 }
 
 impl ConnAck<MqttV3_1_1> {
-    pub fn new_v3(session_present: bool, connect_rc: ConnectRcV3) -> Self {
-        Self {
-            session_present,
-            connect_rc,
-            properties: (),
-        }
-    }
-
     pub fn connect_rc(&self) -> ConnectRcV3 {
         self.connect_rc
     }
 }
 
 impl ConnAck<MqttV5_0_0> {
-    pub fn new_v5(session_present: bool, connect_rc: ConnectRcV5) -> Self {
-        Self {
-            session_present,
-            connect_rc,
-            properties: ConnackPropertiesV5::default(),
-        }
-    }
-
     pub fn connect_rc(&self) -> ConnectRcV5 {
         self.connect_rc
     }
@@ -664,7 +655,7 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v3(false, ConnectRcV3::Accepted);
+        let msg = ConnAck::<MqttV3_1_1>::new(false, ConnectRcV3::Accepted);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 0, 0]);
     }
@@ -672,14 +663,14 @@ mod test_v3 {
     #[test]
     fn serialize_session_present() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v3(true, ConnectRcV3::Accepted);
+        let msg = ConnAck::<MqttV3_1_1>::new(true, ConnectRcV3::Accepted);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 1, 0]);
     }
     #[test]
     fn serialize_rc() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v3(false, ConnectRcV3::Refused);
+        let msg = ConnAck::<MqttV3_1_1>::new(false, ConnectRcV3::Refused);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 2, 0, 5]);
     }
@@ -687,7 +678,7 @@ mod test_v3 {
     #[test]
     fn deserialize() {
         let msg = [32, 2, 0, 0];
-        let expected = ConnAck::new_v3(false, ConnectRcV3::Accepted);
+        let expected = ConnAck::new(false, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -701,7 +692,7 @@ mod test_v3 {
     #[test]
     fn deserialize_session_present() {
         let msg = [32, 2, 1, 0];
-        let expected = ConnAck::new_v3(true, ConnectRcV3::Accepted);
+        let expected = ConnAck::new(true, ConnectRcV3::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -714,7 +705,7 @@ mod test_v3 {
     #[test]
     fn deserialize_rc() {
         let msg = [32, 2, 0, 4];
-        let expected = ConnAck::new_v3(false, ConnectRcV3::BadUsernamePassword);
+        let expected = ConnAck::new(false, ConnectRcV3::BadUsernamePassword);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -735,7 +726,7 @@ mod test_v5 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v5(false, ConnectRcV5::Accepted);
+        let msg = ConnAck::<MqttV5_0_0>::new(false, ConnectRcV5::Accepted);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 0, 0, 0]);
     }
@@ -743,14 +734,14 @@ mod test_v5 {
     #[test]
     fn serialize_session_present() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v5(true, ConnectRcV5::Accepted);
+        let msg = ConnAck::<MqttV5_0_0>::new(true, ConnectRcV5::Accepted);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 1, 0, 0]);
     }
     #[test]
     fn serialize_rc() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
+        let msg = ConnAck::<MqttV5_0_0>::new(false, ConnectRcV5::NotAuthorized);
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf, &[32, 3, 0, 135, 0]);
     }
@@ -758,7 +749,7 @@ mod test_v5 {
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let msg = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized)
+        let msg = ConnAck::new(false, ConnectRcV5::NotAuthorized)
             .set_session_expiry_interval(24)
             .set_receive_maximum(42)
             .set_maximum_qos(Qos::AtLeastOnce)
@@ -838,7 +829,7 @@ mod test_v5 {
     #[test]
     fn deserialize() {
         let msg = [32, 3, 0, 0, 0];
-        let expected = ConnAck::new_v5(false, ConnectRcV5::Accepted);
+        let expected = ConnAck::new(false, ConnectRcV5::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -852,7 +843,7 @@ mod test_v5 {
     #[test]
     fn deserialize_session_present() {
         let msg = [32, 3, 1, 0, 0];
-        let expected = ConnAck::new_v5(true, ConnectRcV5::Accepted);
+        let expected = ConnAck::new(true, ConnectRcV5::Accepted);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -865,7 +856,7 @@ mod test_v5 {
     #[test]
     fn deserialize_rc() {
         let msg = [32, 3, 0, 135, 0];
-        let expected = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized);
+        let expected = ConnAck::new(false, ConnectRcV5::NotAuthorized);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -922,7 +913,7 @@ mod test_v5 {
             // authentication data
             22, 0, 6, b's', b'e', b'c', b'r', b'e', b't', //
         ];
-        let expected = ConnAck::new_v5(false, ConnectRcV5::NotAuthorized)
+        let expected = ConnAck::new(false, ConnectRcV5::NotAuthorized)
             .set_session_expiry_interval(24)
             .set_receive_maximum(42)
             .set_maximum_qos(Qos::AtLeastOnce)

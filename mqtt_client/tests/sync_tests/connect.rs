@@ -3,25 +3,29 @@ use crate::util::{self, write_packet};
 use std::{net::TcpListener, time::Duration};
 
 use bytes::Bytes;
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
-use ntest::timeout;
+use mqtt_client::{
+    client::{MqttClient, SyncClient},
+    client_opts::ClientOpts,
+    error::ConnectError,
+};
 use rust_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, Disconnect, MqttLastWill, MqttLastWill3_1_1, MqttTopic,
-    MqttV3_1_1, Packet, Publish, Qos, VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, Disconnect, DisconnectReasonCode, MqttLastWill,
+    MqttTopic, MqttVersion, Packet, Publish, Qos, VersionedConnect,
 };
 
-#[test]
-#[timeout(5000)]
-fn connect_no_server() {
+fn test_connect_no_server<V>()
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+{
     util::init_logging();
-    match SyncClient::<MqttV3_1_1>::connect_tcp(
-        ClientOpts {
-            client_id: "client-id".to_string(),
-            keep_alive: 1,
-            ..Default::default()
-        },
-        "127.0.0.1:1234".to_string(),
-    ) {
+    let opts: ClientOpts<V> = ClientOpts {
+        client_id: "client-id".to_string(),
+        keep_alive: 1,
+        ..Default::default()
+    };
+    match SyncClient::connect_tcp(opts, "127.0.0.1:1234".to_string()) {
         Ok(_) => panic!("Should not happen"),
         Err(e) => match e {
             mqtt_client::error::ConnectError::IoError(_) => (),
@@ -29,10 +33,15 @@ fn connect_no_server() {
         },
     }
 }
+test!(connect_no_server, test_connect_no_server, 5000, (), ());
 
-#[test]
-#[timeout(5000)]
-fn connect() {
+fn test_connect<V>(connact_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -44,22 +53,15 @@ fn connect() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
+    let client = SyncClient::<V>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -72,10 +74,21 @@ fn connect() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    connect,
+    test_connect,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(5000)]
-fn connect_username_password() {
+fn test_connect_username_password<V>(connact_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -87,22 +100,23 @@ fn connect_username_password() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
+            Connect::new(
                 true,
                 1,
                 "".to_string(),
                 None,
                 Some("username".to_string()),
                 Some(Bytes::from_static(b"password"))
-            ))
+            )
+            .into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<MqttV3_1_1>::connect_tcp(
+    let client = SyncClient::<V>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -118,10 +132,21 @@ fn connect_username_password() {
 
     handle.join().unwrap();
 }
+test!(
+    connect_username_password,
+    test_connect_username_password,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(5000)]
-fn connect_last_will() {
+fn test_connect_last_will<V>(connact_rc: V::ConnackRc)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -133,11 +158,11 @@ fn connect_last_will() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
+            Connect::new(
                 true,
                 1,
                 "".to_string(),
-                Some(MqttLastWill3_1_1::new(
+                Some(V::LastWill::new(
                     MqttTopic::try_from("last-will-topic").unwrap(),
                     Bytes::from_static(b"payload"),
                     Qos::AtMostOnce,
@@ -145,10 +170,11 @@ fn connect_last_will() {
                 )),
                 None,
                 None,
-            ))
+            )
+            .into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf)
+            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
         });
         rx_close.recv().unwrap();
     });
@@ -157,15 +183,12 @@ fn connect_last_will() {
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
-            will: Some(
-                MqttLastWill3_1_1::new(
-                    MqttTopic::try_from("last-will-topic").unwrap(),
-                    Bytes::from_static(b"payload"),
-                    Qos::AtMostOnce,
-                    false,
-                )
-                .into(),
-            ),
+            will: Some(V::LastWill::new(
+                MqttTopic::try_from("last-will-topic").unwrap(),
+                Bytes::from_static(b"payload"),
+                Qos::AtMostOnce,
+                false,
+            )),
             ..Default::default()
         },
         addr.to_string(),
@@ -175,10 +198,21 @@ fn connect_last_will() {
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
+test!(
+    connect_last_will,
+    test_connect_last_will,
+    5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
 
-#[test]
-#[timeout(5000)]
-fn connect_refused() {
+fn test_connect_refused<V>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -189,14 +223,14 @@ fn connect_refused() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(true, 1, "".to_string(), None, None, None,))
+            Connect::new(true, 1, "".to_string(), None, None, None,).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Refused).write_to_buf(buf)
+            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
         });
     });
 
-    match SyncClient::<MqttV3_1_1>::connect_tcp(
+    match SyncClient::<V>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
             keep_alive: 1,
@@ -205,20 +239,35 @@ fn connect_refused() {
         addr.to_string(),
     ) {
         Ok(_) => panic!("Should not get here"),
-        Err(e) => match e {
-            mqtt_client::error::ConnectError::ConnectFailedV3(connect_rc) => {
-                assert_eq!(connect_rc, ConnectRcV3::Refused)
-            }
-            _ => panic!("Should not get here"),
-        },
+        Err(e) => tester(e),
     }
     handle.join().unwrap();
 }
+test!(
+    connect_refused,
+    test_connect_refused,
+    5000,
+    (ConnectRcV3::Refused, |e| match e {
+        mqtt_client::error::ConnectError::ConnectFailedV3(connect_rc) => {
+            assert_eq!(connect_rc, ConnectRcV3::Refused)
+        }
+        _ => panic!("Should not get here"),
+    }),
+    (ConnectRcV5::NotAuthorized, |e| match e {
+        mqtt_client::error::ConnectError::ConnectFailedV5(connect_rc) => {
+            assert_eq!(connect_rc, ConnectRcV5::NotAuthorized)
+        }
+        _ => unreachable!(),
+    })
+);
 
-#[test]
-#[timeout(5000)]
-#[should_panic]
-fn disconnect() {
+fn test_disconnect<V>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
+where
+    V: MqttVersion,
+    SyncClient<V>: MqttClient<V>,
+    ClientOpts<V>: Default,
+    VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
+{
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -229,23 +278,16 @@ fn disconnect() {
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            VersionedConnect::V3(Connect::new_v3(
-                true,
-                1,
-                "client-id".to_string(),
-                None,
-                None,
-                None
-            ))
+            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
-            ConnAck::new_v3(false, rust_mqtt_protocol::ConnectRcV3::Accepted).write_to_buf(buf);
-            Disconnect::new_v3().write_to_buf(buf);
+            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf);
+            disconnect.write_to_buf(buf);
         });
     });
 
-    let client: SyncClient<MqttV3_1_1> = SyncClient::connect_tcp(
-        ClientOpts {
+    let client = SyncClient::connect_tcp(
+        ClientOpts::<V> {
             client_id: "client-id".to_string(),
             keep_alive: 1,
             ..Default::default()
@@ -264,4 +306,26 @@ fn disconnect() {
             false,
         ))
         .unwrap();
+}
+
+mod disconnect {
+    use super::*;
+    #[test]
+    #[ntest::timeout(5000)]
+    #[should_panic]
+    fn v3() {
+        test_disconnect::<rust_mqtt_protocol::MqttV3_1_1>(
+            ConnectRcV3::Accepted,
+            Disconnect::new_v3(),
+        )
+    }
+    #[test]
+    #[ntest::timeout(5000)]
+    #[should_panic]
+    fn v5() {
+        test_disconnect::<rust_mqtt_protocol::MqttV5_0_0>(
+            ConnectRcV5::Accepted,
+            Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None),
+        )
+    }
 }

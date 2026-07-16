@@ -3,20 +3,21 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Packet, Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV5_0_0, MqttVersion, Packet,
+    Property, PropertyIdentifier, UserProperty,
 };
 
 pub trait ReasonCode:
-    TryFrom<u8, Error = Error> + std::fmt::Debug + Clone + Copy + PartialEq + Send + Sync
+    TryFrom<u8, Error = Error> + std::fmt::Debug + Clone + Copy + PartialEq + Send + Sync + Default
 {
     fn as_u8(&self) -> u8;
     fn can_be_omitted() -> bool;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PubAckReasonCode {
     /// The message is accepted. Publication of the QoS 1 or 2 message proceeds.
+    #[default]
     Success = 0,
     /// The message is accepted but there are no subscribers. This is sent only
     /// by the Server. If the Server knows that there are no matching subscribers,
@@ -42,9 +43,10 @@ pub enum PubAckReasonCode {
 
 pub type PubRecReasonCode = PubAckReasonCode;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PubRelReasonCode {
     /// Message released.
+    #[default]
     Success = 0,
     /// The Packet Identifier is not known.
     /// This is not an error during recovery, but at other times indicates
@@ -101,8 +103,8 @@ impl ReasonCode for PubRelReasonCode {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct PubAckData<R> {
+#[derive(Debug, PartialEq, Default)]
+pub struct PubAckData<R: ReasonCode> {
     reason_code: R,
     /// UTF-8 Encoded String representing the reason associated with this response.
     /// This Reason String is a human readable string designed for diagnostics
@@ -233,15 +235,15 @@ where
     }
 }
 
-impl<R: ReasonCode> PubAckType<MqttV3_1_1, R>
+impl<R: ReasonCode, V: MqttVersion> PubAckType<V, R>
 where
     crate::Error: From<<R as TryFrom<u8>>::Error>,
 {
-    fn new_v3(packet_type: ControlPacketType, packet_identifier: u16) -> Self {
+    fn new_ok(packet_type: ControlPacketType, packet_identifier: u16) -> Self {
         PubAckType {
             packet_type,
             packet_identifier,
-            properties: (),
+            properties: V::AckTypeProperties::default(),
         }
     }
 }
@@ -278,6 +280,12 @@ macro_rules! create_pub_ack_type {
         pub struct $name<V: MqttVersion>(PubAckType<V, $reason_code>);
 
         impl<V: MqttVersion> $name<V> {
+            pub fn new_ok(packet_identifier: u16) -> Self {
+                Self(PubAckType::new_ok(
+                    ControlPacketType::$control_packet_type,
+                    packet_identifier,
+                ))
+            }
             pub fn packet_identifier(&self) -> u16 {
                 self.0.packet_identifier
             }
@@ -293,15 +301,6 @@ macro_rules! create_pub_ack_type {
             }
             fn write_to_buf(&self, buf: &mut impl BufMut) {
                 self.0.write_to_buf(buf)
-            }
-        }
-
-        impl $name<MqttV3_1_1> {
-            pub fn new_v3(packet_identifier: u16) -> Self {
-                Self(PubAckType::new_v3(
-                    ControlPacketType::$control_packet_type,
-                    packet_identifier,
-                ))
             }
         }
 
@@ -369,19 +368,21 @@ macro_rules! make_tests {
             mod v3 {
                 use super::*;
 
+                use crate::MqttV3_1_1;
+
                 use bytes::BytesMut;
 
                 #[test]
                 fn serialize() {
                     let mut buf = Vec::new();
-                    let msg = $name::new_v3(42);
+                    let msg = $name::<MqttV3_1_1>::new_ok(42);
                     msg.write_to_buf(&mut buf);
                     assert_eq!(&buf, &[$test_packet_type, 2, 0, 42]);
                 }
                 #[test]
                 fn deserialize() {
                     let msg = [$test_packet_type, 2, 0, 42];
-                    let expected = $name::new_v3(42);
+                    let expected = $name::<MqttV3_1_1>::new_ok(42);
                     let mut reader = BytesMut::from(&msg[..]);
                     let (header, mut body) =
                         FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)

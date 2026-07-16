@@ -15,7 +15,7 @@ use std::{
 use tracing::instrument;
 
 use crate::{
-    client_opts::{ClientOpts, MqttLastWill, OnDisconnectBehavior},
+    client_opts::{ClientOpts, OnDisconnectBehavior},
     error::{BackendError, ClientError, ConnectError},
     sync_connection::{SyncReader, SyncWriter},
     util::{InflightMessage, InflightMessageState, IntoTopicSubscription},
@@ -85,7 +85,6 @@ pub trait MqttClient<V: MqttVersion>: Sized {
     fn subscribe_packet(packet_identifier: u16, subs: Vec<V::TopicSubscription>) -> Subscribe<V>;
     fn unsubscribe_packet(packet_identifier: u16, topics: Vec<MqttTopic>) -> Unsubscribe<V>;
     fn disconnect_packet() -> Disconnect<V>;
-    fn connect_packet(opts: &ClientOpts<V>) -> Connect<V>;
 }
 
 impl<V> SyncClient<V>
@@ -173,7 +172,14 @@ where
         buf: &mut BytesMut,
         writer: &Mutex<SyncWriter>,
     ) -> Result<(), std::io::Error> {
-        let msg = Self::connect_packet(opts);
+        let msg = Connect::<V>::new(
+            opts.clean_session,
+            opts.keep_alive,
+            opts.client_id.clone(),
+            opts.will.clone(),
+            opts.username.clone(),
+            opts.password.clone(),
+        );
         tracing::trace!("Sending Connect: {msg:?}");
         let mut writer_l = writer.lock().unwrap();
         msg.write_to_buf(buf);
@@ -239,7 +245,7 @@ impl MqttClient<MqttV3_1_1> for SyncClient<MqttV3_1_1> {
         packet_identifier: u16,
         subs: Vec<TopicSubscriptionV3>,
     ) -> Subscribe<MqttV3_1_1> {
-        Subscribe::new_v3(packet_identifier, subs)
+        Subscribe::new(packet_identifier, subs)
     }
 
     fn unsubscribe_packet(
@@ -250,19 +256,6 @@ impl MqttClient<MqttV3_1_1> for SyncClient<MqttV3_1_1> {
     }
     fn disconnect_packet() -> Disconnect<MqttV3_1_1> {
         Disconnect::new_v3()
-    }
-    fn connect_packet(opts: &ClientOpts<MqttV3_1_1>) -> Connect<MqttV3_1_1> {
-        Connect::new_v3(
-            opts.clean_session,
-            opts.keep_alive,
-            opts.client_id.clone(),
-            opts.will.clone().map(|will| match will {
-                MqttLastWill::V3 { will, .. } => will,
-                MqttLastWill::V5 { .. } => unreachable!(),
-            }),
-            opts.username.clone(),
-            opts.password.clone(),
-        )
     }
 }
 
@@ -296,7 +289,7 @@ impl MqttClient<MqttV5_0_0> for SyncClient<MqttV5_0_0> {
         packet_identifier: u16,
         subs: Vec<TopicSubscriptionV5>,
     ) -> Subscribe<MqttV5_0_0> {
-        Subscribe::new_v5(packet_identifier, subs, None, Vec::new())
+        Subscribe::new_with_options(packet_identifier, subs, None, Vec::new())
     }
     fn unsubscribe_packet(
         packet_identifier: u16,
@@ -311,19 +304,6 @@ impl MqttClient<MqttV5_0_0> for SyncClient<MqttV5_0_0> {
             None,
             Vec::new(),
             None,
-        )
-    }
-    fn connect_packet(opts: &ClientOpts<MqttV5_0_0>) -> Connect<MqttV5_0_0> {
-        Connect::new_v5(
-            opts.clean_session,
-            opts.keep_alive,
-            opts.client_id.clone(),
-            opts.will.clone().map(|will| match will {
-                MqttLastWill::V3 { .. } => unreachable!(),
-                MqttLastWill::V5 { will, .. } => will,
-            }),
-            opts.username.clone(),
-            opts.password.clone(),
         )
     }
 }
@@ -351,7 +331,7 @@ where
                 ReadFinished::Success(fixed_header, buf) => self.handle_msg(fixed_header, buf)?,
                 ReadFinished::TimedOut => {
                     tracing::debug!("Sending ping request to broker");
-                    PingReq::default().write_to_buf(&mut self.write_buf);
+                    PingReq.write_to_buf(&mut self.write_buf);
                     self.write_buf_to_stream()?;
                 }
             }
@@ -452,12 +432,12 @@ where
                     (Qos::AtLeastOnce, Some(packet_identifier)) => {
                         tracing::trace!("Respond with PubAck (mid={packet_identifier})");
                         self.receive_inflight.push(packet_identifier);
-                        PubAck::new_v3(packet_identifier).write_to_buf(&mut self.write_buf);
+                        PubAck::<V>::new_ok(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::ExactlyOnce, Some(packet_identifier)) => {
                         tracing::trace!("Respond with PubRec (mid={packet_identifier})");
                         self.receive_inflight.push(packet_identifier);
-                        PubRec::new_v3(packet_identifier).write_to_buf(&mut self.write_buf);
+                        PubRec::<V>::new_ok(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::AtLeastOnce, None) | (Qos::ExactlyOnce, None) => unreachable!(),
                 }
@@ -494,7 +474,7 @@ where
                         *inflight.state.read().unwrap(),
                         InflightMessageState::PubRec(_)
                     ) {
-                        PubRel::new_v3(pubrec.packet_identifier())
+                        PubRel::<V>::new_ok(pubrec.packet_identifier())
                             .write_to_buf(&mut self.write_buf);
                         *inflight.state.write().unwrap() =
                             InflightMessageState::PubComp(SystemTime::now());
@@ -545,7 +525,8 @@ where
                     .iter()
                     .position(|item| *item == pub_rel.packet_identifier())
                 {
-                    PubComp::new_v3(pub_rel.packet_identifier()).write_to_buf(&mut self.write_buf);
+                    PubComp::<V>::new_ok(pub_rel.packet_identifier())
+                        .write_to_buf(&mut self.write_buf);
                     self.receive_inflight.remove(index);
                 } else {
                     tracing::warn!(
@@ -606,7 +587,7 @@ where
                 InflightMessageState::PubComp(sent_time) => {
                     if time.duration_since(sent_time).unwrap() > RESENT_INTERVAL {
                         tracing::warn!("Resending PubRel with identifier {}", packet_identifier);
-                        PubRel::new_v3(*packet_identifier).write_to_buf(&mut self.write_buf);
+                        PubRel::<V>::new_ok(*packet_identifier).write_to_buf(&mut self.write_buf);
                         *msg.state.write().unwrap() = InflightMessageState::PubComp(time);
                     }
                 }

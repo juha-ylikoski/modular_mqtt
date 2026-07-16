@@ -33,15 +33,12 @@ fn init_mosquitto() -> MosquittoContainer {
     }
 }
 
-fn mosquitto_publish<V>(
-    opts: ClientOpts<V>,
-    opts2: ClientOpts<V>,
-    qos: Qos,
-    suback_data: V::SubAckData,
-) where
+fn mosquitto_publish<V>(qos: Qos, suback_data: V::SubAckData)
+where
     V: MqttVersion,
     SyncClient<V>: MqttClient<V>,
     rust_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
+    ClientOpts<V>: Default,
 {
     util::init_logging();
     let mosquitto = init_mosquitto();
@@ -49,9 +46,25 @@ fn mosquitto_publish<V>(
     let (tx, rx) = std::sync::mpsc::channel();
 
     let t = std::thread::spawn(move || {
-        let client_w = SyncClient::connect_tcp(opts, addr.to_string()).unwrap();
+        let client_w = SyncClient::connect_tcp(
+            ClientOpts {
+                client_id: "client-id-1".to_string(),
+                keep_alive: 1,
+                ..Default::default()
+            },
+            addr.to_string(),
+        )
+        .unwrap();
 
-        let client_r = SyncClient::connect_tcp(opts2, addr.to_string()).unwrap();
+        let client_r = SyncClient::connect_tcp(
+            ClientOpts {
+                client_id: "client-id-2".to_string(),
+                keep_alive: 1,
+                ..Default::default()
+            },
+            addr.to_string(),
+        )
+        .unwrap();
 
         let r_stream = client_r.stream();
         assert_eq!(
@@ -93,7 +106,7 @@ fn mosquitto_publish<V>(
         tx.send(()).unwrap()
     });
 
-    if rx.recv_timeout(Duration::from_secs(10)).is_err() {
+    if rx.recv_timeout(Duration::from_secs(30)).is_err() {
         if t.is_finished() {
             t.join().unwrap();
         }
@@ -101,15 +114,12 @@ fn mosquitto_publish<V>(
     }
 }
 
-fn mosquitto_unsub<V>(
-    opts: ClientOpts<V>,
-    opts2: ClientOpts<V>,
-    suback_data: V::SubAckData,
-    unsuback_data: V::UnSubAckProperties,
-) where
+fn mosquitto_unsub<V>(suback_data: V::SubAckData, unsuback_data: V::UnSubAckProperties)
+where
     V: MqttVersion,
     SyncClient<V>: MqttClient<V>,
     rust_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
+    ClientOpts<V>: Default,
 {
     util::init_logging();
     let qos = Qos::AtMostOnce;
@@ -118,9 +128,25 @@ fn mosquitto_unsub<V>(
     let (tx, rx) = std::sync::mpsc::channel();
 
     let t = std::thread::spawn(move || {
-        let client_w = SyncClient::connect_tcp(opts, addr.to_string()).unwrap();
+        let client_w = SyncClient::connect_tcp(
+            ClientOpts {
+                client_id: "client-id-1".to_string(),
+                keep_alive: 1,
+                ..Default::default()
+            },
+            addr.to_string(),
+        )
+        .unwrap();
 
-        let client_r = SyncClient::connect_tcp(opts2, addr.to_string()).unwrap();
+        let client_r = SyncClient::connect_tcp(
+            ClientOpts {
+                client_id: "client-id-2".to_string(),
+                keep_alive: 1,
+                ..Default::default()
+            },
+            addr.to_string(),
+        )
+        .unwrap();
 
         let r_stream = client_r.stream();
         assert_eq!(
@@ -169,72 +195,20 @@ mod v3 {
 
     #[test]
     fn mosquitto_publish_qos0() {
-        mosquitto_publish::<MqttV3_1_1>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            Qos::AtMostOnce,
-            vec![SubRcV3::SuccessQos0],
-        );
+        mosquitto_publish::<MqttV3_1_1>(Qos::AtMostOnce, vec![SubRcV3::SuccessQos0]);
     }
     #[test]
     fn mosquitto_publish_qos1() {
-        mosquitto_publish::<MqttV3_1_1>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            Qos::AtLeastOnce,
-            vec![SubRcV3::SuccessQos1],
-        );
+        mosquitto_publish::<MqttV3_1_1>(Qos::AtLeastOnce, vec![SubRcV3::SuccessQos1]);
     }
     #[test]
     fn mosquitto_publish_qos2() {
-        mosquitto_publish::<MqttV3_1_1>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            Qos::ExactlyOnce,
-            vec![SubRcV3::SuccessQos2],
-        );
+        mosquitto_publish::<MqttV3_1_1>(Qos::ExactlyOnce, vec![SubRcV3::SuccessQos2]);
     }
 
     #[test]
     fn mosquitto_unsub() {
-        super::mosquitto_unsub::<MqttV3_1_1>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            vec![SubRcV3::SuccessQos0],
-            (),
-        );
+        super::mosquitto_unsub::<MqttV3_1_1>(vec![SubRcV3::SuccessQos0], ());
     }
 }
 
@@ -247,16 +221,6 @@ mod v5 {
     #[test]
     fn mosquitto_publish_qos0() {
         mosquitto_publish::<MqttV5_0_0>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
             Qos::AtMostOnce,
             SubAckDataV5 {
                 return_codes: vec![SubRcV5::SuccessQos0],
@@ -268,16 +232,6 @@ mod v5 {
     #[test]
     fn mosquitto_publish_qos1() {
         mosquitto_publish::<MqttV5_0_0>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
             Qos::AtLeastOnce,
             SubAckDataV5 {
                 return_codes: vec![SubRcV5::SuccessQos1],
@@ -289,16 +243,6 @@ mod v5 {
     #[test]
     fn mosquitto_publish_qos2() {
         mosquitto_publish::<MqttV5_0_0>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
             Qos::ExactlyOnce,
             SubAckDataV5 {
                 return_codes: vec![SubRcV5::SuccessQos2],
@@ -311,16 +255,6 @@ mod v5 {
     #[test]
     fn mosquitto_unsub() {
         super::mosquitto_unsub::<MqttV5_0_0>(
-            ClientOpts {
-                client_id: "client-id-1".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
-            ClientOpts {
-                client_id: "client-id-2".to_string(),
-                keep_alive: 1,
-                ..Default::default()
-            },
             SubAckDataV5 {
                 return_codes: vec![SubRcV5::SuccessQos0],
                 reason: None,

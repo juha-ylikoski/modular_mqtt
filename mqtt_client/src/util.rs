@@ -2,7 +2,7 @@ use std::{sync::RwLock, time::SystemTime};
 
 use rust_mqtt_protocol::{
     MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion, Publish, Qos, QosPacketIdentifier,
-    RetainHandling, TopicSubscriptionV3, TopicSubscriptionV5,
+    RetainHandling, TopicSubscription, TopicSubscriptionV3, TopicSubscriptionV5,
 };
 
 #[derive(Debug, Clone)]

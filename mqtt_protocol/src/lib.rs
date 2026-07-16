@@ -17,7 +17,9 @@ pub use fixed_header::{ControlPacketType, FixedHeader};
 pub use ping::{PingReq, PingResp};
 pub use publish::Publish;
 pub use suback::{SubAck, SubAckDataV5, SubRcV3, SubRcV5};
-pub use subscribe::{RetainHandling, Subscribe, TopicSubscriptionV3, TopicSubscriptionV5};
+pub use subscribe::{
+    RetainHandling, Subscribe, TopicSubscription, TopicSubscriptionV3, TopicSubscriptionV5,
+};
 pub use unsuback::{UnSubAckDataV5, UnsubAck, UnsubAckReasonCode};
 pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, Qos, QosPacketIdentifier};

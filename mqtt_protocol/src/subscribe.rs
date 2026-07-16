@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Packet, Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, MalformedPacket, MqttTopic, MqttV5_0_0, MqttVersion, Packet,
+    Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -13,6 +13,7 @@ use super::{
 };
 
 pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync {
+    fn new(topic: MqttTopic, qos: Qos) -> Self;
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error>;
     fn topic(&self) -> &str;
     fn options(&self) -> u8;
@@ -24,12 +25,10 @@ pub struct TopicSubscriptionV3 {
     qos: Qos,
 }
 
-impl TopicSubscriptionV3 {
-    pub fn new(topic: MqttTopic, qos: Qos) -> Self {
+impl TopicSubscription for TopicSubscriptionV3 {
+    fn new(topic: MqttTopic, qos: Qos) -> Self {
         Self { topic, qos }
     }
-}
-impl TopicSubscription for TopicSubscriptionV3 {
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error> {
         let qos = Qos::try_from(options)?;
         let topic = MqttTopic::try_from(topic)?;
@@ -73,6 +72,15 @@ impl TopicSubscriptionV5 {
 }
 
 impl TopicSubscription for TopicSubscriptionV5 {
+    fn new(topic: MqttTopic, qos: Qos) -> Self {
+        Self {
+            qos,
+            no_local: true,
+            keep_retain: true,
+            retain_handling: RetainHandling::SendAtSubscribe,
+            topic,
+        }
+    }
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error> {
         let topic = MqttTopic::try_from(topic)?;
         let qos = Qos::try_from(options & 0b11)?;
@@ -266,6 +274,21 @@ impl<V: MqttVersion> Packet for Subscribe<V> {
 }
 
 impl<V: MqttVersion> Subscribe<V> {
+    /// Create new subscribe package
+    ///
+    /// # Panics
+    /// - If `subscriptions.len() == 0`
+    pub fn new(packet_identifier: u16, subscriptions: Vec<V::TopicSubscription>) -> Self {
+        // Protocol violation if 0
+        if subscriptions.is_empty() {
+            panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
+        }
+        Self {
+            packet_identifier,
+            subscriptions,
+            options: V::SubscribeData::default(),
+        }
+    }
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
@@ -283,30 +306,12 @@ impl<V: MqttVersion> Subscribe<V> {
     }
 }
 
-impl Subscribe<MqttV3_1_1> {
-    /// Create new subscribe package
-    ///
-    /// # Panics
-    /// - If `subscriptions.len() == 0`
-    pub fn new_v3(packet_identifier: u16, subscriptions: Vec<TopicSubscriptionV3>) -> Self {
-        // Protocol violation if 0
-        if subscriptions.is_empty() {
-            panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
-        }
-        Self {
-            packet_identifier,
-            subscriptions,
-            options: (),
-        }
-    }
-}
-
 impl Subscribe<MqttV5_0_0> {
     /// Create new subscribe package
     ///
     /// # Panics
     /// - If `subscriptions.len() == 0`
-    pub fn new_v5(
+    pub fn new_with_options(
         packet_identifier: u16,
         subscriptions: Vec<TopicSubscriptionV5>,
         subscription_identifier: Option<u64>,
@@ -340,12 +345,14 @@ mod test_v3 {
 
     use bytes::BytesMut;
 
+    use crate::MqttV3_1_1;
+
     use super::*;
 
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = Subscribe::new_v3(
+        let msg = Subscribe::<MqttV3_1_1>::new(
             42,
             vec![
                 TopicSubscriptionV3::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
@@ -407,7 +414,7 @@ mod test_v3 {
             b'2',
             0,
         ];
-        let expected = Subscribe::new_v3(
+        let expected = Subscribe::<MqttV3_1_1>::new(
             42,
             vec![
                 TopicSubscriptionV3::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
@@ -432,7 +439,7 @@ mod test_v5 {
     #[test]
     fn serialize_v3_like() {
         let mut buf = Vec::new();
-        let msg = Subscribe::new_v5(
+        let msg = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
@@ -488,7 +495,7 @@ mod test_v5 {
     #[test]
     fn serialize_properties() {
         let mut buf = Vec::new();
-        let msg = Subscribe::new_v5(
+        let msg = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
@@ -571,7 +578,7 @@ mod test_v5 {
     #[test]
     fn serialize_sub_options() {
         let mut buf = Vec::new();
-        let msg = Subscribe::new_v5(
+        let msg = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
@@ -652,7 +659,7 @@ mod test_v5 {
             b'2',
             0,
         ];
-        let expected = Subscribe::new_v5(
+        let expected = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
@@ -732,7 +739,7 @@ mod test_v5 {
             b'2',
             0,
         ];
-        let expected = Subscribe::new_v5(
+        let expected = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
@@ -791,7 +798,7 @@ mod test_v5 {
             b'2',
             40,
         ];
-        let expected = Subscribe::new_v5(
+        let expected = Subscribe::new_with_options(
             42,
             vec![
                 TopicSubscriptionV5::new(
