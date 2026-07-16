@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
-members = [ 
+members = [
     "mqtt_client",
     "mqtt_protocol"
 ]
+exclude = ["mqtt_protocol/fuzz"]
 

@@ -52,6 +52,9 @@ pub struct UnSubAckDataV5 {
 impl PacketProperties for UnSubAckDataV5 {
     fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         let prop_len = read_variable_len_int(data)? as usize;
+        if prop_len > data.remaining() {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
         let properties = &mut data.split_to(prop_len);
 
         let mut out = Self {
@@ -316,5 +319,19 @@ mod v5 {
             .unwrap()
             .unwrap();
         assert_eq!(UnsubAck::try_read(header, &mut body).unwrap(), expected);
+    }
+
+    /// Regression (found by the fuzzer): the v5 property-length field claims more
+    /// bytes than remain in the buffer. Must return an error, not panic in
+    /// `bytes::split_to`.
+    #[test]
+    fn deserialize_property_len_overflow_is_err() {
+        // property length = 28 (0x1c), but only 2 property bytes follow.
+        let msg = [176, 3, 28, 16, 24];
+        let mut reader = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(UnsubAck::<MqttV5_0_0>::try_read(header, &mut body).is_err());
     }
 }

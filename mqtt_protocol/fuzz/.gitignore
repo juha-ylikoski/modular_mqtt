@@ -1,0 +1,11 @@
+target/
+artifacts/
+coverage/
+Cargo.lock
+
+# Machine-generated, regenerable, grows without bound — keep out of git.
+# Curated starting inputs live in seeds/ instead (committed).
+corpus/
+
+# libFuzzer run logs from parallel (-jobs) runs.
+fuzz-*.log

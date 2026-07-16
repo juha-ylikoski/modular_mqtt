@@ -1,0 +1,63 @@
+# MQTT dictionary for libFuzzer (-dict=mqtt.dict)
+
+# Protocol name (length-prefixed) and protocol levels
+protocol_name="\x00\x04MQTT"
+protocol_level_v3="\x04"
+protocol_level_v5="\x05"
+
+# Fixed header first bytes (packet type << 4 | flags)
+connect="\x10"
+connack="\x20"
+publish_qos0="\x30"
+publish_qos1="\x32"
+publish_qos2="\x34"
+puback="\x40"
+pubrec="\x50"
+pubrel="\x62"
+pubcomp="\x70"
+subscribe="\x82"
+suback="\x90"
+unsubscribe="\xa2"
+unsuback="\xb0"
+pingreq="\xc0"
+pingresp="\xd0"
+disconnect="\xe0"
+auth="\xf0"
+
+# Variable-length integer edge cases
+varint_two_byte="\x80\x01"
+varint_max="\xff\xff\xff\x7f"
+varint_overlong="\xff\xff\xff\xff"
+
+# MQTT v5 property identifiers
+prop_payload_format="\x01"
+prop_message_expiry="\x02"
+prop_content_type="\x03"
+prop_response_topic="\x08"
+prop_correlation_data="\x09"
+prop_subscription_id="\x0b"
+prop_session_expiry="\x11"
+prop_assigned_client_id="\x12"
+prop_server_keep_alive="\x13"
+prop_auth_method="\x15"
+prop_auth_data="\x16"
+prop_request_problem_info="\x17"
+prop_will_delay="\x18"
+prop_request_response_info="\x19"
+prop_response_info="\x1a"
+prop_server_reference="\x1c"
+prop_reason_string="\x1f"
+prop_receive_maximum="\x21"
+prop_topic_alias_maximum="\x22"
+prop_topic_alias="\x23"
+prop_maximum_qos="\x24"
+prop_retain_available="\x25"
+prop_user_property="\x26"
+prop_maximum_packet_size="\x27"
+prop_wildcard_sub_available="\x28"
+prop_sub_id_available="\x29"
+prop_shared_sub_available="\x2a"
+
+# Topic strings (length-prefixed)
+topic="\x00\x03a/b"
+topic_wildcard="\x00\x03a/#"

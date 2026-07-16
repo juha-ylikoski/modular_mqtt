@@ -202,6 +202,9 @@ impl FixedHeader {
         }
 
         buf.advance(1 + variable_int_len);
+        if remaining_length > buf.remaining() {
+            return Err(MalformedPacket::new("Packet too short to parse"));
+        }
         let body = buf.split_to(remaining_length).freeze();
 
         Ok(Some((
