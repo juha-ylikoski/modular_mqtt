@@ -4,7 +4,7 @@ use crate::{
     util::{extract_bytes, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
     ControlPacketType, Error, IntoPayload, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    PayloadFormat, Property, PropertyIdentifier, UserProperty,
+    Packet, PayloadFormat, Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -244,8 +244,8 @@ impl<V: MqttVersion> Publish<V, Qos> {
     }
 }
 
-impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let remaining_length = 2
             + self.topic.len()
             + {
@@ -283,7 +283,7 @@ impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
         buf.put(&self.payload[..]);
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert!(matches!(
             header.control_packet_type,
             ControlPacketType::Publish { .. }
@@ -313,7 +313,9 @@ impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
             properties,
         })
     }
+}
 
+impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
     pub fn qos(&self) -> Qos {
         self.qos.into()
     }

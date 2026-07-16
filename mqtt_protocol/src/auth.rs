@@ -7,7 +7,7 @@ use crate::{
         extract_bytes, extract_str, read_variable_len_int, variable_len_int_size,
         write_variable_len_int,
     },
-    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV5_0_0, Property,
+    ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV5_0_0, Packet, Property,
     PropertyIdentifier, UserProperty,
 };
 
@@ -48,8 +48,8 @@ pub struct Auth<V> {
     user_property: Vec<UserProperty>,
 }
 
-impl Auth<MqttV5_0_0> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl Packet for Auth<MqttV5_0_0> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let properties_len = self.method.property_len()
             + self.auth_data.property_len()
             + self.reason.property_len()
@@ -90,24 +90,7 @@ impl Auth<MqttV5_0_0> {
             .serialize(PropertyIdentifier::UserProperty, buf);
     }
 
-    pub fn new_v5(
-        reason_code: ReasonCode,
-        method: Option<String>,
-        auth_data: Option<Bytes>,
-        reason: Option<String>,
-        user_property: Vec<UserProperty>,
-    ) -> Self {
-        Self {
-            reason_code,
-            protocol_level: PhantomData,
-            method,
-            auth_data: auth_data.unwrap_or_default(),
-            reason,
-            user_property,
-        }
-    }
-
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Auth);
 
         if header.remaining_length == 0 {
@@ -184,6 +167,24 @@ impl Auth<MqttV5_0_0> {
             reason,
             user_property,
         })
+    }
+}
+impl Auth<MqttV5_0_0> {
+    pub fn new_v5(
+        reason_code: ReasonCode,
+        method: Option<String>,
+        auth_data: Option<Bytes>,
+        reason: Option<String>,
+        user_property: Vec<UserProperty>,
+    ) -> Self {
+        Self {
+            reason_code,
+            protocol_level: PhantomData,
+            method,
+            auth_data: auth_data.unwrap_or_default(),
+            reason,
+            user_property,
+        }
     }
 
     pub fn reason_code(&self) -> ReasonCode {

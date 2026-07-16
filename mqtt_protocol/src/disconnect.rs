@@ -4,7 +4,7 @@ use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Property, PropertyIdentifier, UserProperty,
+    Packet, Property, PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -249,17 +249,18 @@ impl PacketProperties for DisconnectData {
 /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
 pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
 
-impl<V: MqttVersion> Disconnect<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for Disconnect<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let header = FixedHeader::new(ControlPacketType::Disconnect, self.0.properties_block_len());
         header.write_to_buf(buf);
         self.0.write_properties(buf);
     }
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Disconnect);
         V::DisconnectData::try_read(data).map(Self)
     }
 }
+
 impl Disconnect<MqttV3_1_1> {
     pub fn new_v3() -> Self {
         Self(())

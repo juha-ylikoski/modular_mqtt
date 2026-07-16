@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::util::{read_variable_len_int, write_variable_len_int};
 use crate::version::PacketProperties;
 use crate::{
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Property, PropertyIdentifier,
-    UserProperty,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Property,
+    PropertyIdentifier, UserProperty,
 };
 
 use crate::{
@@ -66,8 +66,8 @@ pub struct Unsubscribe<V: MqttVersion> {
     topics: Vec<String>,
 }
 
-impl<V: MqttVersion> Unsubscribe<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for Unsubscribe<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let fixed_header = FixedHeader::new(
             ControlPacketType::Unsubscribe,
             2 + self.properties.properties_block_len()
@@ -84,7 +84,7 @@ impl<V: MqttVersion> Unsubscribe<V> {
         }
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Unsubscribe);
         let packet_identifier = data.try_get_u16()?;
 
@@ -101,7 +101,9 @@ impl<V: MqttVersion> Unsubscribe<V> {
             properties,
         })
     }
+}
 
+impl<V: MqttVersion> Unsubscribe<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }

@@ -4,7 +4,7 @@ use crate::fixed_header::ControlPacketType;
 use crate::util::{variable_len_int_size, write_variable_len_int};
 use crate::version::PacketProperties;
 use crate::{
-    Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion, PayloadFormat,
+    Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, PayloadFormat,
     Property, PropertyIdentifier, UserProperty,
 };
 
@@ -536,13 +536,14 @@ impl PacketProperties for ConnectProperties {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum VersionedConnect {
     V3(Connect<MqttV3_1_1>),
     V5(Connect<MqttV5_0_0>),
 }
 
-impl VersionedConnect {
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+impl Packet for VersionedConnect {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Connect);
         let protocol_length = data.try_get_u16()? as usize;
         if data.remaining() < protocol_length {
@@ -560,6 +561,12 @@ impl VersionedConnect {
             4 => Connect::<MqttV3_1_1>::try_read_after_level(header, data).map(Self::V3),
             5 => Connect::<MqttV5_0_0>::try_read_after_level(header, data).map(Self::V5),
             _ => Err(MalformedPacket::UnexpectedMqttVersion(protocol_level).into()),
+        }
+    }
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
+        match self {
+            VersionedConnect::V3(connect) => connect.write_to_buf(buf),
+            VersionedConnect::V5(connect) => connect.write_to_buf(buf),
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     util::{read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
     ControlPacketType, Error, MalformedPacket, MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Property, PropertyIdentifier, UserProperty,
+    Packet, Property, PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -227,8 +227,8 @@ pub struct Subscribe<V: MqttVersion> {
     options: V::SubscribeData,
 }
 
-impl<V: MqttVersion> Subscribe<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for Subscribe<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let fixed_header = FixedHeader::new(
             super::fixed_header::ControlPacketType::Subscribe,
             2 + self.options.properties_block_len() + self.subscriptions.properties_block_len(),
@@ -240,7 +240,7 @@ impl<V: MqttVersion> Subscribe<V> {
         self.subscriptions.write_properties(buf);
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::Subscribe);
 
         if data.len() < 3 {
@@ -263,7 +263,9 @@ impl<V: MqttVersion> Subscribe<V> {
             options,
         })
     }
+}
 
+impl<V: MqttVersion> Subscribe<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }

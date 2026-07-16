@@ -4,7 +4,7 @@ use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Property, PropertyIdentifier, UserProperty,
+    Packet, Property, PropertyIdentifier, UserProperty,
 };
 
 pub trait ReasonCode:
@@ -278,19 +278,21 @@ macro_rules! create_pub_ack_type {
         pub struct $name<V: MqttVersion>(PubAckType<V, $reason_code>);
 
         impl<V: MqttVersion> $name<V> {
-            pub fn write_to_buf(&self, buf: &mut impl BufMut) {
-                self.0.write_to_buf(buf)
-            }
             pub fn packet_identifier(&self) -> u16 {
                 self.0.packet_identifier
             }
+        }
 
-            pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, crate::Error> {
+        impl<V: MqttVersion> Packet for $name<V> {
+            fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, crate::Error> {
                 assert_eq!(
                     header.control_packet_type,
                     ControlPacketType::$control_packet_type
                 );
                 PubAckType::try_read(header, data).map(Self)
+            }
+            fn write_to_buf(&self, buf: &mut impl BufMut) {
+                self.0.write_to_buf(buf)
             }
         }
 

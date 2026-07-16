@@ -9,7 +9,7 @@ pub use ack_messages::{
     PubRelReasonCode,
 };
 pub use auth::Auth;
-use bytes::{BufMut, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 pub use connack::{ConnAck, ConnectRcV3, ConnectRcV5};
 pub use connect::{Connect, MqttLastWill, MqttLastWill3_1_1, MqttLastWill5_0_0, VersionedConnect};
 pub use disconnect::{Disconnect, DisconnectReasonCode};
@@ -44,6 +44,20 @@ pub struct MqttV3_1_1;
 pub struct MqttV5_0_0;
 
 pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
+
+pub trait Packet: Sized {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error>;
+    fn try_read_entire_buf(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+        let res = Self::try_read(header, data)?;
+        if !data.has_remaining() {
+            Err(MalformedPacket::new("Packet has trailing bytes"))
+        } else {
+            Ok(res)
+        }
+    }
+
+    fn write_to_buf(&self, buf: &mut impl BufMut);
+}
 
 pub enum MqttPackage<V: MqttVersion, Q> {
     Connect(Connect<V>),

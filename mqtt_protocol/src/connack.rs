@@ -4,8 +4,8 @@ use super::fixed_header::FixedHeader;
 use crate::{
     util::{extract_bytes, extract_str, read_variable_len_int, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Property,
-    PropertyIdentifier, Qos, UserProperty,
+    ControlPacketType, Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet,
+    Property, PropertyIdentifier, Qos, UserProperty,
 };
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -448,8 +448,8 @@ pub struct ConnAck<V: MqttVersion> {
     properties: V::ConnackProperties,
 }
 
-impl<V: MqttVersion> ConnAck<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for ConnAck<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let fixed_header = FixedHeader::new(
             super::fixed_header::ControlPacketType::ConnAck,
             2 + self.properties.properties_block_len(),
@@ -460,7 +460,7 @@ impl<V: MqttVersion> ConnAck<V> {
         self.properties.write_properties(buf);
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::ConnAck);
         let flags = data.try_get_u8()?;
         let connect_rc: V::ConnackRc = data.try_get_u8()?.try_into()?;
@@ -478,7 +478,9 @@ impl<V: MqttVersion> ConnAck<V> {
             properties,
         })
     }
+}
 
+impl<V: MqttVersion> ConnAck<V> {
     pub fn session_present(&self) -> bool {
         self.session_present
     }

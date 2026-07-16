@@ -2,7 +2,7 @@ use bytes::BufMut;
 use bytes::Bytes;
 
 use crate::fixed_header::{ControlPacketType, FixedHeader};
-use crate::Error;
+use crate::{Error, Packet};
 
 macro_rules! create_ping_package {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
@@ -16,12 +16,12 @@ macro_rules! create_ping_package {
             }
         }
 
-        impl $name {
-            pub fn try_read(header: FixedHeader, _buf: &mut Bytes) -> Result<Self, Error> {
+        impl Packet for $name {
+            fn try_read(header: FixedHeader, _buf: &mut Bytes) -> Result<Self, Error> {
                 assert_eq!(header.control_packet_type, $packet_type);
                 Ok(Self)
             }
-            pub fn write_to_buf(buf: &mut impl BufMut) {
+            fn write_to_buf(&self, buf: &mut impl BufMut) {
                 let fixed_header = FixedHeader::new($packet_type, 0);
                 fixed_header.write_to_buf(buf);
             }
@@ -36,7 +36,7 @@ macro_rules! create_ping_package {
             #[test]
             fn serialize() {
                 let mut buf = Vec::new();
-                $name::write_to_buf(&mut buf);
+                $name::default().write_to_buf(&mut buf);
                 assert_eq!(&buf, &[$test_packet_type, 0]);
             }
             #[test]

@@ -4,7 +4,7 @@ use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Property, PropertyIdentifier, UserProperty,
+    Packet, Property, PropertyIdentifier, UserProperty,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -118,8 +118,8 @@ pub struct UnsubAck<V: MqttVersion> {
     properties: V::UnSubAckProperties,
 }
 
-impl<V: MqttVersion> UnsubAck<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for UnsubAck<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let fixed_header = FixedHeader::new(
             ControlPacketType::UnsubscribeAck,
             2 + self.properties.properties_block_len(),
@@ -129,7 +129,7 @@ impl<V: MqttVersion> UnsubAck<V> {
         self.properties.write_properties(buf);
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(
             header.control_packet_type,
             ControlPacketType::UnsubscribeAck

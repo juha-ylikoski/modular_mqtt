@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Property, PropertyIdentifier,
-    UserProperty,
+    Error, MalformedPacket, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Property,
+    PropertyIdentifier, UserProperty,
 };
 
 use super::fixed_header::{ControlPacketType, FixedHeader};
@@ -204,8 +204,8 @@ pub struct SubAck<V: MqttVersion> {
     data: V::SubAckData,
 }
 
-impl<V: MqttVersion> SubAck<V> {
-    pub fn write_to_buf(&self, buf: &mut impl BufMut) {
+impl<V: MqttVersion> Packet for SubAck<V> {
+    fn write_to_buf(&self, buf: &mut impl BufMut) {
         let fixed_header = FixedHeader::new(
             ControlPacketType::SubAck,
             2 + self.data.properties_block_len(),
@@ -216,7 +216,7 @@ impl<V: MqttVersion> SubAck<V> {
         self.data.write_properties(buf);
     }
 
-    pub fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
+    fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         assert_eq!(header.control_packet_type, ControlPacketType::SubAck);
         let packet_identifier = data.try_get_u16()?;
 
@@ -225,7 +225,9 @@ impl<V: MqttVersion> SubAck<V> {
             data: V::SubAckData::try_read(data)?,
         })
     }
+}
 
+impl<V: MqttVersion> SubAck<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
