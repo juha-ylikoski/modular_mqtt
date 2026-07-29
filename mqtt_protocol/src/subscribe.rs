@@ -132,7 +132,9 @@ impl<T: TopicSubscription> PacketProperties for Vec<T> {
         self.iter().map(|sub| sub.topic().len() + 2 + 1).sum()
     }
     fn properties_len(&self) -> usize {
-        unimplemented!()
+        // V3.1.1 SUBSCRIBE has no MQTT5-style properties section; properties_block_len is
+        // overridden above to skip the length-prefix entirely.
+        0
     }
 }
 /// Bits 4 and 5 of the Subscription Options represent the Retain Handling option. This option specifies whether retained messages are sent when the subscription is established. This does not affect the sending of retained messages at any point after the subscribe. If there are no retained messages matching the Topic Filter, all of these values act the same. The values are:

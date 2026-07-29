@@ -37,7 +37,9 @@ impl PacketProperties for Vec<SubRcV3> {
     }
 
     fn properties_len(&self) -> usize {
-        unimplemented!()
+        // V3.1.1 SUBACK has no MQTT5-style properties section; properties_block_len is
+        // overridden above to skip the length-prefix entirely.
+        0
     }
 }
 
