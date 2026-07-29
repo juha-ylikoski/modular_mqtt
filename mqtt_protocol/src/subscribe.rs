@@ -12,14 +12,14 @@ use super::{
     util::{extract_str, write_str, Qos},
 };
 
-pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync {
+pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync + Clone {
     fn new(topic: MqttTopic, qos: Qos) -> Self;
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error>;
     fn topic(&self) -> &str;
     fn options(&self) -> u8;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TopicSubscriptionV3 {
     topic: MqttTopic,
     qos: Qos,
@@ -42,7 +42,7 @@ impl TopicSubscription for TopicSubscriptionV3 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TopicSubscriptionV5 {
     qos: Qos,
     /// Bit 2 of the Subscription Options represents the No Local option. If the value is 1, Application Messages MUST NOT be forwarded to a connection with a ClientID equal to the ClientID of the publishing connection [MQTT-3.8.3-3]. It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4].
@@ -160,7 +160,7 @@ impl TryFrom<u8> for RetainHandling {
     }
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SubscribeOptions {
     /// Integer representing the identifier of the subscription. The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if the Subscription Identifier has a value of
     /// The Subscription Identifier is associated with any subscription created or modified as the result of this SUBSCRIBE packet. If there is a Subscription Identifier, it is stored with the subscription. If this property is not specified, then the absence of a Subscription Identifier is stored with the subscription.
@@ -226,7 +226,7 @@ impl PacketProperties for SubscribeOptions {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// The SUBSCRIBE Packet is sent from the Client to the Server to create one or more Subscriptions. Each Subscription registers a Client’s interest in one or more Topics. The Server sends PUBLISH Packets to the Client in order to forward Application Messages that were published to Topics that match these Subscriptions. The SUBSCRIBE Packet also specifies (for each Subscription) the maximum QoS with which the Server can send Application Messages to the Client.
 pub struct Subscribe<V: MqttVersion> {
     packet_identifier: u16,

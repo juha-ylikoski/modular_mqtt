@@ -108,7 +108,7 @@ impl TryFrom<u8> for DisconnectReasonCode {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DisconnectData {
     reason_code: DisconnectReasonCode,
     /// Followed by the Four Byte Integer representing the Session Expiry Interval in seconds. It is a Protocol Error to include the Session Expiry Interval more than once.
@@ -245,7 +245,7 @@ impl PacketProperties for DisconnectData {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
 pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
 

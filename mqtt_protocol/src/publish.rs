@@ -12,7 +12,7 @@ use super::{
     util::{extract_str, write_str, MqttTopic, Qos, QosPacketIdentifier},
 };
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PublishProperties {
     payload_format: Option<PayloadFormat>,
     /// If present, the Four Byte value is the lifetime of the Will Message in seconds and is sent as the
@@ -200,7 +200,7 @@ impl PacketProperties for PublishProperties {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct Publish<V: MqttVersion, Q> {
     qos: Q,

@@ -146,7 +146,7 @@ impl IsSuccess for ConnectRcV5 {
     }
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConnackPropertiesV5 {
     // v5 properties
     /// If the Session Expiry Interval is absent the value in the CONNECT Packet used. The server uses this
@@ -450,7 +450,7 @@ impl PacketProperties for ConnackPropertiesV5 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// The CONNACK Packet is the packet sent by the Server in response to a CONNECT Packet received from a Client.
 /// The first packet sent from the Server to the Client MUST be a CONNACK Packet [MQTT-3.2.0-1].
 pub struct ConnAck<V: MqttVersion> {

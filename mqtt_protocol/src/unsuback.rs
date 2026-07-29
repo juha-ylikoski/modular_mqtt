@@ -42,7 +42,7 @@ impl TryFrom<u8> for UnsubAckReasonCode {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnSubAckDataV5 {
     pub reason_code: Vec<UnsubAckReasonCode>,
     pub reason: Option<String>,
@@ -114,7 +114,7 @@ impl PacketProperties for UnSubAckDataV5 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// The UNSUBACK Packet is sent by the Server to the Client to confirm receipt of an UNSUBSCRIBE Packet.
 pub struct UnsubAck<V: MqttVersion> {
     packet_identifier: u16,

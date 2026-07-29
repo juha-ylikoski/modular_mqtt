@@ -61,7 +61,7 @@ pub trait Packet: Sized {
     fn write_to_buf(&self, buf: &mut impl BufMut);
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MqttPackage<V: MqttVersion, Q> {
     Connect(Connect<V>),
     ConnAck(ConnAck<V>),

@@ -5,10 +5,9 @@ edition = "2021"
 
 [dependencies]
 bytes = "1.12.1"
-rand = "0.8.5"
 rust-mqtt-protocol = { path = "../mqtt_protocol" }
 thiserror = "2.0.11"
-tokio = { version = "1.42.0", features = ["full"] }
+tokio = { version = "1.42.0", features = ["full"], optional=true }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
@@ -17,4 +16,6 @@ ntest = "0.9.3"
 testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15.0", features = ["mosquitto"] }
 
-
+[features]
+default = ["async"]
+async = ["dep:tokio"]

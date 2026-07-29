@@ -6,7 +6,7 @@ use crate::{Error, Packet};
 
 macro_rules! create_ping_package {
     (#[doc = $doc:expr] $name:ident, $packet_type:expr, $test_mod:ident,$test_packet_type:expr) => {
-        #[derive(Debug, PartialEq)]
+        #[derive(Debug, Clone, PartialEq)]
         #[doc = $doc]
         pub struct $name;
 

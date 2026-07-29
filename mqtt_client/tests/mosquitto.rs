@@ -5,8 +5,9 @@ use testcontainers::runners::SyncRunner;
 use testcontainers_modules::mosquitto;
 
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client::{Client, MqttClient},
+    client_opts::{ClientOpts, MqttOptions},
+    connection::SyncWriter,
     util::IntoTopicSubscription,
 };
 use rust_mqtt_protocol::{
@@ -35,8 +36,8 @@ fn init_mosquitto() -> MosquittoContainer {
 
 fn mosquitto_publish<V>(qos: Qos, suback_data: V::SubAckData)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     rust_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
     ClientOpts<V>: Default,
 {
@@ -46,7 +47,7 @@ where
     let (tx, rx) = std::sync::mpsc::channel();
 
     let t = std::thread::spawn(move || {
-        let client_w = SyncClient::connect_tcp(
+        let (_, client_w) = Client::<V, SyncWriter>::connect_tcp(
             ClientOpts {
                 client_id: "client-id-1".to_string(),
                 keep_alive: 1,
@@ -56,7 +57,7 @@ where
         )
         .unwrap();
 
-        let client_r = SyncClient::connect_tcp(
+        let (stream_r, client_r) = Client::<V, SyncWriter>::connect_tcp(
             ClientOpts {
                 client_id: "client-id-2".to_string(),
                 keep_alive: 1,
@@ -66,10 +67,13 @@ where
         )
         .unwrap();
 
-        let r_stream = client_r.stream();
         assert_eq!(
             client_r
-                .subscribe(vec![MqttTopic::try_from("topic").unwrap()], qos)
+                .subscribe(
+                    vec![MqttTopic::try_from("topic").unwrap()],
+                    qos,
+                    Duration::from_secs(5)
+                )
                 .unwrap(),
             SubAck::new(1, suback_data)
         );
@@ -92,7 +96,7 @@ where
         }
 
         assert_eq!(
-            r_stream.recv().unwrap(),
+            stream_r.recv().unwrap(),
             Publish::new(
                 MqttTopic::try_from("topic").unwrap(),
                 b"payload",
@@ -116,8 +120,8 @@ where
 
 fn mosquitto_unsub<V>(suback_data: V::SubAckData, unsuback_data: V::UnSubAckProperties)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     rust_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
     ClientOpts<V>: Default,
 {
@@ -128,7 +132,7 @@ where
     let (tx, rx) = std::sync::mpsc::channel();
 
     let t = std::thread::spawn(move || {
-        let client_w = SyncClient::connect_tcp(
+        let (_, client_w) = Client::<V, SyncWriter>::connect_tcp(
             ClientOpts {
                 client_id: "client-id-1".to_string(),
                 keep_alive: 1,
@@ -138,7 +142,7 @@ where
         )
         .unwrap();
 
-        let client_r = SyncClient::connect_tcp(
+        let (stream_r, client_r) = Client::<V, SyncWriter>::connect_tcp(
             ClientOpts {
                 client_id: "client-id-2".to_string(),
                 keep_alive: 1,
@@ -148,17 +152,20 @@ where
         )
         .unwrap();
 
-        let r_stream = client_r.stream();
         assert_eq!(
             client_r
-                .subscribe(vec![MqttTopic::try_from("topic").unwrap()], qos)
+                .subscribe(
+                    vec![MqttTopic::try_from("topic").unwrap()],
+                    qos,
+                    Duration::from_secs(5)
+                )
                 .unwrap(),
             SubAck::new(1, suback_data)
         );
 
         assert_eq!(
             client_r
-                .unsubscribe(vec!["topic".try_into().unwrap()])
+                .unsubscribe(vec!["topic".try_into().unwrap()], Duration::from_secs(5))
                 .unwrap(),
             UnsubAck::<V>::new(2, unsuback_data)
         );
@@ -173,7 +180,7 @@ where
             .unwrap()
             .is_none());
 
-        assert!(r_stream.recv_timeout(Duration::from_secs(1)).is_err());
+        assert!(stream_r.recv_timeout(Duration::from_secs(1)).is_err());
         client_w.disconnect().unwrap();
         client_r.disconnect().unwrap();
         tx.send(()).unwrap()

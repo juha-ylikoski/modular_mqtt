@@ -75,3 +75,10 @@ impl<V> From<std::sync::mpsc::SendError<V>> for BackendError {
         BackendError::ChannelError
     }
 }
+
+#[cfg(feature = "async")]
+impl<V> From<tokio::sync::mpsc::error::SendError<V>> for BackendError {
+    fn from(_: tokio::sync::mpsc::error::SendError<V>) -> Self {
+        BackendError::ChannelError
+    }
+}

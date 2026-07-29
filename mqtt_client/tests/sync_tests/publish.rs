@@ -1,10 +1,12 @@
 use crate::util::{self, write_packet};
 
 use std::net::TcpListener;
+use std::time::Duration;
 
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client::{Client, MqttClient},
+    client_opts::{ClientOpts, MqttOptions},
+    connection::SyncWriter,
 };
 use rust_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
@@ -14,8 +16,8 @@ use rust_mqtt_protocol::{
 
 fn test_publish_qos0<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -30,7 +32,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -52,10 +54,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
@@ -84,8 +86,8 @@ test!(
 
 fn test_publish_qos1<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -101,7 +103,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -130,10 +132,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
@@ -165,8 +167,8 @@ test!(
 
 fn test_publish_qos2<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -182,7 +184,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -216,10 +218,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
@@ -251,8 +253,8 @@ test!(
 
 fn test_publish_resend_qos1<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -325,10 +327,11 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
+            resend_interval: Duration::from_millis(200),
             ..Default::default()
         },
         addr.to_string(),
@@ -353,15 +356,15 @@ where
 test!(
     publish_resend_qos1,
     test_publish_resend_qos1,
-    15000,
+    5000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );
 
 fn test_publish_resend_qos2<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -442,10 +445,11 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
+            resend_interval: Duration::from_millis(200),
             ..Default::default()
         },
         addr.to_string(),
@@ -470,15 +474,15 @@ where
 test!(
     publish_resend_qos2,
     test_publish_resend_qos2,
-    15000,
+    5000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );
 
 fn test_publish_resend_pubrel_qos2<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -520,7 +524,22 @@ where
             PubRec::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
         });
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = loop {
+            let (header, mut data) = util::read_packet(&mut stream);
+            match &header.control_packet_type {
+                ControlPacketType::PingReq => {
+                    assert_eq!(data.len(), 0);
+                    let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
+                    assert_eq!(ping_req, PingReq);
+
+                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
+                }
+                ControlPacketType::PubRel => {
+                    break (header, data);
+                }
+                _ => panic!("Received unexpected msg: {header:?}"),
+            }
+        };
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             recv_msg.packet_identifier().unwrap(),
@@ -555,10 +574,11 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 1,
+            resend_interval: Duration::from_millis(200),
             ..Default::default()
         },
         addr.to_string(),
@@ -583,7 +603,7 @@ where
 test!(
     publish_resend_pubrel_qos2,
     test_publish_resend_pubrel_qos2,
-    15000,
+    5000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );

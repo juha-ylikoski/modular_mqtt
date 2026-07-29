@@ -118,7 +118,7 @@ impl SubRcV3 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubAckDataV5 {
     pub return_codes: Vec<SubRcV5>,
     /// UTF-8 Encoded String representing the reason associated with this response.
@@ -197,7 +197,7 @@ impl PacketProperties for SubAckDataV5 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
 pub struct SubAck<V: MqttVersion> {
     packet_identifier: u16,

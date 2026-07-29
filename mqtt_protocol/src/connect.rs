@@ -349,7 +349,7 @@ impl MqttLastWill5_0_0 {
     }
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConnectProperties {
     // v5 properties
     /// If the Session Expiry Interval is absent the value 0 is used. If it is set to 0, or is absent,
@@ -583,7 +583,7 @@ impl Packet for VersionedConnect {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// After a Network Connection is established by a Client to a Server, the first
 /// Packet sent from the Client to the Server MUST be a CONNECT Packet
 pub struct Connect<V: MqttVersion> {

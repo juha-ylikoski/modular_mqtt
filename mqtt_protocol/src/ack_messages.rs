@@ -103,7 +103,7 @@ impl ReasonCode for PubRelReasonCode {
     }
 }
 
-#[derive(Debug, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct PubAckData<R: ReasonCode> {
     reason_code: R,
     /// UTF-8 Encoded String representing the reason associated with this response.
@@ -198,7 +198,7 @@ impl<R: ReasonCode> PacketProperties for PubAckData<R> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PubAckType<V: MqttVersion, R: ReasonCode> {
     packet_type: ControlPacketType,
     packet_identifier: u16,
@@ -275,7 +275,7 @@ where
 
 macro_rules! create_pub_ack_type {
     (#[doc = $doc:expr] $name:ident, $control_packet_type:ident, $reason_code:ty) => {
-        #[derive(Debug, PartialEq)]
+        #[derive(Debug, Clone, PartialEq)]
         #[doc = $doc]
         pub struct $name<V: MqttVersion>(PubAckType<V, $reason_code>);
 

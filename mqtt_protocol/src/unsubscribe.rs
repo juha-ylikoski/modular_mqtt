@@ -12,7 +12,7 @@ use crate::{
     util::{extract_str, write_str, MqttTopic},
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnsubscribeProperties {
     user_property: Vec<UserProperty>,
 }
@@ -58,7 +58,7 @@ impl PacketProperties for UnsubscribeProperties {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 /// An UNSUBSCRIBE Packet is sent by the Client to the Server, to unsubscribe from topics.
 pub struct Unsubscribe<V: MqttVersion> {
     packet_identifier: u16,

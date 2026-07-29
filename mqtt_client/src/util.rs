@@ -1,4 +1,4 @@
-use std::{sync::RwLock, time::SystemTime};
+use std::{sync::RwLock, time::Instant};
 
 use rust_mqtt_protocol::{
     MqttTopic, MqttV3_1_1, MqttV5_0_0, MqttVersion, Publish, Qos, QosPacketIdentifier,
@@ -7,9 +7,9 @@ use rust_mqtt_protocol::{
 
 #[derive(Debug, Clone)]
 pub enum InflightMessageState {
-    PubAck(SystemTime),
-    PubRec(SystemTime),
-    PubComp(SystemTime),
+    PubAck(Instant),
+    PubRec(Instant),
+    PubComp(Instant),
     Sent,
 }
 

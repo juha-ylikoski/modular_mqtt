@@ -4,8 +4,9 @@ use std::{net::TcpListener, time::Duration};
 
 use bytes::Bytes;
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client::{Client, MqttClient},
+    client_opts::{ClientOpts, MqttOptions},
+    connection::SyncWriter,
     error::ConnectError,
 };
 use rust_mqtt_protocol::{
@@ -15,17 +16,17 @@ use rust_mqtt_protocol::{
 
 fn test_connect_no_server<V>()
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
 {
     util::init_logging();
     let opts: ClientOpts<V> = ClientOpts {
         client_id: "client-id".to_string(),
-        keep_alive: 1,
+        keep_alive: 30,
         ..Default::default()
     };
-    match SyncClient::connect_tcp(opts, "127.0.0.1:1234".to_string()) {
+    match Client::<V, SyncWriter>::connect_tcp(opts, "127.0.0.1:1234".to_string()) {
         Ok(_) => panic!("Should not happen"),
         Err(e) => match e {
             mqtt_client::error::ConnectError::IoError(_) => (),
@@ -37,8 +38,8 @@ test!(connect_no_server, test_connect_no_server, 5000, (), ());
 
 fn test_connect<V>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -53,7 +54,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
@@ -61,10 +62,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<V>::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
@@ -84,8 +85,8 @@ test!(
 
 fn test_connect_username_password<V>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -102,7 +103,7 @@ where
             connect,
             Connect::new(
                 true,
-                1,
+                30,
                 "".to_string(),
                 None,
                 Some("username".to_string()),
@@ -116,10 +117,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<V>::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             username: Some("username".to_string()),
             password: Some(Bytes::from_static(b"password")),
             ..Default::default()
@@ -142,8 +143,8 @@ test!(
 
 fn test_connect_last_will<V>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -160,7 +161,7 @@ where
             connect,
             Connect::new(
                 true,
-                1,
+                30,
                 "".to_string(),
                 Some(V::LastWill::new(
                     MqttTopic::try_from("last-will-topic").unwrap(),
@@ -179,10 +180,10 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             will: Some(V::LastWill::new(
                 MqttTopic::try_from("last-will-topic").unwrap(),
                 Bytes::from_static(b"payload"),
@@ -208,8 +209,8 @@ test!(
 
 fn test_connect_refused<V>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -223,17 +224,17 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "".to_string(), None, None, None,).into()
+            Connect::new(true, 30, "".to_string(), None, None, None,).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
         });
     });
 
-    match SyncClient::<V>::connect_tcp(
+    match Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
@@ -263,8 +264,8 @@ test!(
 
 fn test_disconnect<V>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -278,7 +279,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connact_rc).write_to_buf(buf);
@@ -286,17 +287,20 @@ where
         });
     });
 
-    let client = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts::<V> {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
     handle.join().unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while client.online() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(!client.online());
     client
         .publish(Publish::new(

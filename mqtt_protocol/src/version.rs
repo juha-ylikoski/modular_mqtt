@@ -13,7 +13,7 @@ mod sealed {
     impl Sealed for MqttV5_0_0 {}
 }
 
-pub trait PacketProperties: Sized + PartialEq + Debug + Send + Sync {
+pub trait PacketProperties: Sized + PartialEq + Debug + Send + Sync + Clone {
     fn try_read(data: &mut Bytes) -> Result<Self, Error>;
     fn write_properties(&self, buf: &mut impl BufMut);
     fn properties_len(&self) -> usize;
@@ -28,7 +28,7 @@ pub trait IsSuccess {
 }
 
 pub trait MqttVersion:
-    sealed::Sealed + std::fmt::Debug + Send + Sync + 'static + PartialEq
+    sealed::Sealed + std::fmt::Debug + Send + Sync + 'static + PartialEq + Clone
 {
     const VERSION: u8;
     type ConnackRc: Copy

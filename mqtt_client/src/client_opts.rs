@@ -1,49 +1,33 @@
-use std::marker::PhantomData;
-
 use rust_mqtt_protocol::{MqttV3_1_1, MqttV5_0_0, MqttVersion, RetainHandling};
 
 use bytes::Bytes;
+use std::time::Duration;
+
+const DEFAULT_ACK_RETENTION: Duration = Duration::from_mins(1);
 
 pub enum OnDisconnectBehavior {
     Panic,
 }
 
-pub enum ExtraOptions<V> {
-    V3 {
-        protocol_level: PhantomData<V>,
-    },
-    V5 {
-        protocol_level: PhantomData<V>,
-        subscription_no_local: bool,
-        subscription_keep_retain: bool,
-        subscription_retain_handling: RetainHandling,
-    },
+pub trait MqttOptions: MqttVersion {
+    type ExtraOptions: Send + Sync;
 }
 
-impl ExtraOptions<MqttV3_1_1> {
-    pub fn new_v3() -> Self {
-        Self::V3 {
-            protocol_level: PhantomData,
-        }
-    }
+impl MqttOptions for MqttV3_1_1 {
+    type ExtraOptions = ();
 }
 
-impl ExtraOptions<MqttV5_0_0> {
-    pub fn new_v5(
-        subscription_no_local: bool,
-        subscription_keep_retain: bool,
-        subscription_retain_handling: RetainHandling,
-    ) -> Self {
-        Self::V5 {
-            protocol_level: PhantomData,
-            subscription_no_local,
-            subscription_keep_retain,
-            subscription_retain_handling,
-        }
-    }
+impl MqttOptions for MqttV5_0_0 {
+    type ExtraOptions = MqttV5Options;
 }
 
-pub struct ClientOpts<V: MqttVersion> {
+pub struct MqttV5Options {
+    pub subscription_no_local: bool,
+    pub subscription_keep_retain: bool,
+    pub subscription_retain_handling: RetainHandling,
+}
+
+pub struct ClientOpts<V: MqttOptions> {
     pub client_id: String,
     pub keep_alive: u16,
     pub clean_session: bool,
@@ -52,7 +36,9 @@ pub struct ClientOpts<V: MqttVersion> {
     pub password: Option<Bytes>,
     pub on_disconnect: OnDisconnectBehavior,
     pub max_packet_size: usize,
-    pub extra_opts: ExtraOptions<V>,
+    pub resend_interval: Duration,
+    pub extra_opts: V::ExtraOptions,
+    pub ack_retention: Duration,
 }
 
 impl Default for ClientOpts<MqttV3_1_1> {
@@ -66,7 +52,9 @@ impl Default for ClientOpts<MqttV3_1_1> {
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
             max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
-            extra_opts: ExtraOptions::new_v3(),
+            resend_interval: crate::RESENT_INTERVAL,
+            extra_opts: (),
+            ack_retention: DEFAULT_ACK_RETENTION,
         }
     }
 }
@@ -82,7 +70,13 @@ impl Default for ClientOpts<MqttV5_0_0> {
             password: None,
             on_disconnect: OnDisconnectBehavior::Panic,
             max_packet_size: rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE,
-            extra_opts: ExtraOptions::new_v5(true, true, RetainHandling::SendAtSubscribe),
+            resend_interval: crate::RESENT_INTERVAL,
+            extra_opts: MqttV5Options {
+                subscription_no_local: true,
+                subscription_keep_retain: true,
+                subscription_retain_handling: RetainHandling::SendAtSubscribe,
+            },
+            ack_retention: DEFAULT_ACK_RETENTION,
         }
     }
 }

@@ -1,10 +1,11 @@
 use crate::util::{self, write_packet};
 
-use std::net::TcpListener;
+use std::{net::TcpListener, time::Duration};
 
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client::{Client, MqttClient},
+    client_opts::{ClientOpts, MqttOptions},
+    connection::SyncWriter,
     util::IntoTopicSubscription,
 };
 use rust_mqtt_protocol::{
@@ -15,8 +16,8 @@ use rust_mqtt_protocol::{
 
 fn test_sub_qos0<V>(connack_rc: V::ConnackRc, sub_rc: V::SubAckData, sub_rc2: V::SubAckData)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
     MqttTopic: IntoTopicSubscription<V>,
@@ -33,7 +34,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -58,17 +59,21 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
     let suback = client
-        .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::AtMostOnce,
+            Duration::from_secs(5),
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
@@ -105,8 +110,8 @@ fn test_sub_qos0_receive_packet<V>(
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
     MqttTopic: IntoTopicSubscription<V>,
@@ -123,7 +128,7 @@ fn test_sub_qos0_receive_packet<V>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -154,20 +159,22 @@ fn test_sub_qos0_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
 
-    let stream = client.stream();
-
     let suback = client
-        .subscribe(vec![MqttTopic::try_from("topic").unwrap()], Qos::AtMostOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("topic").unwrap()],
+            Qos::AtMostOnce,
+            Duration::from_secs(5),
+        )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
@@ -215,8 +222,8 @@ fn test_sub_qos1_receive_packet<V>(
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
     MqttTopic: IntoTopicSubscription<V>,
@@ -233,7 +240,7 @@ fn test_sub_qos1_receive_packet<V>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -267,22 +274,21 @@ fn test_sub_qos1_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
 
-    let stream = client.stream();
-
     let suback = client
         .subscribe(
             vec![MqttTopic::try_from("topic").unwrap()],
             Qos::AtLeastOnce,
+            Duration::from_secs(5),
         )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
@@ -331,8 +337,8 @@ fn test_sub_qos2_receive_packet<V>(
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
     MqttTopic: IntoTopicSubscription<V>,
@@ -350,7 +356,7 @@ fn test_sub_qos2_receive_packet<V>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
+            Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
         write_packet(&mut stream, |buf| {
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
@@ -390,22 +396,21 @@ fn test_sub_qos2_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let client: SyncClient<V> = SyncClient::connect_tcp(
+    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
-            keep_alive: 1,
+            keep_alive: 30,
             ..Default::default()
         },
         addr.to_string(),
     )
     .unwrap();
 
-    let stream = client.stream();
-
     let suback = client
         .subscribe(
             vec![MqttTopic::try_from("topic").unwrap()],
             Qos::ExactlyOnce,
+            Duration::from_secs(5),
         )
         .unwrap();
     let packet_identifier = recv.recv().unwrap();

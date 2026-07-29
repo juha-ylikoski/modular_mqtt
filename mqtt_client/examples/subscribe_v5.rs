@@ -1,15 +1,16 @@
-use mqtt_client::{client::SyncClient, client_opts::ClientOpts};
+use std::time::Duration;
+
+use mqtt_client::{client::Client, client_opts::ClientOpts, connection::SyncWriter};
 use rust_mqtt_protocol::{MqttTopic, MqttV5_0_0, Publish, Qos};
 use tracing::{dispatcher::set_global_default, Level};
 
-#[tokio::main()]
-async fn main() {
+fn main() {
     let collector = tracing_subscriber::fmt::fmt()
         .with_max_level(Level::TRACE)
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let client: SyncClient<MqttV5_0_0> = SyncClient::connect_tcp(
+    let (recv_stream, client) = Client::<MqttV5_0_0, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id-sub".to_string(),
             ..Default::default()
@@ -20,7 +21,11 @@ async fn main() {
 
     tracing::info!("Subscribing!");
     let suback = client
-        .subscribe(vec![MqttTopic::try_from("qos0").unwrap()], Qos::AtMostOnce)
+        .subscribe(
+            vec![MqttTopic::try_from("qos0").unwrap()],
+            Qos::AtMostOnce,
+            Duration::from_secs(5),
+        )
         .unwrap();
     tracing::info!("Got SubAck {suback:?}");
 
@@ -36,8 +41,7 @@ async fn main() {
         .is_none());
     tracing::info!("Published!");
 
-    let stream = client.stream();
-    let msg = stream.recv().unwrap();
+    let msg = recv_stream.recv().unwrap();
     tracing::info!("Received message: {msg:?}");
     tracing::info!(
         "Decoded message: {}",

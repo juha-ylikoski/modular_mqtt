@@ -3,8 +3,9 @@ use crate::util::{self, write_packet};
 use std::{net::TcpListener, time::Duration};
 
 use mqtt_client::{
-    client::{MqttClient, SyncClient},
-    client_opts::ClientOpts,
+    client::{Client, MqttClient},
+    client_opts::{ClientOpts, MqttOptions},
+    connection::SyncWriter,
 };
 use ntest::timeout;
 use rust_mqtt_protocol::{
@@ -14,8 +15,8 @@ use rust_mqtt_protocol::{
 
 fn ping_sequence<V>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion,
-    SyncClient<V>: MqttClient<V>,
+    V: MqttVersion + MqttOptions,
+    Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<rust_mqtt_protocol::Connect<V>>,
 {
@@ -47,7 +48,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let client = SyncClient::<V>::connect_tcp(
+    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
         ClientOpts {
             client_id: "client-id".to_string(),
             keep_alive: 2,

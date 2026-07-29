@@ -6,12 +6,19 @@ use rust_mqtt_protocol::FixedHeader;
 #[allow(unused)]
 pub fn read_packet<R: Read>(reader: &mut R) -> (FixedHeader, Bytes) {
     let mut buf = BytesMut::zeroed(4096);
-    let len = reader.read(&mut buf[..]).unwrap();
-    buf.truncate(len);
-    let (header, body) = FixedHeader::parse(&mut buf, rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE)
-        .unwrap()
-        .unwrap();
-    (header, body)
+    let mut len = 0;
+    loop {
+        let n = reader.read(&mut buf[len..]).unwrap();
+        assert!(n > 0, "connection closed while waiting for a packet");
+        len += n;
+        buf.truncate(len);
+        if let Some((header, body)) =
+            FixedHeader::parse(&mut buf, rust_mqtt_protocol::MAX_MQTT_PACKET_SIZE).unwrap()
+        {
+            return (header, body);
+        }
+        buf.resize(len + 4096, 0);
+    }
 }
 
 #[allow(unused)]
