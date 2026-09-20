@@ -21,7 +21,7 @@ let (recv_stream, client) = Client::<MqttV5_0_0, SyncWriter>::connect_tcp(
     "127.0.0.1:1883".to_string(),
 )?;
 
-client.subscribe(vec!["some/topic".try_into()?], Qos::AtMostOnce, Duration::from_secs(5))?;
+client.subscribe(vec!["some/topic"], Qos::AtMostOnce, Duration::from_secs(5))?;
 client.publish(Publish::new("some/topic".try_into()?, b"hello", Qos::AtMostOnce, false))?;
 
 let msg = recv_stream.recv()?;
@@ -52,7 +52,6 @@ default features for sync-only.
 | Ping keep-alive | ✅ | |
 | Retained-message flag (send + receive) | ✅ | |
 | Client-initiated Disconnect | ✅ | |
-| Wildcard topic filters in Subscribe (`+`, `#`) | ❌ | `MqttTopic` rejects `#`/`+` outright — no wildcard subscriptions are possible at all today |
 | Graceful handling of broker-initiated Disconnect | ❌ | client panics (`OnDisconnectBehavior::Panic` is the only variant) |
 
 ### MQTT v5.0.0
@@ -74,7 +73,6 @@ All of the above, plus:
 | Server-provided keep-alive override | ❌ | parsed from CONNACK, not applied |
 | Maximum packet size enforcement on send | ❌ | |
 | Request/response correlation helper | ❌ | fields exist, no matching logic |
-| Wildcard topic filters | ❌ | same root cause as v3.1.1 |
 
 ## License
 

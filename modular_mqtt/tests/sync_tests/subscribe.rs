@@ -20,7 +20,7 @@ where
     Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    MqttTopic: IntoTopicSubscription<V>,
+    String: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -47,7 +47,7 @@ where
             Subscribe::<V>::new(
                 sub.packet_identifier(),
                 vec![V::TopicSubscription::new(
-                    "topic".try_into().unwrap(),
+                    "topic".to_string(),
                     Qos::AtMostOnce
                 )]
             )
@@ -70,7 +70,7 @@ where
     .unwrap();
     let suback = client
         .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
+            vec!["topic".to_string()],
             Qos::AtMostOnce,
             Duration::from_secs(5),
         )
@@ -114,7 +114,7 @@ fn test_sub_qos0_receive_packet<V>(
     Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    MqttTopic: IntoTopicSubscription<V>,
+    String: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -141,7 +141,7 @@ fn test_sub_qos0_receive_packet<V>(
             Subscribe::<V>::new(
                 sub.packet_identifier(),
                 vec![V::TopicSubscription::new(
-                    "topic".try_into().unwrap(),
+                    "topic".to_string(),
                     Qos::AtMostOnce
                 )]
             )
@@ -171,7 +171,7 @@ fn test_sub_qos0_receive_packet<V>(
 
     let suback = client
         .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
+            vec!["topic".to_string()],
             Qos::AtMostOnce,
             Duration::from_secs(5),
         )
@@ -226,7 +226,7 @@ fn test_sub_qos1_receive_packet<V>(
     Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    MqttTopic: IntoTopicSubscription<V>,
+    String: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -253,7 +253,7 @@ fn test_sub_qos1_receive_packet<V>(
             Subscribe::<V>::new(
                 sub.packet_identifier(),
                 vec![V::TopicSubscription::new(
-                    "topic".try_into().unwrap(),
+                    "topic".to_string(),
                     Qos::AtLeastOnce
                 )]
             )
@@ -286,7 +286,7 @@ fn test_sub_qos1_receive_packet<V>(
 
     let suback = client
         .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
+            vec!["topic".to_string()],
             Qos::AtLeastOnce,
             Duration::from_secs(5),
         )
@@ -341,7 +341,7 @@ fn test_sub_qos2_receive_packet<V>(
     Client<V, SyncWriter>: MqttClient<V>,
     ClientOpts<V>: Default,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    MqttTopic: IntoTopicSubscription<V>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -369,7 +369,7 @@ fn test_sub_qos2_receive_packet<V>(
             Subscribe::<V>::new(
                 sub.packet_identifier(),
                 vec![V::TopicSubscription::new(
-                    "topic".try_into().unwrap(),
+                    "topic".to_string(),
                     Qos::ExactlyOnce
                 )]
             )
@@ -407,11 +407,7 @@ fn test_sub_qos2_receive_packet<V>(
     .unwrap();
 
     let suback = client
-        .subscribe(
-            vec![MqttTopic::try_from("topic").unwrap()],
-            Qos::ExactlyOnce,
-            Duration::from_secs(5),
-        )
+        .subscribe(vec!["topic"], Qos::ExactlyOnce, Duration::from_secs(5))
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc));

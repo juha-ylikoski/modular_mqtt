@@ -1,9 +1,8 @@
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{
-    ConnAck, ControlPacketType, Disconnect, FixedHeader, MqttTopic, MqttV3_1_1, MqttV5_0_0,
-    MqttVersion, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
-    QosPacketIdentifier, SubAck, Subscribe, TopicSubscriptionV3, TopicSubscriptionV5, UnsubAck,
-    Unsubscribe,
+    ConnAck, ControlPacketType, Disconnect, FixedHeader, MqttV3_1_1, MqttV5_0_0, MqttVersion,
+    Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
+    SubAck, Subscribe, TopicSubscriptionV3, TopicSubscriptionV5, UnsubAck, Unsubscribe,
 };
 use std::{
     collections::HashMap,
@@ -115,7 +114,7 @@ pub trait MqttClient<V: MqttVersion>: Sized {
     ) -> V::TopicSubscription;
     fn connect_error(connack: &ConnAck<V>) -> ConnectError;
     fn subscribe_packet(packet_identifier: u16, subs: Vec<V::TopicSubscription>) -> Subscribe<V>;
-    fn unsubscribe_packet(packet_identifier: u16, topics: Vec<MqttTopic>) -> Unsubscribe<V>;
+    fn unsubscribe_packet(packet_identifier: u16, topics: Vec<String>) -> Unsubscribe<V>;
     fn disconnect_packet() -> Disconnect<V>;
 }
 
@@ -386,10 +385,7 @@ where
         Subscribe::new(packet_identifier, subs)
     }
 
-    fn unsubscribe_packet(
-        packet_identifier: u16,
-        topics: Vec<MqttTopic>,
-    ) -> Unsubscribe<MqttV3_1_1> {
+    fn unsubscribe_packet(packet_identifier: u16, topics: Vec<String>) -> Unsubscribe<MqttV3_1_1> {
         Unsubscribe::new_v3(packet_identifier, topics)
     }
     fn disconnect_packet() -> Disconnect<MqttV3_1_1> {
@@ -424,10 +420,7 @@ where
     ) -> Subscribe<MqttV5_0_0> {
         Subscribe::new_with_options(packet_identifier, subs, None, Vec::new())
     }
-    fn unsubscribe_packet(
-        packet_identifier: u16,
-        topics: Vec<MqttTopic>,
-    ) -> Unsubscribe<MqttV5_0_0> {
+    fn unsubscribe_packet(packet_identifier: u16, topics: Vec<String>) -> Unsubscribe<MqttV5_0_0> {
         Unsubscribe::new_v5(packet_identifier, topics, Vec::new())
     }
     fn disconnect_packet() -> Disconnect<MqttV5_0_0> {
@@ -917,7 +910,7 @@ where
         msg.write_to_buf(buf);
         msg
     }
-    fn build_unsubscribe_msg(&self, buf: &mut BytesMut, topics: Vec<MqttTopic>) -> Unsubscribe<V> {
+    fn build_unsubscribe_msg(&self, buf: &mut BytesMut, topics: Vec<String>) -> Unsubscribe<V> {
         self.assert_online();
         let packet_identifier = self.next_packet_identifier();
         let msg = Self::unsubscribe_packet(packet_identifier, topics);
@@ -968,7 +961,7 @@ where
     }
     pub fn unsubscribe(
         &self,
-        topics: Vec<MqttTopic>,
+        topics: Vec<String>,
         timeout: Duration,
     ) -> Result<UnsubAck<V>, ClientError> {
         let mut write_buf = self.write_buf.lock().unwrap();
@@ -1103,7 +1096,7 @@ where
         let suback = self.suback_comm.get(msg.packet_identifier()).await?;
         Ok(suback)
     }
-    pub async fn unsubscribe(&self, topics: Vec<MqttTopic>) -> Result<UnsubAck<V>, ClientError> {
+    pub async fn unsubscribe(&self, topics: Vec<String>) -> Result<UnsubAck<V>, ClientError> {
         let mut write_buf = self.write_buf.lock().await;
         let msg = self.build_unsubscribe_msg(&mut write_buf, topics);
         self.flush(&mut write_buf).await?;

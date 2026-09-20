@@ -9,7 +9,7 @@ use crate::{
 
 use crate::{
     fixed_header::{ControlPacketType, FixedHeader},
-    util::{extract_str, write_str, MqttTopic},
+    util::{extract_str, write_str},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,13 +113,10 @@ impl<V: MqttVersion> Unsubscribe<V> {
     }
 }
 impl Unsubscribe<MqttV3_1_1> {
-    pub fn new_v3(packet_identifier: u16, topics: Vec<MqttTopic>) -> Self {
+    pub fn new_v3(packet_identifier: u16, topics: Vec<String>) -> Self {
         Self {
             packet_identifier,
-            topics: topics
-                .into_iter()
-                .map(|topic| topic.0.to_string())
-                .collect(),
+            topics,
             properties: (),
         }
     }
@@ -128,15 +125,12 @@ impl Unsubscribe<MqttV3_1_1> {
 impl Unsubscribe<MqttV5_0_0> {
     pub fn new_v5(
         packet_identifier: u16,
-        topics: Vec<MqttTopic>,
+        topics: Vec<String>,
         user_property: Vec<UserProperty>,
     ) -> Self {
         Self {
             packet_identifier,
-            topics: topics
-                .into_iter()
-                .map(|topic| topic.0.to_string())
-                .collect(),
+            topics,
             properties: UnsubscribeProperties { user_property },
         }
     }
@@ -156,10 +150,7 @@ mod test_v3 {
     #[test]
     fn serialize() {
         let mut buf = Vec::new();
-        let msg = Unsubscribe::new_v3(
-            42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-        );
+        let msg = Unsubscribe::new_v3(42, vec!["topic1".to_string(), "topic2".to_string()]);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -211,10 +202,7 @@ mod test_v3 {
             b'c',
             b'2',
         ];
-        let expected = Unsubscribe::new_v3(
-            42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-        );
+        let expected = Unsubscribe::new_v3(42, vec!["topic1".to_string(), "topic2".to_string()]);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -233,11 +221,7 @@ mod test_v5 {
     #[test]
     fn serialize_normal() {
         let mut buf = Vec::new();
-        let msg = Unsubscribe::new_v5(
-            42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-            vec![],
-        );
+        let msg = Unsubscribe::new_v5(42, vec!["topic1".to_string(), "topic2".to_string()], vec![]);
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -271,7 +255,7 @@ mod test_v5 {
         let mut buf = Vec::new();
         let msg = Unsubscribe::new_v5(
             42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
+            vec!["topic1".to_string(), "topic2".to_string()],
             vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),
@@ -352,11 +336,8 @@ mod test_v5 {
             b'c',
             b'2',
         ];
-        let expected = Unsubscribe::new_v5(
-            42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
-            vec![],
-        );
+        let expected =
+            Unsubscribe::new_v5(42, vec!["topic1".to_string(), "topic2".to_string()], vec![]);
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -412,7 +393,7 @@ mod test_v5 {
         ];
         let expected = Unsubscribe::new_v5(
             42,
-            vec!["topic1".try_into().unwrap(), "topic2".try_into().unwrap()],
+            vec!["topic1".to_string(), "topic2".to_string()],
             vec![UserProperty {
                 key: "property1".into(),
                 value: "value1".into(),

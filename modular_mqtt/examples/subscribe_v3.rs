@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use modular_mqtt::{client::Client, client_opts::ClientOpts, connection::SyncWriter};
-use modular_mqtt_protocol::{MqttTopic, MqttV3_1_1, Publish, Qos};
+use modular_mqtt_protocol::{MqttV3_1_1, Publish, Qos};
 use tracing::{dispatcher::set_global_default, Level};
 
 fn main() {
@@ -21,11 +21,7 @@ fn main() {
 
     tracing::info!("Subscribing!");
     let suback = client
-        .subscribe(
-            vec![MqttTopic::try_from("qos0").unwrap()],
-            Qos::AtMostOnce,
-            Duration::from_secs(5),
-        )
+        .subscribe(vec!["qos0"], Qos::AtMostOnce, Duration::from_secs(5))
         .unwrap();
     tracing::info!("Got SubAck {suback:?}");
 

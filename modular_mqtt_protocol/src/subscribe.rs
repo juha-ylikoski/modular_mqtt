@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes};
 use crate::{
     util::{read_variable_len_int, variable_len_int_size, write_variable_len_int},
     version::PacketProperties,
-    ControlPacketType, Error, MalformedPacket, MqttTopic, MqttV5_0_0, MqttVersion, Packet,
-    Property, PropertyIdentifier, UserProperty,
+    ControlPacketType, Error, MalformedPacket, MqttV5_0_0, MqttVersion, Packet, Property,
+    PropertyIdentifier, UserProperty,
 };
 
 use super::{
@@ -13,7 +13,7 @@ use super::{
 };
 
 pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync + Clone {
-    fn new(topic: MqttTopic, qos: Qos) -> Self;
+    fn new(topic: String, qos: Qos) -> Self;
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error>;
     fn topic(&self) -> &str;
     fn options(&self) -> u8;
@@ -21,21 +21,20 @@ pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync +
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopicSubscriptionV3 {
-    topic: MqttTopic,
+    topic: String,
     qos: Qos,
 }
 
 impl TopicSubscription for TopicSubscriptionV3 {
-    fn new(topic: MqttTopic, qos: Qos) -> Self {
+    fn new(topic: String, qos: Qos) -> Self {
         Self { topic, qos }
     }
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error> {
         let qos = Qos::try_from(options)?;
-        let topic = MqttTopic::try_from(topic)?;
         Ok(TopicSubscriptionV3::new(topic, qos))
     }
     fn topic(&self) -> &str {
-        &self.topic.0
+        &self.topic
     }
     fn options(&self) -> u8 {
         self.qos as u8
@@ -50,12 +49,12 @@ pub struct TopicSubscriptionV5 {
     /// Bit 3 of the Subscription Options represents the Retain As Published option. If 1, Application Messages forwarded using this subscription keep the RETAIN flag they were published with. If 0, Application Messages forwarded using this subscription have the RETAIN flag set to 0. Retained messages sent when the subscription is established have the RETAIN flag set to 1.
     keep_retain: bool,
     retain_handling: RetainHandling,
-    topic: MqttTopic,
+    topic: String,
 }
 
 impl TopicSubscriptionV5 {
     pub fn new(
-        topic: MqttTopic,
+        topic: String,
         qos: Qos,
         no_local: bool,
         keep_retain: bool,
@@ -72,7 +71,7 @@ impl TopicSubscriptionV5 {
 }
 
 impl TopicSubscription for TopicSubscriptionV5 {
-    fn new(topic: MqttTopic, qos: Qos) -> Self {
+    fn new(topic: String, qos: Qos) -> Self {
         Self {
             qos,
             no_local: true,
@@ -82,7 +81,6 @@ impl TopicSubscription for TopicSubscriptionV5 {
         }
     }
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error> {
-        let topic = MqttTopic::try_from(topic)?;
         let qos = Qos::try_from(options & 0b11)?;
         let no_local = (options & 0x4) == 0x4;
         let keep_retain = (options & 0x8) == 0x8;
@@ -99,7 +97,7 @@ impl TopicSubscription for TopicSubscriptionV5 {
         })
     }
     fn topic(&self) -> &str {
-        &self.topic.0
+        &self.topic
     }
     fn options(&self) -> u8 {
         self.qos as u8
@@ -357,8 +355,8 @@ mod test_v3 {
         let msg = Subscribe::<MqttV3_1_1>::new(
             42,
             vec![
-                TopicSubscriptionV3::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
-                TopicSubscriptionV3::new(MqttTopic::try_from("topic2").unwrap(), Qos::AtMostOnce),
+                TopicSubscriptionV3::new("topic1".to_string(), Qos::ExactlyOnce),
+                TopicSubscriptionV3::new("topic2".to_string(), Qos::AtMostOnce),
             ],
         );
         msg.write_to_buf(&mut buf);
@@ -419,8 +417,8 @@ mod test_v3 {
         let expected = Subscribe::<MqttV3_1_1>::new(
             42,
             vec![
-                TopicSubscriptionV3::new(MqttTopic::try_from("topic1").unwrap(), Qos::ExactlyOnce),
-                TopicSubscriptionV3::new(MqttTopic::try_from("topic2").unwrap(), Qos::AtMostOnce),
+                TopicSubscriptionV3::new("topic1".to_string(), Qos::ExactlyOnce),
+                TopicSubscriptionV3::new("topic2".to_string(), Qos::AtMostOnce),
             ],
         );
         let mut buf = BytesMut::from(&msg[..]);
@@ -445,14 +443,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     false,
                     false,
                     RetainHandling::SendAtSubscribe,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     false,
@@ -501,14 +499,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     false,
                     false,
                     RetainHandling::SendAtSubscribe,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     false,
@@ -584,14 +582,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     true,
                     false,
                     RetainHandling::SendIfSubDoesNotExist,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     true,
@@ -665,14 +663,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     false,
                     false,
                     RetainHandling::SendAtSubscribe,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     false,
@@ -745,14 +743,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     false,
                     false,
                     RetainHandling::SendAtSubscribe,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     false,
@@ -804,14 +802,14 @@ mod test_v5 {
             42,
             vec![
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic1").unwrap(),
+                    "topic1".to_string(),
                     Qos::ExactlyOnce,
                     true,
                     false,
                     RetainHandling::SendIfSubDoesNotExist,
                 ),
                 TopicSubscriptionV5::new(
-                    MqttTopic::try_from("topic2").unwrap(),
+                    "topic2".to_string(),
                     Qos::AtMostOnce,
                     false,
                     true,

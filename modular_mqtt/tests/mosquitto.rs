@@ -38,7 +38,7 @@ fn mosquitto_publish<V>(qos: Qos, suback_data: V::SubAckData)
 where
     V: MqttVersion + MqttOptions,
     Client<V, SyncWriter>: MqttClient<V>,
-    modular_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
     ClientOpts<V>: Default,
 {
     util::init_logging();
@@ -69,11 +69,7 @@ where
 
         assert_eq!(
             client_r
-                .subscribe(
-                    vec![MqttTopic::try_from("topic").unwrap()],
-                    qos,
-                    Duration::from_secs(5)
-                )
+                .subscribe(vec!["topic"], qos, Duration::from_secs(5))
                 .unwrap(),
             SubAck::new(1, suback_data)
         );
@@ -122,7 +118,7 @@ fn mosquitto_unsub<V>(suback_data: V::SubAckData, unsuback_data: V::UnSubAckProp
 where
     V: MqttVersion + MqttOptions,
     Client<V, SyncWriter>: MqttClient<V>,
-    modular_mqtt_protocol::MqttTopic: IntoTopicSubscription<V>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
     ClientOpts<V>: Default,
 {
     util::init_logging();
@@ -154,18 +150,14 @@ where
 
         assert_eq!(
             client_r
-                .subscribe(
-                    vec![MqttTopic::try_from("topic").unwrap()],
-                    qos,
-                    Duration::from_secs(5)
-                )
+                .subscribe(vec!["topic"], qos, Duration::from_secs(5))
                 .unwrap(),
             SubAck::new(1, suback_data)
         );
 
         assert_eq!(
             client_r
-                .unsubscribe(vec!["topic".try_into().unwrap()], Duration::from_secs(5))
+                .unsubscribe(vec!["topic".to_string()], Duration::from_secs(5))
                 .unwrap(),
             UnsubAck::<V>::new(2, unsuback_data)
         );
