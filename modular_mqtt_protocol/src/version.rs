@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{util::variable_len_int_size, Error};
+use crate::{disconnect::MaybeReasonCode, util::variable_len_int_size, Error};
 
 mod sealed {
     use crate::{MqttV3_1_1, MqttV5_0_0};
@@ -41,7 +41,7 @@ pub trait MqttVersion:
         + Sync;
     type ConnackProperties: PacketProperties + Default;
     type AckTypeProperties<R: crate::ack_messages::ReasonCode>: PacketProperties + Default;
-    type DisconnectData: PacketProperties;
+    type DisconnectData: PacketProperties + MaybeReasonCode;
     type SubscribeData: PacketProperties + Default;
     type SubAckData: PacketProperties;
     type TopicSubscription: crate::subscribe::TopicSubscription;

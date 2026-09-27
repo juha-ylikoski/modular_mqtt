@@ -245,9 +245,31 @@ impl PacketProperties for DisconnectData {
     }
 }
 
+pub trait MaybeReasonCode {
+    fn maybe_reason_code(&self) -> Option<DisconnectReasonCode>;
+}
+
+impl MaybeReasonCode for () {
+    fn maybe_reason_code(&self) -> Option<DisconnectReasonCode> {
+        None
+    }
+}
+
+impl MaybeReasonCode for DisconnectData {
+    fn maybe_reason_code(&self) -> Option<DisconnectReasonCode> {
+        Some(self.reason_code)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
 pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
+
+impl<V: MqttVersion> Disconnect<V> {
+    pub fn maybe_reason_code(&self) -> Option<DisconnectReasonCode> {
+        self.0.maybe_reason_code()
+    }
+}
 
 impl<V: MqttVersion> Packet for Disconnect<V> {
     fn write_to_buf(&self, buf: &mut impl BufMut) {

@@ -15,7 +15,7 @@ use tracing::instrument;
 
 use crate::{
     client_communication::{ClientCommunicator, SyncData, SyncWakeup},
-    client_opts::{ClientOpts, MqttOptions, OnDisconnectBehavior},
+    client_opts::{exponential_backoff, ClientOpts, MqttOptions, OnDisconnectBehavior},
     connection::{SyncReader, SyncWriter, Writer},
     error::{BackendError, ClientError, ConnectError},
     util::{InflightMessage, InflightMessageState, IntoTopicSubscription},
@@ -62,6 +62,7 @@ where
     W: Writer,
     V: MqttVersion + MqttOptions,
 {
+    broker_addr: String,
     read_buf: BytesMut,
     write_buf: BytesMut,
     opts: Arc<ClientOpts<V>>,
@@ -76,6 +77,7 @@ where
     online: Arc<RwLock<bool>>,
     should_die: Arc<W::Mutex<bool>>,
     next_resend_deadline: Option<Instant>,
+    retry_count: u32,
 }
 
 fn read_into_buf(reader: &mut impl Read, buf: &mut BytesMut) -> std::io::Result<usize> {
@@ -216,6 +218,7 @@ where
         if connack.rc_is_success() {
             let bg_opts = opts.clone();
             let be = ClientBackend {
+                broker_addr: broker,
                 read_buf,
                 write_buf,
                 opts: bg_opts,
@@ -230,6 +233,7 @@ where
                 receive_inflight: Vec::new(),
                 next_resend_deadline: None,
                 should_die: killer.clone(),
+                retry_count: 0,
             };
             let backend = Arc::new(Mutex::new(Some(std::thread::spawn(|| be.bg_thread()))));
             let client = Self {
@@ -322,6 +326,7 @@ where
         if connack.rc_is_success() {
             let bg_opts = opts.clone();
             let be = ClientBackend {
+                broker_addr: broker,
                 read_buf,
                 write_buf,
                 opts: bg_opts,
@@ -336,6 +341,7 @@ where
                 receive_inflight: Vec::new(),
                 next_resend_deadline: None,
                 should_die: killer.clone(),
+                retry_count: 0,
             };
             let backend = Arc::new(Mutex::new(Some(tokio::task::spawn(be.bg_thread()))));
             let client = Self {
@@ -441,13 +447,56 @@ where
     #[instrument(skip_all,fields(client_id=%self.opts.client_id))]
     fn bg_thread(mut self) -> Result<(), BackendError> {
         tracing::debug!("Start listening for mqtt messages");
-        let res = self.loop_bg_thread();
+        let mut res = self.loop_bg_thread();
         if res.is_err() && *self.should_die.lock().unwrap() {
             tracing::info!("Shutting down!");
             return Ok(());
         }
+
+        if let OnDisconnectBehavior::ReconnectExponentialBackoff {
+            min_retry_interval,
+            max_retry_interval,
+        } = self.opts.on_disconnect
+        {
+            loop {
+                if let Err(BackendError::IoError(e)) = &res {
+                    self.retry_count += 1;
+                    tracing::warn!(
+                        "Got io error: {e}. Trying to reconnect after {min_retry_interval:?}."
+                    );
+                    let wait = exponential_backoff(
+                        min_retry_interval,
+                        max_retry_interval,
+                        self.retry_count,
+                    );
+                    std::thread::sleep(wait);
+                    res = self.reconnect();
+                    if res.is_ok() {
+                        tracing::info!("Successfully reconnected!");
+                        self.retry_count = 0;
+                        return self.bg_thread();
+                    }
+                }
+            }
+        }
+
         tracing::error!("Background thread exited due to {res:?}");
         res
+    }
+
+    fn reconnect(&mut self) -> Result<(), BackendError> {
+        tracing::info!("Reconnecting to mqtt broker");
+        self.read_buf.clear();
+        self.write_buf.clear();
+        let stream = TcpStream::connect(&self.broker_addr)?;
+        let reader = SyncReader::Tcp(stream.try_clone().unwrap());
+        reader.set_read_timeout(Some(Duration::from_secs(self.opts.keep_alive.into())))?;
+        let writer = SyncWriter::Tcp(stream);
+        *self.writer.lock().unwrap() = writer;
+        self.reader = reader;
+        self.re_write_qos1_and_qos2_to_write_buf();
+        self.write_buf_to_stream()?;
+        Ok(())
     }
 
     fn loop_bg_thread(&mut self) -> Result<(), BackendError> {
@@ -558,13 +607,56 @@ where
     #[instrument(skip_all,fields(client_id=%self.opts.client_id))]
     async fn bg_thread(mut self) -> Result<(), BackendError> {
         tracing::debug!("Start listening for mqtt messages");
-        let res = self.loop_bg_thread().await;
+        let mut res = self.loop_bg_thread().await;
         if res.is_err() && *self.should_die.lock().await {
             tracing::info!("Shutting down!");
             return Ok(());
         }
+
+        if let OnDisconnectBehavior::ReconnectExponentialBackoff {
+            min_retry_interval,
+            max_retry_interval,
+        } = self.opts.on_disconnect
+        {
+            loop {
+                if let Err(BackendError::IoError(e)) = &res {
+                    self.retry_count += 1;
+                    tracing::warn!(
+                        "Got io error: {e}. Trying to reconnect after {min_retry_interval:?}."
+                    );
+                    let wait = exponential_backoff(
+                        min_retry_interval,
+                        max_retry_interval,
+                        self.retry_count,
+                    );
+                    tokio::time::sleep(wait).await;
+                    res = self.reconnect().await;
+                    if res.is_ok() {
+                        tracing::info!("Successfully reconnected!");
+                        self.retry_count = 0;
+                        return self.bg_thread().await;
+                    }
+                }
+            }
+        }
+
         tracing::error!("Background thread exited due to {res:?}");
         res
+    }
+
+    async fn reconnect(&mut self) -> Result<(), BackendError> {
+        tracing::info!("Reconnecting to mqtt broker");
+        self.read_buf.clear();
+        self.write_buf.clear();
+        let stream = tokio::net::TcpStream::connect(&self.broker_addr).await?;
+        let (read_half, write_half) = stream.into_split();
+        let reader = crate::connection::async_stream::AsyncReader::Tcp(read_half);
+        let writer = crate::connection::async_stream::AsyncWriter::Tcp(write_half);
+        *self.writer.lock().await = writer;
+        self.reader = reader;
+        self.re_write_qos1_and_qos2_to_write_buf();
+        self.write_buf_to_stream().await?;
+        Ok(())
     }
 
     async fn loop_bg_thread(&mut self) -> Result<(), BackendError> {
@@ -667,6 +759,24 @@ where
     V: MqttVersion + MqttOptions + std::fmt::Debug,
     W: Writer,
 {
+    fn re_write_qos1_and_qos2_to_write_buf(&mut self) {
+        tracing::debug!("Writing qos1 and qos2 messages into stream");
+        let now = std::time::Instant::now();
+        for (mid, msg) in self.inflight_msgs.iter() {
+            match &mut *msg.state.write().unwrap() {
+                InflightMessageState::PubAck(instant) | InflightMessageState::PubRec(instant) => {
+                    msg.msg.write_to_buf(&mut self.write_buf);
+                    *instant = now;
+                }
+                InflightMessageState::PubComp(instant) => {
+                    PubRel::<V>::new_ok(*mid).write_to_buf(&mut self.write_buf);
+                    *instant = now;
+                }
+                InflightMessageState::Sent => (),
+            }
+        }
+    }
+
     fn handle_msg(
         &mut self,
         fixed_header: FixedHeader,
@@ -775,10 +885,9 @@ where
             }
 
             ControlPacketType::Disconnect => {
+                let disconnect = Disconnect::<V>::try_read_entire_buf(fixed_header, body)?;
                 *self.online.write().unwrap() = false;
-                match self.opts.on_disconnect {
-                    OnDisconnectBehavior::Panic => panic!("MQTT broker sent disconnect!"),
-                }
+                return Err(BackendError::Disconnected(disconnect.maybe_reason_code()));
             }
 
             ControlPacketType::PubRel => {

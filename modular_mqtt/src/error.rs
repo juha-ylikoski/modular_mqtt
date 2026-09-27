@@ -52,6 +52,9 @@ pub enum BackendError {
 
     #[error("Unexpected packet {0}")]
     UnexpectedPacket(&'static str),
+
+    #[error("Broker sent erroneous disconnect")]
+    Disconnected(Option<modular_mqtt_protocol::DisconnectReasonCode>),
 }
 
 impl<V> From<std::sync::mpsc::SendError<V>> for BackendError {

@@ -7,8 +7,20 @@ use std::time::Duration;
 
 const DEFAULT_ACK_RETENTION: Duration = Duration::from_mins(1);
 
+pub(crate) fn exponential_backoff(
+    min_retry_interval: Duration,
+    max_retry_interval: Duration,
+    retry_count: u32,
+) -> Duration {
+    Duration::from_secs(min_retry_interval.as_secs().pow(retry_count)).min(max_retry_interval)
+}
+
 pub enum OnDisconnectBehavior {
     Panic,
+    ReconnectExponentialBackoff {
+        min_retry_interval: Duration,
+        max_retry_interval: Duration,
+    },
 }
 
 pub(crate) trait MqttConnect<V>
