@@ -9,12 +9,12 @@ macro_rules! test {
             #[test]
             #[ntest::timeout($timeout)]
             fn v3() {
-                $tc::<modular_mqtt_protocol::MqttV3_1_1>($($($argsv3)+),*)
+                $tc::<modular_mqtt_protocol::MqttV3_1_1, modular_mqtt::ClientOptsV3>($($($argsv3)+),*)
             }
             #[test]
             #[ntest::timeout($timeout)]
             fn v5() {
-                $tc::<modular_mqtt_protocol::MqttV5_0_0>($($($argsv5)+),*)
+                $tc::<modular_mqtt_protocol::MqttV5_0_0, modular_mqtt::ClientOptsV5>($($($argsv5)+),*)
             }
         }
     };

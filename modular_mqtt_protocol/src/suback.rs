@@ -199,6 +199,29 @@ impl PacketProperties for SubAckDataV5 {
     }
 }
 
+pub trait SubAckRcs {
+    fn succeeded(&self) -> Vec<bool>;
+}
+
+impl SubAckRcs for Vec<SubRcV3> {
+    fn succeeded(&self) -> Vec<bool> {
+        self.iter().map(|rc| *rc != SubRcV3::Failure).collect()
+    }
+}
+
+impl SubAckRcs for SubAckDataV5 {
+    fn succeeded(&self) -> Vec<bool> {
+        self.return_codes
+            .iter()
+            .map(|rc| {
+                *rc == SubRcV5::SuccessQos0
+                    || *rc == SubRcV5::SuccessQos1
+                    || *rc == SubRcV5::SuccessQos2
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// A SUBACK Packet is sent by the Server to the Client to confirm receipt and processing of a SUBSCRIBE Packet.
 pub struct SubAck<V: MqttVersion> {
@@ -238,6 +261,10 @@ impl<V: MqttVersion> SubAck<V> {
             packet_identifier,
             data,
         }
+    }
+
+    pub fn subs_succeeded(&self) -> Vec<bool> {
+        self.data.succeeded()
     }
 }
 impl SubAck<MqttV3_1_1> {

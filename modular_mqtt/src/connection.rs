@@ -4,18 +4,6 @@ use std::{
     time::Duration,
 };
 
-pub trait Writer {
-    type MpscSender<T>;
-    type MpscReceiver<T>;
-
-    type CommunicatorData<T>: Clone;
-    type CommunicatorWakeup: Clone;
-
-    type BgTask;
-    type Mutex<T>;
-    type RwLock<T>;
-}
-
 pub enum SyncReader {
     Tcp(TcpStream),
     Disconnected,
@@ -24,16 +12,6 @@ pub enum SyncReader {
 pub enum SyncWriter {
     Tcp(TcpStream),
     Disconnected,
-}
-
-impl Writer for SyncWriter {
-    type MpscSender<T> = std::sync::mpsc::Sender<T>;
-    type MpscReceiver<T> = std::sync::mpsc::Receiver<T>;
-    type CommunicatorData<T> = crate::client_communication::SyncData<T>;
-    type CommunicatorWakeup = crate::client_communication::SyncWakeup;
-    type BgTask = std::thread::JoinHandle<Result<(), crate::error::BackendError>>;
-    type Mutex<T> = std::sync::Mutex<T>;
-    type RwLock<T> = std::sync::RwLock<T>;
 }
 
 impl Read for SyncReader {

@@ -1,32 +1,26 @@
-use crate::util::{self, write_packet};
+use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
 
 use std::{net::TcpListener, time::Duration};
 
 use bytes::Bytes;
-use modular_mqtt::{
-    client::{Client, MqttClient},
-    client_opts::{ClientOpts, MqttOptions},
-    connection::SyncWriter,
-    error::ConnectError,
-};
+use modular_mqtt::{error::ConnectError, ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, Disconnect, DisconnectReasonCode, MqttLastWill,
-    MqttTopic, MqttVersion, Packet, Publish, Qos, VersionedConnect,
+    MqttLastWill5_0_0, MqttTopic, MqttVersion, Packet, Publish, Qos, VersionedConnect,
 };
 
-fn test_connect_no_server<V>()
+fn test_connect_no_server<V, O>()
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
 {
     util::init_logging();
-    let opts: ClientOpts<V> = ClientOpts {
+    let opts = GenericClientOpts(ClientOptsV5 {
         client_id: "client-id".to_string(),
         keep_alive: 30,
         ..Default::default()
-    };
-    match Client::<V, SyncWriter>::connect_tcp(opts, "127.0.0.1:1234".to_string()) {
+    });
+    match SyncClient::<V, O>::connect_tcp(opts.into(), "127.0.0.1:1234".to_string()) {
         Ok(_) => panic!("Should not happen"),
         Err(e) => match e {
             modular_mqtt::error::ConnectError::IoError(_) => (),
@@ -36,12 +30,12 @@ where
 }
 test!(connect_no_server, test_connect_no_server, 5000, (), ());
 
-fn test_connect<V>(connact_rc: V::ConnackRc)
+fn test_connect<V, O>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -62,12 +56,13 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
@@ -83,12 +78,12 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_username_password<V>(connact_rc: V::ConnackRc)
+fn test_connect_username_password<V, O>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -117,14 +112,15 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
             username: Some("username".to_string()),
             password: Some(Bytes::from_static(b"password")),
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
@@ -141,12 +137,12 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_last_will<V>(connact_rc: V::ConnackRc)
+fn test_connect_last_will<V, O>(connact_rc: V::ConnackRc)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -180,18 +176,19 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
-            will: Some(V::LastWill::new(
+            will: Some(MqttLastWill5_0_0::new(
                 MqttTopic::try_from("last-will-topic").unwrap(),
                 Bytes::from_static(b"payload"),
                 Qos::AtMostOnce,
                 false,
             )),
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
@@ -207,12 +204,12 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_refused<V>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
+fn test_connect_refused<V, O>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -231,12 +228,13 @@ where
         });
     });
 
-    match Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    match SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     ) {
         Ok(_) => panic!("Should not get here"),
@@ -262,12 +260,12 @@ test!(
     })
 );
 
-fn test_disconnect<V>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
+fn test_disconnect<V, O>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -287,12 +285,13 @@ where
         });
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts::<V> {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
@@ -313,12 +312,14 @@ where
 }
 
 mod disconnect {
+    use modular_mqtt::ClientOptsV3;
+
     use super::*;
     #[test]
     #[ntest::timeout(5000)]
     #[should_panic]
     fn v3() {
-        test_disconnect::<modular_mqtt_protocol::MqttV3_1_1>(
+        test_disconnect::<modular_mqtt_protocol::MqttV3_1_1, ClientOptsV3>(
             ConnectRcV3::Accepted,
             Disconnect::new_v3(),
         )
@@ -327,7 +328,7 @@ mod disconnect {
     #[ntest::timeout(5000)]
     #[should_panic]
     fn v5() {
-        test_disconnect::<modular_mqtt_protocol::MqttV5_0_0>(
+        test_disconnect::<modular_mqtt_protocol::MqttV5_0_0, ClientOptsV5>(
             ConnectRcV5::Accepted,
             Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None),
         )

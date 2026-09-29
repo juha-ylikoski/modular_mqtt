@@ -1,24 +1,20 @@
-use crate::util::{self, write_packet};
+use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
 
 use std::{net::TcpListener, time::Duration};
 
-use modular_mqtt::{
-    client::{Client, MqttClient},
-    client_opts::{ClientOpts, MqttOptions},
-    connection::SyncWriter,
-};
-use ntest::timeout;
+use modular_mqtt::{ClientOpts, ClientOptsV3, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet,
     PingReq, PingResp, VersionedConnect,
 };
+use ntest::timeout;
 
-fn ping_sequence<V>(connack_rc: V::ConnackRc)
+fn ping_sequence<V, O>(connack_rc: V::ConnackRc)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -48,12 +44,13 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 2,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
@@ -67,11 +64,11 @@ where
 #[test]
 #[timeout(15000)]
 fn v3() {
-    ping_sequence::<MqttV3_1_1>(ConnectRcV3::Accepted);
+    ping_sequence::<MqttV3_1_1, ClientOptsV3>(ConnectRcV3::Accepted);
 }
 
 #[test]
 #[timeout(15000)]
 fn v5() {
-    ping_sequence::<MqttV5_0_0>(ConnectRcV5::Accepted);
+    ping_sequence::<MqttV5_0_0, ClientOptsV5>(ConnectRcV5::Accepted);
 }

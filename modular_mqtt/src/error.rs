@@ -55,6 +55,9 @@ pub enum BackendError {
 
     #[error("Broker sent erroneous disconnect")]
     Disconnected(Option<modular_mqtt_protocol::DisconnectReasonCode>),
+
+    #[error("Failed to reconnect to mqtt broker")]
+    ReconnectError(ConnectError),
 }
 
 impl<V> From<std::sync::mpsc::SendError<V>> for BackendError {

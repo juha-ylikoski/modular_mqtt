@@ -18,5 +18,6 @@ testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15.0", features = ["mosquitto"] }
 
 [features]
-default = ["async"]
+# default = ["async"]
+default = []
 async = ["dep:tokio"]

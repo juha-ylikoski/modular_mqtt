@@ -1,5 +1,4 @@
-use modular_mqtt::{client::Client, client_opts::ClientOpts, connection::SyncWriter};
-use modular_mqtt_protocol::MqttV3_1_1;
+use modular_mqtt::{ClientOptsV3, SyncClient};
 use tracing::{dispatcher::set_global_default, Level};
 
 fn main() {
@@ -8,8 +7,8 @@ fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    Client::<MqttV3_1_1, SyncWriter>::connect_tcp(
-        ClientOpts {
+    SyncClient::connect_tcp(
+        ClientOptsV3 {
             client_id: "client-id".to_string(),
             ..Default::default()
         },

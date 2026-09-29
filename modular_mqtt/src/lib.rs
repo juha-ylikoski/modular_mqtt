@@ -1,18 +1,22 @@
 use std::time::Duration;
 
-#[cfg(feature = "async")]
-use crate::connection::async_stream::AsyncWriter;
-use crate::connection::SyncWriter;
-
-pub mod client;
-pub mod client_communication;
-pub mod client_opts;
-pub mod connection;
+pub(crate) mod backend;
+pub(crate) mod client;
+pub(crate) mod client_communication;
+pub(crate) mod client_opts;
+pub(crate) mod connection;
 pub mod error;
-pub mod util;
+pub(crate) mod util;
 
 pub const RESENT_INTERVAL: Duration = Duration::from_secs(10);
 
-pub type SyncClient<V> = client::Client<V, SyncWriter>;
-#[cfg(feature = "async")]
-pub type AsyncClient<V> = client::Client<V, AsyncWriter>;
+pub use client::sync_client::Client as SyncClient;
+pub use client_opts::{ClientOpts, ClientOptsV3, ClientOptsV5};
+use modular_mqtt_protocol::{MqttV3_1_1, MqttV5_0_0};
+pub use util::IntoTopicSubscription;
+
+pub type SyncClientV3 = SyncClient<MqttV3_1_1, ClientOptsV3>;
+pub type SyncClientV5 = SyncClient<MqttV5_0_0, ClientOptsV5>;
+
+// #[cfg(feature = "async")]
+// pub type AsyncClient<V> = client::Client<V, AsyncWriter>;

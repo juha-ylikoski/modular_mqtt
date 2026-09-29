@@ -1,5 +1,5 @@
-use modular_mqtt::{client::Client, client_opts::ClientOpts, connection::SyncWriter};
-use modular_mqtt_protocol::{MqttV5_0_0, Publish, Qos};
+use modular_mqtt::{ClientOptsV5, SyncClient};
+use modular_mqtt_protocol::{Publish, Qos};
 use tracing::{dispatcher::set_global_default, Level};
 
 fn main() {
@@ -8,8 +8,8 @@ fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let (_recv_stream, client) = Client::<MqttV5_0_0, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_recv_stream, client) = SyncClient::connect_tcp(
+        ClientOptsV5 {
             client_id: "client-id-pub".to_string(),
             ..Default::default()
         },

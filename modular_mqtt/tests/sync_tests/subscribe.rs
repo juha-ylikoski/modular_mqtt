@@ -1,26 +1,20 @@
-use crate::util::{self, write_packet};
+use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
 
 use std::{net::TcpListener, time::Duration};
 
-use modular_mqtt::{
-    client::{Client, MqttClient},
-    client_opts::{ClientOpts, MqttOptions},
-    connection::SyncWriter,
-    util::IntoTopicSubscription,
-};
+use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, MqttTopic, MqttVersion, Packet, PubAck, PubComp,
     PubRec, PubRel, Publish, Qos, SubAck, SubAckDataV5, SubRcV3, SubRcV5, Subscribe,
     TopicSubscription, VersionedConnect,
 };
 
-fn test_sub_qos0<V>(connack_rc: V::ConnackRc, sub_rc: V::SubAckData, sub_rc2: V::SubAckData)
+fn test_sub_qos0<V, O>(connack_rc: V::ConnackRc, sub_rc: V::SubAckData, sub_rc2: V::SubAckData)
 where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    String: IntoTopicSubscription<V>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -59,21 +53,18 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (_, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
     let suback = client
-        .subscribe(
-            vec!["topic".to_string()],
-            Qos::AtMostOnce,
-            Duration::from_secs(5),
-        )
+        .subscribe(vec!["topic"], Qos::AtMostOnce, Duration::from_secs(5))
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
@@ -105,16 +96,15 @@ test!(
     )
 );
 
-fn test_sub_qos0_receive_packet<V>(
+fn test_sub_qos0_receive_packet<V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    String: IntoTopicSubscription<V>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -159,22 +149,19 @@ fn test_sub_qos0_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
 
     let suback = client
-        .subscribe(
-            vec!["topic".to_string()],
-            Qos::AtMostOnce,
-            Duration::from_secs(5),
-        )
+        .subscribe(vec!["topic"], Qos::AtMostOnce, Duration::from_secs(5))
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
@@ -217,16 +204,15 @@ test!(
     )
 );
 
-fn test_sub_qos1_receive_packet<V>(
+fn test_sub_qos1_receive_packet<V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
-    VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    String: IntoTopicSubscription<V>,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
+    VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -274,22 +260,19 @@ fn test_sub_qos1_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
 
     let suback = client
-        .subscribe(
-            vec!["topic".to_string()],
-            Qos::AtLeastOnce,
-            Duration::from_secs(5),
-        )
+        .subscribe(vec!["topic"], Qos::AtLeastOnce, Duration::from_secs(5))
         .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
@@ -332,16 +315,15 @@ test!(
     )
 );
 
-fn test_sub_qos2_receive_packet<V>(
+fn test_sub_qos2_receive_packet<V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
-    V: MqttVersion + MqttOptions,
-    Client<V, SyncWriter>: MqttClient<V>,
-    ClientOpts<V>: Default,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
-    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -396,12 +378,13 @@ fn test_sub_qos2_receive_packet<V>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = Client::<V, SyncWriter>::connect_tcp(
-        ClientOpts {
+    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+        GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        },
+        })
+        .into(),
         addr.to_string(),
     )
     .unwrap();
