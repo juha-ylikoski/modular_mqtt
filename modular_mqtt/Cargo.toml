@@ -13,11 +13,12 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [dev-dependencies]
+futures = { version = "0.3.34", features = ["executor"] }
 ntest = "0.9.3"
 testcontainers = { version = "0.27.3", features = ["blocking"] }
 testcontainers-modules = { version = "0.15.0", features = ["mosquitto"] }
 
 [features]
-# default = ["async"]
-default = []
+default = ["async"]
+# default = []
 async = ["dep:tokio"]

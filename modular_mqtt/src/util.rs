@@ -1,7 +1,10 @@
+#[cfg(feature = "async")]
+use std::time::Duration;
 use std::{
+    future::Future,
     io::{Read, Write},
+    marker::PhantomData,
     sync::RwLock,
-    time::Instant,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -15,11 +18,12 @@ use crate::{
     client_opts::ClientOpts,
     connection::{SyncReader, SyncWriter},
     error::ConnectError,
+    Instant,
 };
 
 pub const STREAM_READ_CHUNK_SIZE: usize = 4096;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InflightMessageState {
     PubAck(Instant),
     PubRec(Instant),
@@ -28,23 +32,58 @@ pub enum InflightMessageState {
 }
 
 #[derive(Debug)]
-pub struct InflightMessage<V: MqttVersion> {
-    pub state: RwLock<InflightMessageState>,
+pub struct Sync;
+#[cfg(feature = "async")]
+#[derive(Debug)]
+pub struct Async;
+
+pub trait Notify: std::fmt::Debug {
+    type Notifier: std::fmt::Debug;
+}
+
+impl Notify for Sync {
+    type Notifier = std::sync::Condvar;
+}
+
+#[cfg(feature = "async")]
+impl Notify for Async {
+    type Notifier = tokio::sync::Notify;
+}
+
+#[derive(Debug)]
+pub struct InflightMessage<V: MqttVersion, R: Notify> {
+    pub state: std::sync::Mutex<InflightMessageState>,
+    pub delivered: R::Notifier,
     pub packet_identifier: u16,
     pub msg: Publish<V, QosPacketIdentifier>,
 }
 
-impl<V: MqttVersion> InflightMessage<V> {
-    pub fn wait_until_delivered(&self) {
-        loop {
-            if matches!(*self.state.read().unwrap(), InflightMessageState::Sent) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
+impl<V: MqttVersion, R: Notify> InflightMessage<V, R> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
+    }
+}
+
+impl<V: MqttVersion> InflightMessage<V, Sync> {
+    pub fn wait_until_delivered(&self) {
+        let mut state = self.state.lock().unwrap();
+        while InflightMessageState::Sent != *state {
+            state = self.delivered.wait(state).unwrap();
+        }
+    }
+    pub fn mark_delivered(&self) {
+        *self.state.lock().unwrap() = InflightMessageState::Sent;
+        self.delivered.notify_all();
+    }
+}
+
+#[cfg(feature = "async")]
+impl<V: MqttVersion> InflightMessage<V, Async> {
+    pub async fn wait_until_delivered(&self) {
+        self.delivered.notified().await
+    }
+    pub fn mark_delivered(&self) {
+        self.delivered.notify_waiters();
     }
 }
 
@@ -125,17 +164,24 @@ pub fn read_into_buf(reader: &mut impl Read, buf: &mut BytesMut) -> std::io::Res
 pub async fn read_into_buf_async(
     reader: &mut crate::connection::async_stream::AsyncReader,
     buf: &mut BytesMut,
-) -> std::io::Result<usize> {
+    timeout: Duration,
+) -> Result<std::io::Result<usize>, tokio::time::error::Elapsed> {
     use tokio::io::AsyncReadExt;
 
     tracing::trace!("Try to read data from stream");
     let old_len = buf.len();
     buf.resize(old_len + STREAM_READ_CHUNK_SIZE, 0);
-    let result = reader.read(&mut buf[old_len..]).await;
+    let result = match tokio::time::timeout(timeout, reader.read(&mut buf[old_len..])).await {
+        Ok(r) => r,
+        Err(timeout) => {
+            buf.truncate(old_len);
+            return Err(timeout);
+        }
+    };
     let n = *result.as_ref().unwrap_or(&0);
     buf.truncate(old_len + n);
     tracing::trace!("Read new data: {:?}", &buf[old_len..]);
-    result
+    Ok(result)
 }
 
 fn send_connect<V, O>(opts: &O, buf: &mut BytesMut)
@@ -183,6 +229,63 @@ where
 
     let (header, mut body) = loop {
         read_into_buf(reader, read_buf)?;
+        match FixedHeader::parse(read_buf, opts.max_packet_size()) {
+            Ok(Some((header, body))) => {
+                if header.control_packet_type != ControlPacketType::ConnAck {
+                    return Err(ConnectError::UnexpectedPacket {
+                        expected: ControlPacketType::ConnAck,
+                        received: header.control_packet_type,
+                    });
+                }
+                break (header, body);
+            }
+            Ok(None) => continue,
+            Err(e) => return Err(ConnectError::MqttError(e)),
+        };
+    };
+    let connack = handle_connack(header, &mut body)?;
+
+    tracing::debug!("Got ConnAck: {connack:?}");
+    Ok(connack)
+}
+
+#[cfg(feature = "async")]
+pub async fn connect_async<V, O>(
+    opts: &O,
+    read_buf: &mut BytesMut,
+    write_buf: &mut BytesMut,
+    reader: &mut crate::connection::async_stream::AsyncReader,
+    writer: &mut crate::connection::async_stream::AsyncWriter,
+) -> Result<ConnAck<V>, ConnectError>
+where
+    V: MqttVersion,
+    O: ClientOpts<V>,
+{
+    send_connect(opts, write_buf);
+    {
+        use tokio::io::AsyncWriteExt;
+
+        tracing::trace!("Send data: {write_buf:?}");
+        writer.write_all(&write_buf[..]).await?;
+        write_buf.truncate(0);
+        writer.flush().await?;
+    }
+
+    let (header, mut body) = loop {
+        match read_into_buf_async(
+            reader,
+            read_buf,
+            Duration::from_secs(opts.keep_alive().into()),
+        )
+        .await
+        {
+            Ok(Ok(_)) => (),
+            Ok(Err(e)) => Err(e)?,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timed out waiting for connack",
+            ))?,
+        };
         match FixedHeader::parse(read_buf, opts.max_packet_size()) {
             Ok(Some((header, body))) => {
                 if header.control_packet_type != ControlPacketType::ConnAck {

@@ -1,4 +1,4 @@
-use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
+use crate::util::{self, write_packet, GenericClientOpts, Harness};
 
 use std::net::TcpListener;
 use std::time::Duration;
@@ -10,11 +10,11 @@ use modular_mqtt_protocol::{
     VersionedConnect,
 };
 
-fn test_publish_qos0<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_qos0<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -50,7 +50,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -59,17 +59,21 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    assert!(client
-        .publish(Publish::new(
+    assert!(H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtMostOnce,
             false
-        ))
-        .unwrap()
-        .is_none());
-    client.disconnect().unwrap();
+        )
+    )
+    .await
+    .unwrap()
+    .is_none());
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -81,11 +85,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_publish_qos1<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_qos1<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -129,7 +133,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -138,20 +142,24 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let msg = client
-        .publish(Publish::new(
+    let msg = H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtLeastOnce,
             false,
-        ))
-        .unwrap()
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    msg.wait_until_delivered();
+    H::wait_until_delivered(msg).await;
 
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -163,11 +171,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_publish_qos2<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_qos2<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -216,7 +224,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -225,20 +233,26 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let msg = client
-        .publish(Publish::new(
+    let msg = H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,
             false,
-        ))
-        .unwrap()
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    msg.wait_until_delivered();
+    tracing::info!("Wait for receive!");
+    H::wait_until_delivered(msg).await;
+    tracing::info!("Received");
 
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -250,11 +264,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_publish_resend_qos1<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_resend_qos1<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -326,7 +340,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -336,20 +350,24 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let msg = client
-        .publish(Publish::new(
+    let msg = H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::AtLeastOnce,
             false,
-        ))
-        .unwrap()
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    msg.wait_until_delivered();
+    H::wait_until_delivered(msg).await;
 
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -361,11 +379,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_publish_resend_qos2<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_resend_qos2<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -445,7 +463,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -455,20 +473,24 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let msg = client
-        .publish(Publish::new(
+    let msg = H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,
             false,
-        ))
-        .unwrap()
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    msg.wait_until_delivered();
+    H::wait_until_delivered(msg).await;
 
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -480,11 +502,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_publish_resend_pubrel_qos2<V, O>(connack_rc: V::ConnackRc)
+async fn test_publish_resend_pubrel_qos2<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -575,7 +597,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 1,
@@ -585,20 +607,24 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let msg = client
-        .publish(Publish::new(
+    let msg = H::publish(
+        &client,
+        Publish::new(
             MqttTopic::try_from("topic").unwrap(),
             b"payload",
             Qos::ExactlyOnce,
             false,
-        ))
-        .unwrap()
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     send.send(msg.packet_identifier()).unwrap();
-    msg.wait_until_delivered();
+    H::wait_until_delivered(msg).await;
 
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }

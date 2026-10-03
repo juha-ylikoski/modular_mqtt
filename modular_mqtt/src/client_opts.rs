@@ -1,12 +1,12 @@
 use modular_mqtt_protocol::{
-    ConnAck, Connect, MqttLastWill3_1_1, MqttLastWill5_0_0, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    RetainHandling, UserProperty, MAX_MQTT_PACKET_SIZE,
+    ConnAck, Connect, Disconnect, MqttLastWill3_1_1, MqttLastWill5_0_0, MqttV3_1_1, MqttV5_0_0,
+    MqttVersion, Qos, RetainHandling, Subscribe, Unsubscribe, UserProperty, MAX_MQTT_PACKET_SIZE,
 };
 
 use bytes::Bytes;
 use std::time::Duration;
 
-use crate::error::ConnectError;
+use crate::{error::ConnectError, util::IntoTopicSubscription};
 
 const DEFAULT_ACK_RETENTION: Duration = Duration::from_mins(1);
 const DEFAULT_KEEP_ALIVE: u16 = 30;
@@ -58,6 +58,16 @@ where
     fn should_resubscribe(&self, connack: &ConnAck<V>) -> bool {
         self.clean_session() || !connack.session_present()
     }
+
+    fn topic_subscription(
+        &self,
+        topic: impl IntoTopicSubscription<V>,
+        qos: Qos,
+    ) -> V::TopicSubscription;
+
+    fn subscribe_packet(&self, id: u16, subs: Vec<V::TopicSubscription>) -> Subscribe<V>;
+    fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<V>;
+    fn disconnect_packet(&self) -> Disconnect<V>;
 }
 
 pub struct ClientOptsV3 {
@@ -131,6 +141,30 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
 
     fn clean_session(&self) -> bool {
         self.clean_session
+    }
+
+    fn topic_subscription(
+        &self,
+        topic: impl IntoTopicSubscription<MqttV3_1_1>,
+        qos: Qos,
+    ) -> <MqttV3_1_1 as MqttVersion>::TopicSubscription {
+        topic.into_topic_subscription(qos, false, false, RetainHandling::SendAtSubscribe)
+    }
+
+    fn subscribe_packet(
+        &self,
+        id: u16,
+        subs: Vec<<MqttV3_1_1 as MqttVersion>::TopicSubscription>,
+    ) -> Subscribe<MqttV3_1_1> {
+        Subscribe::new(id, subs)
+    }
+
+    fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<MqttV3_1_1> {
+        Unsubscribe::new_v3(id, topics)
+    }
+
+    fn disconnect_packet(&self) -> Disconnect<MqttV3_1_1> {
+        Disconnect::new_v3()
     }
 }
 
@@ -270,6 +304,41 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
 
     fn clean_session(&self) -> bool {
         self.clean_session
+    }
+
+    fn topic_subscription(
+        &self,
+        topic: impl IntoTopicSubscription<MqttV5_0_0>,
+        qos: Qos,
+    ) -> <MqttV5_0_0 as MqttVersion>::TopicSubscription {
+        topic.into_topic_subscription(
+            qos,
+            self.subscription_no_local,
+            self.subscription_keep_retain,
+            self.subscription_retain_handling,
+        )
+    }
+
+    fn subscribe_packet(
+        &self,
+        id: u16,
+        subs: Vec<<MqttV5_0_0 as MqttVersion>::TopicSubscription>,
+    ) -> Subscribe<MqttV5_0_0> {
+        Subscribe::new_with_options(id, subs, None, Vec::new())
+    }
+
+    fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<MqttV5_0_0> {
+        Unsubscribe::new_v5(id, topics, Vec::new())
+    }
+
+    fn disconnect_packet(&self) -> Disconnect<MqttV5_0_0> {
+        Disconnect::new_v5(
+            modular_mqtt_protocol::DisconnectReasonCode::Normal,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
     }
 }
 

@@ -1,6 +1,6 @@
-use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
+use crate::util::{self, write_packet, GenericClientOpts, Harness};
 
-use std::{net::TcpListener, time::Duration};
+use std::{future::Future, net::TcpListener, pin::pin, time::Duration};
 
 use bytes::Bytes;
 use modular_mqtt::{error::ConnectError, ClientOpts, ClientOptsV5, SyncClient};
@@ -9,8 +9,9 @@ use modular_mqtt_protocol::{
     MqttLastWill5_0_0, MqttTopic, MqttVersion, Packet, Publish, Qos, VersionedConnect,
 };
 
-fn test_connect_no_server<V, O>()
+async fn test_connect_no_server<H, V, O>()
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
 {
@@ -20,7 +21,7 @@ where
         keep_alive: 30,
         ..Default::default()
     });
-    match SyncClient::<V, O>::connect_tcp(opts.into(), "127.0.0.1:1234".to_string()) {
+    match H::connect::<V, O>(opts, "127.0.0.1:1234".to_string()).await {
         Ok(_) => panic!("Should not happen"),
         Err(e) => match e {
             modular_mqtt::error::ConnectError::IoError(_) => (),
@@ -30,11 +31,11 @@ where
 }
 test!(connect_no_server, test_connect_no_server, 5000, (), ());
 
-fn test_connect<V, O>(connact_rc: V::ConnackRc)
+async fn test_connect<H, V, O>(connact_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -56,17 +57,17 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -78,11 +79,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_username_password<V, O>(connact_rc: V::ConnackRc)
+async fn test_connect_username_password<H, V, O>(connact_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -112,19 +113,19 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
             username: Some("username".to_string()),
             password: Some(Bytes::from_static(b"password")),
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
 
     handle.join().unwrap();
@@ -137,11 +138,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_last_will<V, O>(connact_rc: V::ConnackRc)
+async fn test_connect_last_will<H, V, O>(connact_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -176,7 +177,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
@@ -187,12 +188,12 @@ where
                 false,
             )),
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -204,11 +205,11 @@ test!(
     (ConnectRcV5::Accepted)
 );
 
-fn test_connect_refused<V, O>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
+async fn test_connect_refused<H, V, O>(connact_rc: V::ConnackRc, tester: impl FnOnce(ConnectError))
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -228,15 +229,16 @@ where
         });
     });
 
-    match SyncClient::<V, O>::connect_tcp(
+    match H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
-    ) {
+    )
+    .await
+    {
         Ok(_) => panic!("Should not get here"),
         Err(e) => tester(e),
     }
@@ -260,11 +262,11 @@ test!(
     })
 );
 
-fn test_disconnect<V, O>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
+async fn test_disconnect<H, V, O>(connact_rc: V::ConnackRc, disconnect: Disconnect<V>)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -285,30 +287,28 @@ where
         });
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
+    .await
     .unwrap();
     handle.join().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while client.online() && std::time::Instant::now() < deadline {
+    while H::online(&client) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(!client.online());
-    client
-        .publish(Publish::new(
-            "foo".try_into().unwrap(),
-            b"bar",
-            Qos::AtMostOnce,
-            false,
-        ))
-        .unwrap();
+    assert!(!H::online(&client));
+    H::publish(
+        &client,
+        Publish::new("foo".try_into().unwrap(), b"bar", Qos::AtMostOnce, false),
+    )
+    .await
+    .unwrap();
 }
 
 mod disconnect {
@@ -319,18 +319,23 @@ mod disconnect {
     #[ntest::timeout(5000)]
     #[should_panic]
     fn v3() {
-        test_disconnect::<modular_mqtt_protocol::MqttV3_1_1, ClientOptsV3>(
-            ConnectRcV3::Accepted,
-            Disconnect::new_v3(),
-        )
+        futures::executor::block_on(test_disconnect::<
+            crate::util::SyncHarness,
+            modular_mqtt_protocol::MqttV3_1_1,
+            ClientOptsV3,
+        >(ConnectRcV3::Accepted, Disconnect::new_v3()))
     }
     #[test]
     #[ntest::timeout(5000)]
     #[should_panic]
     fn v5() {
-        test_disconnect::<modular_mqtt_protocol::MqttV5_0_0, ClientOptsV5>(
+        futures::executor::block_on(test_disconnect::<
+            crate::util::SyncHarness,
+            modular_mqtt_protocol::MqttV5_0_0,
+            ClientOptsV5,
+        >(
             ConnectRcV5::Accepted,
             Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None),
-        )
+        ))
     }
 }

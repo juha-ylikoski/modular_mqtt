@@ -62,7 +62,6 @@ impl Write for SyncWriter {
 
 #[cfg(feature = "async")]
 pub mod async_stream {
-    use super::Writer;
 
     pub enum AsyncReader {
         Tcp(tokio::net::tcp::OwnedReadHalf),
@@ -71,16 +70,6 @@ pub mod async_stream {
     pub enum AsyncWriter {
         Tcp(tokio::net::tcp::OwnedWriteHalf),
         Disconnected,
-    }
-
-    impl Writer for AsyncWriter {
-        type MpscSender<T> = tokio::sync::mpsc::Sender<T>;
-        type MpscReceiver<T> = tokio::sync::mpsc::Receiver<T>;
-        type CommunicatorData<T> = crate::client_communication::async_communicator::AsyncData<T>;
-        type CommunicatorWakeup = crate::client_communication::async_communicator::AsyncWakeup;
-        type BgTask = tokio::task::JoinHandle<Result<(), crate::error::BackendError>>;
-        type Mutex<T> = tokio::sync::Mutex<T>;
-        type RwLock<T> = tokio::sync::RwLock<T>;
     }
 
     impl tokio::io::AsyncRead for AsyncReader {

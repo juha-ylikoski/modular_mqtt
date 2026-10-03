@@ -1,20 +1,24 @@
-use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
+use crate::util::{self, write_packet, GenericClientOpts, Harness};
 
 use std::{net::TcpListener, time::Duration};
 
-use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
+use modular_mqtt::{ClientOpts, ClientOptsV5, IntoTopicSubscription, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, MqttTopic, MqttVersion, Packet, PubAck, PubComp,
     PubRec, PubRel, Publish, Qos, SubAck, SubAckDataV5, SubRcV3, SubRcV5, Subscribe,
     TopicSubscription, VersionedConnect,
 };
 
-fn test_sub_qos0<V, O>(connack_rc: V::ConnackRc, sub_rc: V::SubAckData, sub_rc2: V::SubAckData)
-where
+async fn test_sub_qos0<H, V, O>(
+    connack_rc: V::ConnackRc,
+    sub_rc: V::SubAckData,
+    sub_rc2: V::SubAckData,
+) where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -53,7 +57,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -62,13 +66,19 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
-    let suback = client
-        .subscribe(vec!["topic"], Qos::AtMostOnce, Duration::from_secs(5))
-        .unwrap();
+    let suback = H::subscribe(
+        &client,
+        vec!["topic"],
+        Qos::AtMostOnce,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -96,15 +106,16 @@ test!(
     )
 );
 
-fn test_sub_qos0_receive_packet<V, O>(
+async fn test_sub_qos0_receive_packet<H, V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -149,7 +160,7 @@ fn test_sub_qos0_receive_packet<V, O>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+    let (stream, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -158,14 +169,20 @@ fn test_sub_qos0_receive_packet<V, O>(
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
 
-    let suback = client
-        .subscribe(vec!["topic"], Qos::AtMostOnce, Duration::from_secs(5))
-        .unwrap();
+    let suback = H::subscribe(
+        &client,
+        vec!["topic"],
+        Qos::AtMostOnce,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
-    let msg = stream.recv().unwrap();
+    let msg = H::recv(&stream).await;
     assert_eq!(
         msg,
         Publish::new(
@@ -176,7 +193,7 @@ fn test_sub_qos0_receive_packet<V, O>(
         )
         .assign_packet_identifier(|| 1, false)
     );
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -204,15 +221,16 @@ test!(
     )
 );
 
-fn test_sub_qos1_receive_packet<V, O>(
+async fn test_sub_qos1_receive_packet<H, V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -260,7 +278,7 @@ fn test_sub_qos1_receive_packet<V, O>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+    let (stream, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -269,14 +287,20 @@ fn test_sub_qos1_receive_packet<V, O>(
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
 
-    let suback = client
-        .subscribe(vec!["topic"], Qos::AtLeastOnce, Duration::from_secs(5))
-        .unwrap();
+    let suback = H::subscribe(
+        &client,
+        vec!["topic"],
+        Qos::AtLeastOnce,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
-    let msg = stream.recv().unwrap();
+    let msg = H::recv(&stream).await;
     assert_eq!(
         msg,
         Publish::new(
@@ -287,7 +311,7 @@ fn test_sub_qos1_receive_packet<V, O>(
         )
         .assign_packet_identifier(|| 42, false)
     );
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
@@ -315,15 +339,16 @@ test!(
     )
 );
 
-fn test_sub_qos2_receive_packet<V, O>(
+async fn test_sub_qos2_receive_packet<H, V, O>(
     connack_rc: V::ConnackRc,
     sub_rc: V::SubAckData,
     sub_rc2: V::SubAckData,
 ) where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -378,7 +403,7 @@ fn test_sub_qos2_receive_packet<V, O>(
         rx_close.recv().unwrap();
     });
 
-    let (stream, client) = SyncClient::<V, O>::connect_tcp(
+    let (stream, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 30,
@@ -387,14 +412,20 @@ fn test_sub_qos2_receive_packet<V, O>(
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
 
-    let suback = client
-        .subscribe(vec!["topic"], Qos::ExactlyOnce, Duration::from_secs(5))
-        .unwrap();
+    let suback = H::subscribe(
+        &client,
+        vec!["topic"],
+        Qos::ExactlyOnce,
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
     let packet_identifier = recv.recv().unwrap();
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc));
-    let msg = stream.recv().unwrap();
+    let msg = H::recv(&stream).await;
     assert_eq!(
         msg,
         Publish::new(
@@ -406,7 +437,7 @@ fn test_sub_qos2_receive_packet<V, O>(
         .assign_packet_identifier(|| 42, false)
     );
     pub_done_rx.recv().unwrap();
-    client.disconnect().unwrap();
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }

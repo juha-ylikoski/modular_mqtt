@@ -1,63 +1,64 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use modular_mqtt_protocol::{
-    ConnAck, ControlPacketType, Disconnect, FixedHeader, MqttV3_1_1, MqttV5_0_0, MqttVersion,
-    Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
-    SubAck, Subscribe, TopicSubscription, TopicSubscriptionV3, TopicSubscriptionV5, UnsubAck,
-    Unsubscribe,
+    Disconnect, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Publish, Qos, QosPacketIdentifier,
+    SubAck, Subscribe, TopicSubscription, UnsubAck, Unsubscribe,
 };
 use std::{
     collections::HashMap,
-    io::{Read, Write},
-    net::TcpStream,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
-use tracing::instrument;
 
 use crate::{
+    backend::Shared,
     client_communication::{
         async_communicator::{AsyncData, AsyncWakeup},
-        ClientCommunicator, SyncData, SyncWakeup,
+        ClientCommunicator,
     },
-    client_opts::{exponential_backoff, ClientOpts, MqttOptions, OnDisconnectBehavior},
-    connection::{async_stream::AsyncWriter, SyncReader, SyncWriter, Writer},
-    error::{BackendError, ClientError, ConnectError},
-    util::{InflightMessage, InflightMessageState, IntoTopicSubscription},
+    client_opts::ClientOpts,
+    connection::async_stream::{AsyncReader, AsyncWriter},
+    error::{ClientError, ConnectError},
+    util::{
+        connect_async, InflightMessage, InflightMessageState, IntoTopicSubscription,
+        STREAM_READ_CHUNK_SIZE,
+    },
+    Instant,
 };
 
 use tokio::{
     io::AsyncWriteExt,
+    net::TcpStream,
     sync::{mpsc, Mutex},
 };
 
 #[derive(Clone)]
-pub struct Client<V>
+pub struct Client<V, O>
 where
-    V: MqttVersion + MqttOptions,
+    V: MqttVersion,
+    O: ClientOpts<V>,
 {
     write_buf: Arc<Mutex<BytesMut>>,
-    opts: Arc<ClientOpts<V>>,
-    next_packet_identifier: Arc<std::sync::atomic::AtomicU16>,
     writer: Arc<Mutex<AsyncWriter>>,
-    backend: Arc<Mutex<Option<std::thread::JoinHandle<Result<(), crate::error::BackendError>>>>>,
+    backend: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), crate::error::BackendError>>>>>,
     suback_comm: ClientCommunicator<AsyncData<SubAck<V>>, AsyncWakeup>,
     unsuback_comm: ClientCommunicator<AsyncData<UnsubAck<V>>, AsyncWakeup>,
-    inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage<V>>)>,
-    online: Arc<RwLock<bool>>,
-    kill_bg_thread: Arc<Mutex<bool>>,
-    subscriptions: Arc<Mutex<Vec<V::TopicSubscription>>>,
+    inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage<V, crate::util::Async>>)>,
+
+    shared: Arc<Shared<V, O>>,
 }
 
-impl<V> Client<V>
+impl<V, O> Client<V, O>
 where
-    V: MqttVersion + MqttOptions,
+    V: MqttVersion,
+    O: ClientOpts<V>,
 {
     fn next_packet_identifier(&self) -> u16 {
-        self.next_packet_identifier
+        self.shared
+            .next_packet_identifier
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
     fn assert_online(&self) {
-        if !*self.online.read().unwrap() {
+        if !*self.shared.online.read().unwrap() {
             panic!("Connection to mqtt broker was disconnect. Cannot proceed.");
         }
     }
@@ -70,12 +71,12 @@ where
     async fn handle_recv_error(&self) -> ClientError {
         let be = self.backend.lock().await.take().unwrap();
         if be.is_finished() {
-            return match be.join() {
+            return match be.await {
                 Ok(Ok(_)) => {
                     panic!("Backend thread has freed sender but did not error out");
                 }
                 Ok(Err(e)) => ClientError::BackendError(e),
-                Err(e) => ClientError::BackendCrashed(e),
+                Err(e) => ClientError::BackendCrashed(Box::new(e)),
             };
         } else {
             panic!("Backend thread has freed sender but is not dead");
@@ -83,95 +84,108 @@ where
     }
 
     pub fn online(&self) -> bool {
-        *self.online.read().unwrap()
-    }
-
-    async fn kill_bg_thread(&self) {
-        let mut killer = self.kill_bg_thread.lock().await;
-        *killer = true;
-    }
-
-    async fn subscribe_with(&self, msg: Subscribe<V>) -> Result<SubAck<V>, ClientError> {
-        self.assert_online();
-        tracing::debug!("Sending subscribe: {msg:?}");
-        {
-            let mut write_buf = self.write_buf.lock().await;
-            msg.write_to_buf(&mut *write_buf);
-            self.flush(&mut write_buf).await?;
-            drop(write_buf);
-        }
-
-        let suback = self.suback_comm.get(msg.packet_identifier()).await?;
-        let mut subs = self.subscriptions.lock().await;
-        for sub in msg
-            .subscriptions()
-            .iter()
-            .zip(suback.subs_succeeded())
-            .filter_map(|(sub, succeeded)| if succeeded { Some(sub) } else { None })
-        {
-            subs.push(sub.clone());
-        }
-        Ok(suback)
-    }
-
-    async fn unsubscribe_with(&self, msg: Unsubscribe<V>) -> Result<UnsubAck<V>, ClientError> {
-        self.assert_online();
-        tracing::debug!("Sending unsubscribe: {msg:?}");
-        {
-            let mut write_buf = self.write_buf.lock().await;
-            msg.write_to_buf(&mut *write_buf);
-            self.flush(&mut write_buf).await?;
-        }
-        let suback = self.unsuback_comm.get(msg.packet_identifier()).await?;
-        let mut subs = self.subscriptions.lock().await;
-        for topic in msg.topics() {
-            if let Some(index) = subs.iter().position(|v| v.topic() == topic) {
-                subs.remove(index);
-            }
-        }
-        Ok(suback)
-    }
-
-    async fn disconnect_with(self, packet: Disconnect<V>) -> Result<(), ClientError> {
-        let mut write_buf = self.write_buf.lock().await;
-        self.assert_online();
-        tracing::debug!("Sending Disconnect");
-        self.kill_bg_thread().await;
-
-        packet.write_to_buf(&mut *write_buf);
-        self.flush(&mut write_buf).await?;
-        let mut stream = self.writer.lock().await;
-        let old_stream = std::mem::replace(&mut *stream, AsyncWriter::Disconnected);
-        drop(stream);
-        if let AsyncWriter::Tcp(mut tcp) = old_stream {
-            // Unblocks the background thread's in-progress socket read (which can otherwise
-            // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
-            let _ = tcp.shutdown().await;
-        }
-
-        let mut backend = self.backend.lock().await;
-        let backend = backend.take();
-        if let Some(backend) = backend {
-            backend.join().unwrap().unwrap();
-        }
-        Ok(())
+        *self.shared.online.read().unwrap()
     }
 }
 
-impl<V> Client<V>
+impl<V, O> Client<V, O>
 where
-    V: MqttVersion + MqttOptions,
+    V: MqttVersion,
+    O: ClientOpts<V>,
 {
+    pub async fn connect(
+        opts: O,
+        broker: String,
+    ) -> Result<(mpsc::Receiver<Publish<V, QosPacketIdentifier>>, Self), ConnectError> {
+        let stream = TcpStream::connect(&broker).await?;
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = AsyncReader::Tcp(read_half);
+        let mut writer = AsyncWriter::Tcp(write_half);
+        let mut read_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);
+        let mut write_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);
+
+        let (msg_sender, msg_receiver) = mpsc::channel(100);
+        let suback_comm =
+            ClientCommunicator::<AsyncData<_>, AsyncWakeup>::new(opts.ack_retention());
+        let unsuback_comm =
+            ClientCommunicator::<AsyncData<_>, AsyncWakeup>::new(opts.ack_retention());
+        let (inflight_sender, inflight_receiver) = mpsc::channel(100);
+
+        let connack = match tokio::time::timeout(
+            Duration::from_secs(opts.keep_alive().into()),
+            connect_async(
+                &opts,
+                &mut read_buf,
+                &mut write_buf,
+                &mut reader,
+                &mut writer,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(connack)) => Ok(connack),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ConnectError::IoError(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timed out waiting for connack",
+            ))),
+        }?;
+
+        let writer = Arc::new(Mutex::new(writer));
+
+        let shared = Arc::new(Shared {
+            broker_addr: broker,
+            opts,
+            online: RwLock::new(true),
+            subscriptions: std::sync::Mutex::new(Vec::new()),
+            next_packet_identifier: std::sync::atomic::AtomicU16::new(1),
+        });
+
+        if connack.rc_is_success() {
+            let be = crate::backend::async_backend::Backend {
+                read_buf,
+                reader,
+                writer: writer.clone(),
+                msg_ch: msg_sender,
+                suback_comm: suback_comm.clone(),
+                unsuback_comm: unsuback_comm.clone(),
+                inflight_ch: inflight_receiver,
+                retry_count: 0,
+                state_machine: crate::backend::BackendStateMachine {
+                    version: std::marker::PhantomData,
+                    receive_inflight: Vec::new(),
+                    write_buf,
+                    inflight_msgs: HashMap::new(),
+                    next_resend_deadline: None,
+                    shared: shared.clone(),
+                },
+            };
+            let backend = Arc::new(Mutex::new(Some(tokio::task::spawn(be.bg_task()))));
+            let client = Self {
+                write_buf: Arc::new(Mutex::new(BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE))),
+                writer,
+                backend,
+                suback_comm,
+                unsuback_comm,
+                inflight_ch: inflight_sender,
+                shared,
+            };
+            Ok((msg_receiver, client))
+        } else {
+            Err(O::connect_error(&connack))
+        }
+    }
     pub async fn publish(
         &self,
         msg: Publish<V, Qos>,
-    ) -> Result<Option<Arc<InflightMessage<V>>>, ClientError> {
+    ) -> Result<Option<Arc<InflightMessage<V, crate::util::Async>>>, ClientError> {
         let mut write_buf = self.write_buf.lock().await;
         self.assert_online();
 
         let msg = msg.assign_packet_identifier(
             || {
-                self.next_packet_identifier
+                self.shared
+                    .next_packet_identifier
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             },
             false,
@@ -183,12 +197,14 @@ where
             let _inflight = Arc::new(match msg.qos() {
                 Qos::AtMostOnce => unreachable!(),
                 Qos::AtLeastOnce => InflightMessage {
-                    state: RwLock::new(InflightMessageState::PubAck(Instant::now())),
+                    state: std::sync::Mutex::new(InflightMessageState::PubAck(Instant::now())),
+                    delivered: tokio::sync::Notify::new(),
                     packet_identifier,
                     msg,
                 },
                 Qos::ExactlyOnce => InflightMessage {
-                    state: RwLock::new(InflightMessageState::PubRec(Instant::now())),
+                    state: std::sync::Mutex::new(InflightMessageState::PubRec(Instant::now())),
+                    delivered: tokio::sync::Notify::new(),
                     packet_identifier,
                     msg,
                 },
@@ -211,95 +227,89 @@ where
         self.flush(&mut write_buf).await?;
         Ok(inflight)
     }
-}
 
-impl Client<MqttV5_0_0> {
-    pub async fn connect(
-        opts: ClientOpts<MqttV5_0_0>,
-        broker: String,
-    ) -> Result<
-        (
-            std::sync::mpsc::Receiver<Publish<MqttV5_0_0, QosPacketIdentifier>>,
-            Self,
-        ),
-        ConnectError,
-    > {
-        todo!()
-    }
     pub async fn subscribe(
         &self,
-        topics: Vec<impl IntoTopicSubscription<MqttV5_0_0>>,
+        topics: Vec<impl IntoTopicSubscription<V>>,
         qos: Qos,
-    ) -> Result<SubAck<MqttV5_0_0>, ClientError> {
+    ) -> Result<SubAck<V>, ClientError> {
+        self.assert_online();
         let subs = topics
             .into_iter()
-            .map(|topic| {
-                topic.into_topic_subscription(
-                    qos,
-                    self.opts.extra_opts.subscription_no_local,
-                    self.opts.extra_opts.subscription_keep_retain,
-                    self.opts.extra_opts.subscription_retain_handling,
-                )
-            })
+            .map(|topic| self.shared.opts.topic_subscription(topic, qos))
             .collect();
 
         let packet_identifier = self.next_packet_identifier();
-        let msg = Subscribe::new_with_options(packet_identifier, subs, None, Vec::new());
-        self.subscribe_with(msg).await
+        let msg = self.shared.opts.subscribe_packet(packet_identifier, subs);
+
+        tracing::debug!("Sending subscribe: {msg:?}");
+        {
+            let mut write_buf = self.write_buf.lock().await;
+            msg.write_to_buf(&mut *write_buf);
+            self.flush(&mut write_buf).await?;
+            drop(write_buf);
+        }
+
+        let suback = self.suback_comm.get(msg.packet_identifier()).await?;
+        let mut subs = self.shared.subscriptions.lock().unwrap();
+        for sub in msg
+            .subscriptions()
+            .iter()
+            .zip(suback.subs_succeeded())
+            .filter_map(|(sub, succeeded)| if succeeded { Some(sub) } else { None })
+        {
+            subs.push(sub.clone());
+        }
+        Ok(suback)
     }
-    pub async fn unsubscribe(
-        &self,
-        topics: Vec<String>,
-    ) -> Result<UnsubAck<MqttV5_0_0>, ClientError> {
+
+    pub async fn unsubscribe(&self, topics: Vec<String>) -> Result<UnsubAck<V>, ClientError> {
+        self.assert_online();
         let packet_identifier = self.next_packet_identifier();
-        let msg = Unsubscribe::new_v5(packet_identifier, topics.clone(), Vec::new());
-        self.unsubscribe_with(msg).await
+        let msg = self
+            .shared
+            .opts
+            .unsubscribe_packet(packet_identifier, topics.clone());
+        tracing::debug!("Sending unsubscribe: {msg:?}");
+        {
+            let mut write_buf = self.write_buf.lock().await;
+            msg.write_to_buf(&mut *write_buf);
+            self.flush(&mut write_buf).await?;
+        }
+        let suback = self.unsuback_comm.get(msg.packet_identifier()).await?;
+        let mut subs = self.shared.subscriptions.lock().unwrap();
+        for topic in msg.topics() {
+            if let Some(index) = subs.iter().position(|v| v.topic() == topic) {
+                subs.remove(index);
+            }
+        }
+        Ok(suback)
     }
 
     pub async fn disconnect(self) -> Result<(), ClientError> {
-        self.disconnect_with(Disconnect::new_v5(
-            modular_mqtt_protocol::DisconnectReasonCode::Normal,
-            None,
-            None,
-            Vec::new(),
-            None,
-        ))
-        .await
-    }
-}
+        let mut write_buf = self.write_buf.lock().await;
+        self.assert_online();
+        tracing::debug!("Sending Disconnect");
 
-impl Client<MqttV3_1_1> {
-    pub async fn subscribe(
-        &self,
-        topics: Vec<impl IntoTopicSubscription<MqttV3_1_1>>,
-        qos: Qos,
-    ) -> Result<SubAck<MqttV3_1_1>, ClientError> {
-        let subs = topics
-            .into_iter()
-            .map(|topic| {
-                topic.into_topic_subscription(
-                    qos,
-                    false,
-                    false,
-                    modular_mqtt_protocol::RetainHandling::SendAtSubscribe,
-                )
-            })
-            .collect();
+        self.shared
+            .opts
+            .disconnect_packet()
+            .write_to_buf(&mut *write_buf);
+        self.flush(&mut write_buf).await?;
+        let mut stream = self.writer.lock().await;
+        let old_stream = std::mem::replace(&mut *stream, AsyncWriter::Disconnected);
+        drop(stream);
+        if let AsyncWriter::Tcp(mut tcp) = old_stream {
+            // Unblocks the background thread's in-progress socket read (which can otherwise
+            // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
+            let _ = tcp.shutdown().await;
+        }
 
-        let packet_identifier = self.next_packet_identifier();
-        let msg = Subscribe::<MqttV3_1_1>::new(packet_identifier, subs);
-        self.subscribe_with(msg).await
-    }
-    pub async fn unsubscribe(
-        &self,
-        topics: Vec<String>,
-    ) -> Result<UnsubAck<MqttV3_1_1>, ClientError> {
-        let packet_identifier = self.next_packet_identifier();
-        let msg = Unsubscribe::new_v3(packet_identifier, topics.clone());
-        self.unsubscribe_with(msg).await
-    }
-
-    pub async fn disconnect(self) -> Result<(), ClientError> {
-        self.disconnect_with(Disconnect::new_v3()).await
+        let mut backend = self.backend.lock().await;
+        let backend = backend.take();
+        if let Some(backend) = backend {
+            backend.abort();
+        }
+        Ok(())
     }
 }

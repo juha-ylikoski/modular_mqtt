@@ -1,6 +1,6 @@
-use crate::util::{self, write_packet, CommonOperations, GenericClientOpts};
+use crate::util::{self, write_packet, GenericClientOpts, Harness};
 
-use std::{net::TcpListener, time::Duration};
+use std::{hash::Hash, net::TcpListener, time::Duration};
 
 use modular_mqtt::{ClientOpts, ClientOptsV3, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
@@ -9,11 +9,11 @@ use modular_mqtt_protocol::{
 };
 use ntest::timeout;
 
-fn ping_sequence<V, O>(connack_rc: V::ConnackRc)
+async fn test_ping_sequence<H, V, O>(connack_rc: V::ConnackRc)
 where
+    H: Harness,
     V: MqttVersion,
     O: ClientOpts<V> + From<GenericClientOpts>,
-    SyncClient<V, O>: CommonOperations<V>,
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
@@ -33,8 +33,6 @@ where
             ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
         });
 
-        std::thread::sleep(Duration::from_secs(4));
-
         let (header, mut data) = util::read_packet(&mut stream);
         assert_eq!(data.len(), 0);
         let connect = PingReq::try_read(header, &mut data).unwrap();
@@ -44,7 +42,7 @@ where
         rx_close.recv().unwrap();
     });
 
-    let (_, client) = SyncClient::<V, O>::connect_tcp(
+    let (_, client) = H::connect::<V, O>(
         GenericClientOpts(ClientOptsV5 {
             client_id: "client-id".to_string(),
             keep_alive: 2,
@@ -53,22 +51,19 @@ where
         .into(),
         addr.to_string(),
     )
+    .await
     .unwrap();
 
-    std::thread::sleep(Duration::from_millis(4100));
-    client.disconnect().unwrap();
+    H::sleep(Duration::from_millis(4100)).await;
+    H::disconnect(client).await.unwrap();
     tx_close.send(()).unwrap();
     handle.join().unwrap();
 }
 
-#[test]
-#[timeout(15000)]
-fn v3() {
-    ping_sequence::<MqttV3_1_1, ClientOptsV3>(ConnectRcV3::Accepted);
-}
-
-#[test]
-#[timeout(15000)]
-fn v5() {
-    ping_sequence::<MqttV5_0_0, ClientOptsV5>(ConnectRcV5::Accepted);
-}
+test!(
+    ping_sequence,
+    test_ping_sequence,
+    15000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
