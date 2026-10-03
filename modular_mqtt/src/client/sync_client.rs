@@ -93,7 +93,7 @@ where
     V: MqttVersion,
     O: ClientOpts<V>,
 {
-    pub fn connect_tcp(
+    pub fn connect(
         opts: O,
         broker: String,
     ) -> Result<

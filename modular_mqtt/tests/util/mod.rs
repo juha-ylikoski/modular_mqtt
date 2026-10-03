@@ -124,7 +124,7 @@ impl Harness for SyncHarness {
         V: MqttVersion,
         O: ClientOpts<V> + From<GenericClientOpts>,
     {
-        SyncClient::connect_tcp(O::from(opts), addr)
+        SyncClient::connect(O::from(opts), addr)
     }
 
     fn online<V, O>(c: &Self::Client<V, O>) -> bool

@@ -10,7 +10,7 @@ fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    let (recv_stream, client) = SyncClient::connect_tcp(
+    let (recv_stream, client) = SyncClient::connect(
         ClientOptsV5 {
             client_id: "client-id-sub".to_string(),
             ..Default::default()

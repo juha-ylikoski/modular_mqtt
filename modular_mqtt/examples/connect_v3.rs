@@ -7,7 +7,7 @@ fn main() {
         .finish();
     set_global_default(collector.into()).unwrap();
 
-    SyncClient::connect_tcp(
+    SyncClient::connect(
         ClientOptsV3 {
             client_id: "client-id".to_string(),
             ..Default::default()
