@@ -1,7 +1,7 @@
 mod util;
 
 use std::time::Duration;
-use testcontainers::runners::{AsyncRunner, SyncRunner};
+use testcontainers::runners::SyncRunner;
 use testcontainers_modules::mosquitto;
 
 use modular_mqtt::{ClientOptsV3, ClientOptsV5, SyncClient};
@@ -16,6 +16,7 @@ struct MosquittoContainer {
     url: String,
 }
 
+#[cfg(feature = "async")]
 struct MosquittoContainerAsync {
     #[allow(unused)]
     instance: testcontainers::ContainerAsync<mosquitto::Mosquitto>,
@@ -36,7 +37,10 @@ fn init_mosquitto() -> MosquittoContainer {
     }
 }
 
+#[cfg(feature = "async")]
 async fn init_mosquitto_async() -> MosquittoContainerAsync {
+    use testcontainers::runners::AsyncRunner;
+
     let mosquitto_instance = AsyncRunner::start(mosquitto::Mosquitto::default())
         .await
         .unwrap();

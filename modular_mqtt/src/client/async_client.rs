@@ -1,7 +1,6 @@
 use bytes::BytesMut;
 use modular_mqtt_protocol::{
-    Disconnect, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Publish, Qos, QosPacketIdentifier,
-    SubAck, Subscribe, TopicSubscription, UnsubAck, Unsubscribe,
+    MqttVersion, Packet, Publish, Qos, QosPacketIdentifier, SubAck, TopicSubscription, UnsubAck,
 };
 use std::{
     collections::HashMap,
@@ -31,6 +30,8 @@ use tokio::{
     sync::{mpsc, Mutex},
 };
 
+type Backend = tokio::task::JoinHandle<Result<(), crate::error::BackendError>>;
+
 #[derive(Clone)]
 pub struct Client<V, O>
 where
@@ -39,7 +40,7 @@ where
 {
     write_buf: Arc<Mutex<BytesMut>>,
     writer: Arc<Mutex<AsyncWriter>>,
-    backend: Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), crate::error::BackendError>>>>>,
+    backend: Arc<Mutex<Option<Backend>>>,
     suback_comm: ClientCommunicator<AsyncData<SubAck<V>>, AsyncWakeup>,
     unsuback_comm: ClientCommunicator<AsyncData<UnsubAck<V>>, AsyncWakeup>,
     inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage<V, crate::util::Async>>)>,
@@ -71,13 +72,13 @@ where
     async fn handle_recv_error(&self) -> ClientError {
         let be = self.backend.lock().await.take().unwrap();
         if be.is_finished() {
-            return match be.await {
+            match be.await {
                 Ok(Ok(_)) => {
                     panic!("Backend thread has freed sender but did not error out");
                 }
                 Ok(Err(e)) => ClientError::BackendError(e),
                 Err(e) => ClientError::BackendCrashed(Box::new(e)),
-            };
+            }
         } else {
             panic!("Backend thread has freed sender but is not dead");
         }

@@ -48,6 +48,7 @@ impl From<GenericClientOpts> for ClientOptsV3 {
     }
 }
 
+#[allow(unused)]
 pub trait Harness {
     type Client<V: MqttVersion, O: ClientOpts<V>>;
     type Receiver<V: MqttVersion>;

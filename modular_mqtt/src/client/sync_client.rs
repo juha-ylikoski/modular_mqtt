@@ -1,7 +1,6 @@
 use bytes::BytesMut;
 use modular_mqtt_protocol::{
-    Disconnect, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Publish, Qos, QosPacketIdentifier,
-    SubAck, Subscribe, TopicSubscription, UnsubAck, Unsubscribe,
+    MqttVersion, Packet, Publish, Qos, QosPacketIdentifier, SubAck, TopicSubscription, UnsubAck,
 };
 use std::{
     collections::HashMap,
@@ -14,7 +13,7 @@ use std::{
 use crate::{
     backend::Shared,
     client_communication::{ClientCommunicator, SyncData, SyncWakeup},
-    client_opts::{ClientOpts, ClientOptsV3, ClientOptsV5},
+    client_opts::ClientOpts,
     connection::{SyncReader, SyncWriter},
     error::{ClientError, ConnectError},
     util::{
@@ -24,6 +23,8 @@ use crate::{
     Instant,
 };
 
+type Backend = std::thread::JoinHandle<Result<(), crate::error::BackendError>>;
+
 #[derive(Clone)]
 pub struct Client<V, O>
 where
@@ -32,7 +33,7 @@ where
 {
     write_buf: Arc<Mutex<BytesMut>>,
     writer: Arc<Mutex<SyncWriter>>,
-    backend: Arc<Mutex<Option<std::thread::JoinHandle<Result<(), crate::error::BackendError>>>>>,
+    backend: Arc<Mutex<Option<Backend>>>,
     suback_comm: ClientCommunicator<SyncData<SubAck<V>>, SyncWakeup>,
     unsuback_comm: ClientCommunicator<SyncData<UnsubAck<V>>, SyncWakeup>,
     inflight_ch: std::sync::mpsc::Sender<(u16, Arc<InflightMessage<V, crate::util::Sync>>)>,

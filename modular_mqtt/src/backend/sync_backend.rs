@@ -1,4 +1,3 @@
-use crate::{backend::Shared, Instant};
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{
     FixedHeader, MqttVersion, Packet, PingReq, Publish, QosPacketIdentifier, SubAck, Subscribe,
@@ -7,7 +6,6 @@ use modular_mqtt_protocol::{
 use std::{
     io::Write,
     net::TcpStream,
-    ops::{Deref, DerefMut},
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
@@ -159,7 +157,13 @@ where
         Ok(())
     }
 
+    fn prune_communicators(&mut self) {
+        self.unsuback_comm.prune();
+        self.unsuback_comm.prune();
+    }
+
     fn loop_bg_thread(&mut self) -> Result<(), BackendError> {
+        let mut i = 0;
         loop {
             self.state_machine.check_resend_msgs();
             loop {
@@ -202,6 +206,12 @@ where
                 }
             }
             self.write_buf_to_stream()?;
+
+            if i > 10 {
+                self.prune_communicators();
+                i = 0;
+            }
+            i += 1;
         }
     }
 

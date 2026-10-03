@@ -1,11 +1,6 @@
 #[cfg(feature = "async")]
 use std::time::Duration;
-use std::{
-    future::Future,
-    io::{Read, Write},
-    marker::PhantomData,
-    sync::RwLock,
-};
+use std::io::{Read, Write};
 
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{

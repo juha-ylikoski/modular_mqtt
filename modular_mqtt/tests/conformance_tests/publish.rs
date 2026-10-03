@@ -55,8 +55,7 @@ where
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await
@@ -138,8 +137,7 @@ where
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await
@@ -229,8 +227,7 @@ where
             client_id: "client-id".to_string(),
             keep_alive: 30,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await
@@ -346,8 +343,7 @@ where
             keep_alive: 1,
             resend_interval: Duration::from_millis(200),
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await
@@ -469,8 +465,7 @@ where
             keep_alive: 1,
             resend_interval: Duration::from_millis(200),
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await
@@ -603,8 +598,7 @@ where
             keep_alive: 1,
             resend_interval: Duration::from_millis(200),
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await

@@ -47,8 +47,7 @@ where
             client_id: "client-id".to_string(),
             keep_alive: 2,
             ..Default::default()
-        })
-        .into(),
+        }),
         addr.to_string(),
     )
     .await

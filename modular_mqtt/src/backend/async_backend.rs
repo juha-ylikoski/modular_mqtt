@@ -2,27 +2,20 @@ use crate::{
     client_communication::async_communicator::{AsyncData, AsyncWakeup},
     connection::async_stream::{AsyncReader, AsyncWriter},
     util::{connect_async, read_into_buf_async},
-    Instant,
 };
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{
-    ConnAck, FixedHeader, MqttVersion, Packet, PingReq, PubRel, Publish, QosPacketIdentifier,
-    SubAck, Subscribe, UnsubAck,
+    FixedHeader, MqttVersion, Packet, PingReq, Publish, QosPacketIdentifier, SubAck, Subscribe,
+    UnsubAck,
 };
-use std::{
-    io::Write,
-    ops::{Deref, DerefMut},
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tracing::instrument;
 
 use crate::{
-    client_communication::{ClientCommunicator, SyncData, SyncWakeup},
+    client_communication::ClientCommunicator,
     client_opts::{exponential_backoff, ClientOpts, OnDisconnectBehavior},
-    connection::{SyncReader, SyncWriter},
-    error::{BackendError, ConnectError},
-    util::{connect_sync, read_into_buf, InflightMessage},
+    error::BackendError,
+    util::InflightMessage,
 };
 
 use tokio::sync::{mpsc, Mutex};
@@ -68,7 +61,13 @@ where
         res
     }
 
+    async fn prune_communicators(&mut self) {
+        self.unsuback_comm.prune().await;
+        self.unsuback_comm.prune().await;
+    }
+
     async fn task(mut self) -> Result<(), BackendError> {
+        let mut i = 0;
         loop {
             tracing::debug!("Start listening for mqtt messages");
             let mut res = self.loop_bg_task().await;
@@ -101,6 +100,11 @@ where
                     }
                 },
             }
+            if i > 50 {
+                self.prune_communicators().await;
+                i = 0;
+            }
+            i += 1;
         }
     }
 
