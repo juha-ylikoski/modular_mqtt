@@ -162,23 +162,27 @@ where
         self.unsuback_comm.prune();
     }
 
+    fn read_inflight_ch(&mut self) -> Result<(), BackendError> {
+        loop {
+            match self.inflight_ch.try_recv() {
+                Ok((packet_identifier, msg)) => {
+                    self.state_machine
+                        .inflight_msgs
+                        .insert(packet_identifier, msg);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Err(BackendError::ChannelError),
+            }
+        }
+        Ok(())
+    }
+
     fn loop_bg_thread(&mut self) -> Result<(), BackendError> {
         let mut i = 0;
         loop {
             self.state_machine.check_resend_msgs();
-            loop {
-                match self.inflight_ch.try_recv() {
-                    Ok((packet_identifier, msg)) => {
-                        self.state_machine
-                            .inflight_msgs
-                            .insert(packet_identifier, msg);
-                    }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        return Err(BackendError::ChannelError)
-                    }
-                }
-            }
+            self.read_inflight_ch()?;
+
             self.write_buf_to_stream()?;
             match self.read_next_timeout()? {
                 ReadFinished::Success(fixed_header, buf) => {
@@ -270,6 +274,7 @@ where
     fn read_next_timeout(&mut self) -> Result<ReadFinished, BackendError> {
         match self.read_next_msg() {
             Ok(Some((header, buf))) => {
+                self.read_inflight_ch()?;
                 tracing::trace!("Received new packet: header={header:?} body={buf:?}");
                 Ok(ReadFinished::Success(header, buf))
             }

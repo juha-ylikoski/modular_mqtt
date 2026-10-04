@@ -168,22 +168,28 @@ where
         Ok(())
     }
 
+    async fn read_inflight_ch(&mut self) -> Result<(), BackendError> {
+        loop {
+            match self.inflight_ch.try_recv() {
+                Ok((packet_identifier, msg)) => {
+                    self.state_machine
+                        .inflight_msgs
+                        .insert(packet_identifier, msg);
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(BackendError::ChannelError)
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn loop_bg_task(&mut self) -> Result<(), BackendError> {
         loop {
             self.state_machine.check_resend_msgs();
-            loop {
-                match self.inflight_ch.try_recv() {
-                    Ok((packet_identifier, msg)) => {
-                        self.state_machine
-                            .inflight_msgs
-                            .insert(packet_identifier, msg);
-                    }
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        return Err(BackendError::ChannelError)
-                    }
-                }
-            }
+            self.read_inflight_ch().await?;
+
             self.write_buf_to_stream().await?;
             match self.read_next_timeout().await? {
                 ReadFinished::Success(fixed_header, buf) => {
@@ -268,6 +274,7 @@ where
     async fn read_next_timeout(&mut self) -> Result<ReadFinished, BackendError> {
         match self.read_next_msg().await {
             Ok(Some((header, buf))) => {
+                self.read_inflight_ch().await?;
                 tracing::trace!("Received new packet: header={header:?} body={buf:?}");
                 Ok(ReadFinished::Success(header, buf))
             }

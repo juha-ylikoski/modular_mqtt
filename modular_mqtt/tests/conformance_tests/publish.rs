@@ -1,14 +1,41 @@
 use crate::util::{self, write_packet, GenericClientOpts, Harness};
 
-use std::net::TcpListener;
-use std::time::Duration;
+use std::io::Read;
+use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
+use bytes::{Bytes, BytesMut};
 use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
-    PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
-    VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, FixedHeader, MqttTopic,
+    MqttVersion, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
+    QosPacketIdentifier, VersionedConnect, MAX_MQTT_PACKET_SIZE,
 };
+
+/// Read one packet from `stream`, giving up after a short read timeout.
+///
+/// Returns `None` on timeout, or when the peer closed the connection. `util::read_packet`
+/// blocks forever, which cannot be used to observe the *absence* of a packet — here, the
+/// absence of a retransmission the client should not have sent.
+fn read_packet_timeout(stream: &mut TcpStream) -> Option<(FixedHeader, Bytes)> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(150)))
+        .unwrap();
+    let mut buf = BytesMut::zeroed(4096);
+    let mut len = 0;
+    loop {
+        match stream.read(&mut buf[len..]) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => len += n,
+        }
+        buf.truncate(len);
+        match FixedHeader::parse(&mut buf, MAX_MQTT_PACKET_SIZE) {
+            Ok(Some(packet)) => return Some(packet),
+            Ok(None) => buf.resize(len + 4096, 0),
+            Err(_) => return None,
+        }
+    }
+}
 
 async fn test_publish_qos0<H, V, O>(connack_rc: V::ConnackRc)
 where
@@ -626,6 +653,148 @@ test!(
     publish_resend_pubrel_qos2,
     test_publish_resend_pubrel_qos2,
     5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
+
+/// A QoS 1 PUBLISH issued while the backend is parked in `read()` must be acknowledged
+/// without being retransmitted.
+///
+/// Both backends drain `inflight_ch` into `inflight_msgs` before they block in `read()`, but
+/// the client only publishes a message into `inflight_msgs` by sending on that channel. A
+/// publish issued while the backend is idle has therefore not been drained yet when its
+/// PUBACK arrives, so `handle_msg` finds no entry for it, logs "Received unexpected PubAck"
+/// and drops it. Delivery is then reported only after the client retransmits and that copy
+/// is acked — so every QoS 1 publish from an idle client reaches the broker twice.
+///
+/// The yield before publishing is what makes this deterministic: publishing straight after
+/// `connect()` is the one ordering where the drain wins, which is why `publish_qos1` passes
+/// and never sees this.
+///
+/// The publish count is sampled once delivery completes, because a dropped PUBACK cannot
+/// delay delivery without the broker having already seen the duplicate.
+async fn test_publish_qos1_while_backend_idle<H, V, O>(connack_rc: V::ConnackRc)
+where
+    H: Harness,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    VersionedConnect: From<Connect<V>>,
+{
+    util::init_logging();
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+    let (publish_count_tx, publish_count_rx) = std::sync::mpsc::channel();
+    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let test_finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let handle = {
+        let test_finished = test_finished.clone();
+        std::thread::spawn(move || {
+            let (mut stream, _addr) = server.accept().unwrap();
+            let (header, mut data) = util::read_packet(&mut stream);
+            let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
+            assert_eq!(
+                connect,
+                Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
+            );
+            write_packet(&mut stream, |buf| {
+                ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
+            });
+
+            // Ack every PUBLISH we receive and keep listening afterwards, so a client that
+            // failed to match our PUBACK has its retransmission counted rather than ignored.
+            let mut publishes = 0;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                if test_finished.load(std::sync::atomic::Ordering::Relaxed)
+                    || Instant::now() > deadline
+                {
+                    break;
+                }
+                let Some((header, mut data)) = read_packet_timeout(&mut stream) else {
+                    continue;
+                };
+                if !matches!(
+                    header.control_packet_type,
+                    ControlPacketType::Publish { .. }
+                ) {
+                    // PINGREQ keepalives and the like are not interesting here.
+                    continue;
+                }
+                let msg = Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data)
+                    .unwrap();
+                assert_eq!(
+                    msg,
+                    Publish::new(
+                        MqttTopic::try_from("topic").unwrap(),
+                        b"payload",
+                        Qos::AtLeastOnce,
+                        false
+                    )
+                    .assign_packet_identifier(|| msg.packet_identifier().unwrap(), false)
+                );
+                publishes += 1;
+                write_packet(&mut stream, |buf| {
+                    PubAck::<V>::new_ok(msg.packet_identifier().unwrap()).write_to_buf(buf)
+                });
+            }
+            // Tolerate a failed assertion in the test body: it drops the receiver, and the
+            // broker thread should not add a second, unrelated panic on top of it.
+            let _ = publish_count_tx.send(publishes);
+            rx_close.recv().unwrap();
+        })
+    };
+
+    let (_, client) = H::connect::<V, O>(
+        GenericClientOpts(ClientOptsV5 {
+            client_id: "client-id".to_string(),
+            // A short keep alive lets the backend wake up and run its resend check quickly,
+            // and a short resend interval makes the unwanted retransmission appear soon.
+            keep_alive: 1,
+            resend_interval: Duration::from_millis(200),
+            ..Default::default()
+        }),
+        addr.to_string(),
+    )
+    .await
+    .unwrap();
+
+    // Let the backend complete its first loop iteration and park in read(). Even a
+    // zero-duration sleep is enough to lose the drain race on every harness.
+    H::sleep(Duration::from_millis(300)).await;
+
+    let inflight = H::publish(
+        &client,
+        Publish::new(
+            MqttTopic::try_from("topic").unwrap(),
+            b"payload",
+            Qos::AtLeastOnce,
+            false,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    H::wait_until_delivered(inflight).await;
+    test_finished.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let publishes = publish_count_rx.recv().unwrap();
+    assert_eq!(
+        publishes, 1,
+        "QoS 1 publish issued while the backend was idle was retransmitted: the broker saw \
+         {publishes} PUBLISH packets, expected 1. Its PUBACK was dropped because the message \
+         had not been drained from inflight_ch into inflight_msgs yet."
+    );
+
+    H::disconnect(client).await.unwrap();
+    tx_close.send(()).unwrap();
+    handle.join().unwrap();
+}
+test!(
+    publish_qos1_while_backend_idle,
+    test_publish_qos1_while_backend_idle,
+    10000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );
