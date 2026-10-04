@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     backend::Shared,
-    client_communication::{ClientCommunicator, SyncData, SyncWakeup},
+    client_communication::SyncClientCommunicator,
     client_opts::ClientOpts,
     connection::{SyncReader, SyncWriter},
     error::{ClientError, ConnectError},
@@ -34,8 +34,8 @@ where
     write_buf: Arc<Mutex<BytesMut>>,
     writer: Arc<Mutex<SyncWriter>>,
     backend: Arc<Mutex<Option<Backend>>>,
-    suback_comm: ClientCommunicator<SyncData<SubAck<V>>, SyncWakeup>,
-    unsuback_comm: ClientCommunicator<SyncData<UnsubAck<V>>, SyncWakeup>,
+    suback_comm: SyncClientCommunicator<SubAck<V>>,
+    unsuback_comm: SyncClientCommunicator<UnsubAck<V>>,
     inflight_ch: std::sync::mpsc::Sender<(u16, Arc<InflightMessage<V, crate::util::Sync>>)>,
 
     backend_killer: Arc<Mutex<bool>>,
@@ -113,9 +113,8 @@ where
         reader.set_read_timeout(Some(Duration::from_secs(opts.keep_alive().into())))?;
 
         let (msg_sender, msg_receiver) = mpsc::channel();
-        let suback_comm = ClientCommunicator::<SyncData<_>, SyncWakeup>::new(opts.ack_retention());
-        let unsuback_comm =
-            ClientCommunicator::<SyncData<_>, SyncWakeup>::new(opts.ack_retention());
+        let suback_comm = SyncClientCommunicator::new(opts.ack_retention());
+        let unsuback_comm = SyncClientCommunicator::new(opts.ack_retention());
         let (inflight_sender, inflight_receiver) = mpsc::channel();
 
         let connack = connect_sync(

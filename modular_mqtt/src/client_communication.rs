@@ -23,6 +23,8 @@ where
 pub type SyncData<V> = Arc<std::sync::RwLock<HashMap<Mid, (Instant, V)>>>;
 pub type SyncWakeup = Arc<(std::sync::Mutex<Mid>, std::sync::Condvar)>;
 
+pub type SyncClientCommunicator<V> = ClientCommunicator<SyncData<V>, SyncWakeup>;
+
 impl<V> ClientCommunicator<SyncData<V>, SyncWakeup>
 where
     V: Clone,
@@ -74,6 +76,64 @@ where
     }
 }
 
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use crate::{client_communication::SyncClientCommunicator, error::ClientError};
+
+    #[test]
+    fn test_notify_after_recv() {
+        let comm: SyncClientCommunicator<u8> =
+            SyncClientCommunicator::new(Duration::from_secs(2000));
+        let sender = comm.clone();
+
+        sender.insert(1, 42);
+        assert_eq!(comm.get(1, Duration::from_secs(1)).unwrap(), 42);
+    }
+
+    #[test]
+    fn test_notify_before_recv() {
+        let comm: SyncClientCommunicator<u8> =
+            SyncClientCommunicator::new(Duration::from_secs(2000));
+
+        let sender = comm.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            sender.insert(1, 42);
+        });
+        assert_eq!(comm.get(1, Duration::from_secs(1)).unwrap(), 42);
+    }
+
+    #[test]
+    fn unrelated_ack_does_not_strand_other_waiter() {
+        let comm: SyncClientCommunicator<u8> = SyncClientCommunicator::new(Duration::from_secs(60));
+        let s = comm.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            s.insert(2, 99); // ack for a different mid
+            s.insert(1, 42); // ack for the waiter, immediately after
+        });
+        assert_eq!(comm.get(1, Duration::from_secs(5)).unwrap(), 42);
+    }
+
+    #[test]
+    fn test_timeout() {
+        let comm: SyncClientCommunicator<u8> =
+            SyncClientCommunicator::new(Duration::from_secs(2000));
+        let sender = comm.clone();
+
+        sender.insert(1, 42);
+        let res = comm.get(2, Duration::from_secs(1));
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ClientError::Timeout => (),
+            _ => panic!("Received wrong error type"),
+        }
+    }
+}
+
 #[cfg(feature = "async")]
 pub mod async_communicator {
     use super::*;
@@ -82,6 +142,8 @@ pub mod async_communicator {
 
     pub type AsyncData<V> = Arc<tokio::sync::RwLock<HashMap<Mid, (tokio::time::Instant, V)>>>;
     pub type AsyncWakeup = Arc<tokio::sync::Notify>;
+
+    pub type AsyncClientCommunicator<V> = ClientCommunicator<AsyncData<V>, AsyncWakeup>;
 
     impl<V> ClientCommunicator<AsyncData<V>, AsyncWakeup>
     where
@@ -101,16 +163,17 @@ pub mod async_communicator {
         }
 
         pub async fn get(&self, k: Mid) -> Result<V, ClientError> {
-            // Check first if already there (maybe due to race condition)
-            if let Some(v) = self.data.read().await.get(&k) {
-                return Ok(v.1.clone());
-            }
-
-            self.wakeup.notified().await;
             loop {
+                // register interest *before* checking
+                let notified = self.wakeup.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable(); // registers with the Notify now
+
                 if let Some(v) = self.data.read().await.get(&k) {
                     return Ok(v.1.clone());
                 }
+
+                notified.await;
             }
         }
 
@@ -120,5 +183,49 @@ pub mod async_communicator {
                 now.duration_since(*creation_time) < self.retention
             });
         }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use std::time::Duration;
+
+        use crate::client_communication::async_communicator::AsyncClientCommunicator;
+
+        #[tokio::test]
+        async fn test_notify_after_recv() {
+            let comm: AsyncClientCommunicator<u8> =
+                AsyncClientCommunicator::new(Duration::from_secs(2000));
+            let sender = comm.clone();
+
+            sender.insert(1, 42).await;
+            assert_eq!(comm.get(1).await.unwrap(), 42);
+        }
+
+        #[tokio::test]
+        async fn test_notify_before_recv() {
+            let comm: AsyncClientCommunicator<u8> =
+                AsyncClientCommunicator::new(Duration::from_secs(2000));
+
+            let sender = comm.clone();
+
+            tokio::task::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                sender.insert(1, 42).await;
+            });
+            assert_eq!(comm.get(1).await.unwrap(), 42);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unrelated_ack_does_not_strand_other_waiter() {
+        let comm: AsyncClientCommunicator<u8> =
+            AsyncClientCommunicator::new(Duration::from_secs(60));
+        let s = comm.clone();
+        tokio::task::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            s.insert(2, 99).await; // ack for a different mid
+            s.insert(1, 42).await; // ack for the waiter, immediately after
+        });
+        assert_eq!(comm.get(1).await.unwrap(), 42);
     }
 }

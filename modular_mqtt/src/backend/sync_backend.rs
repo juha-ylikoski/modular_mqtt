@@ -12,7 +12,7 @@ use std::{
 use tracing::instrument;
 
 use crate::{
-    client_communication::{ClientCommunicator, SyncData, SyncWakeup},
+    client_communication::SyncClientCommunicator,
     client_opts::{exponential_backoff, ClientOpts, OnDisconnectBehavior},
     connection::{SyncReader, SyncWriter},
     error::{BackendError, ConnectError},
@@ -35,8 +35,8 @@ where
     pub reader: SyncReader,
     pub writer: Arc<Mutex<SyncWriter>>,
     pub msg_ch: mpsc::Sender<Publish<V, QosPacketIdentifier>>,
-    pub suback_comm: ClientCommunicator<SyncData<SubAck<V>>, SyncWakeup>,
-    pub unsuback_comm: ClientCommunicator<SyncData<UnsubAck<V>>, SyncWakeup>,
+    pub suback_comm: SyncClientCommunicator<SubAck<V>>,
+    pub unsuback_comm: SyncClientCommunicator<UnsubAck<V>>,
     pub inflight_ch: mpsc::Receiver<(u16, Arc<InflightMessage<V, crate::util::Sync>>)>,
     pub retry_count: u32,
 

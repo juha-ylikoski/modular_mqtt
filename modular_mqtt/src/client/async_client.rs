@@ -10,10 +10,7 @@ use std::{
 
 use crate::{
     backend::Shared,
-    client_communication::{
-        async_communicator::{AsyncData, AsyncWakeup},
-        ClientCommunicator,
-    },
+    client_communication::async_communicator::AsyncClientCommunicator,
     client_opts::ClientOpts,
     connection::async_stream::{AsyncReader, AsyncWriter},
     error::{ClientError, ConnectError},
@@ -41,8 +38,8 @@ where
     write_buf: Arc<Mutex<BytesMut>>,
     writer: Arc<Mutex<AsyncWriter>>,
     backend: Arc<Mutex<Option<Backend>>>,
-    suback_comm: ClientCommunicator<AsyncData<SubAck<V>>, AsyncWakeup>,
-    unsuback_comm: ClientCommunicator<AsyncData<UnsubAck<V>>, AsyncWakeup>,
+    suback_comm: AsyncClientCommunicator<SubAck<V>>,
+    unsuback_comm: AsyncClientCommunicator<UnsubAck<V>>,
     inflight_ch: mpsc::Sender<(u16, Arc<InflightMessage<V, crate::util::Async>>)>,
 
     shared: Arc<Shared<V, O>>,
@@ -106,10 +103,8 @@ where
         let mut write_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);
 
         let (msg_sender, msg_receiver) = mpsc::channel(100);
-        let suback_comm =
-            ClientCommunicator::<AsyncData<_>, AsyncWakeup>::new(opts.ack_retention());
-        let unsuback_comm =
-            ClientCommunicator::<AsyncData<_>, AsyncWakeup>::new(opts.ack_retention());
+        let suback_comm = AsyncClientCommunicator::new(opts.ack_retention());
+        let unsuback_comm = AsyncClientCommunicator::new(opts.ack_retention());
         let (inflight_sender, inflight_receiver) = mpsc::channel(100);
 
         let connack = match tokio::time::timeout(

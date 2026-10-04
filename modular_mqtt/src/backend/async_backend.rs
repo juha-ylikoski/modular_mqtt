@@ -1,8 +1,3 @@
-use crate::{
-    client_communication::async_communicator::{AsyncData, AsyncWakeup},
-    connection::async_stream::{AsyncReader, AsyncWriter},
-    util::{connect_async, read_into_buf_async},
-};
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{
     FixedHeader, MqttVersion, Packet, PingReq, Publish, QosPacketIdentifier, SubAck, Subscribe,
@@ -12,10 +7,12 @@ use std::{sync::Arc, time::Duration};
 use tracing::instrument;
 
 use crate::{
-    client_communication::ClientCommunicator,
+    client_communication::async_communicator::AsyncClientCommunicator,
     client_opts::{exponential_backoff, ClientOpts, OnDisconnectBehavior},
+    connection::async_stream::{AsyncReader, AsyncWriter},
     error::BackendError,
     util::InflightMessage,
+    util::{connect_async, read_into_buf_async},
 };
 
 use tokio::sync::{mpsc, Mutex};
@@ -37,8 +34,8 @@ where
     pub reader: AsyncReader,
     pub writer: Arc<Mutex<AsyncWriter>>,
     pub msg_ch: mpsc::Sender<Publish<V, QosPacketIdentifier>>,
-    pub suback_comm: ClientCommunicator<AsyncData<SubAck<V>>, AsyncWakeup>,
-    pub unsuback_comm: ClientCommunicator<AsyncData<UnsubAck<V>>, AsyncWakeup>,
+    pub suback_comm: AsyncClientCommunicator<SubAck<V>>,
+    pub unsuback_comm: AsyncClientCommunicator<UnsubAck<V>>,
     pub inflight_ch: mpsc::Receiver<(u16, Arc<InflightMessage<V, crate::util::Async>>)>,
     pub retry_count: u32,
 
