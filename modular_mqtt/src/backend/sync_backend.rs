@@ -207,7 +207,7 @@ where
             }
             self.write_buf_to_stream()?;
 
-            if i > 10 {
+            if i > 50 {
                 self.prune_communicators();
                 i = 0;
             }

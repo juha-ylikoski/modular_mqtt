@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     io::{Read, Write},
     sync::Arc,
     time::Duration,
@@ -49,10 +50,67 @@ impl From<GenericClientOpts> for ClientOptsV3 {
 }
 
 #[allow(unused)]
+pub enum JoinHandle<T> {
+    Sync(std::thread::JoinHandle<T>),
+    #[cfg(feature = "async")]
+    Async(tokio::task::JoinHandle<T>),
+}
+
+#[allow(unused)]
+impl<T> JoinHandle<T> {
+    pub async fn join(self) -> T {
+        match self {
+            JoinHandle::Sync(join_handle) => join_handle.join().unwrap(),
+            #[cfg(feature = "async")]
+            JoinHandle::Async(join_handle) => join_handle.await.unwrap(),
+        }
+    }
+}
+
+#[allow(unused)]
+pub enum ChannelRx<T> {
+    Sync(std::sync::mpsc::Receiver<T>),
+    #[cfg(feature = "async")]
+    Async(tokio::sync::mpsc::Receiver<T>),
+}
+#[allow(unused)]
+pub enum ChannelTx<T> {
+    Sync(std::sync::mpsc::Sender<T>),
+    #[cfg(feature = "async")]
+    Async(tokio::sync::mpsc::Sender<T>),
+}
+
+#[allow(unused)]
+impl<T> ChannelRx<T> {
+    pub async fn recv(&mut self) -> T {
+        match self {
+            ChannelRx::Sync(receiver) => receiver.recv().unwrap(),
+            #[cfg(feature = "async")]
+            ChannelRx::Async(receiver) => receiver.recv().await.unwrap(),
+        }
+    }
+}
+
+#[allow(unused)]
+impl<T> ChannelTx<T> {
+    pub async fn send(&self, v: T) {
+        match self {
+            ChannelTx::Sync(sender) => sender.send(v).unwrap(),
+            #[cfg(feature = "async")]
+            ChannelTx::Async(sender) => sender.send(v).await.unwrap(),
+        }
+    }
+}
+
+#[allow(unused)]
 pub trait Harness {
     type Client<V: MqttVersion, O: ClientOpts<V>>;
     type Receiver<V: MqttVersion>;
     type Notify: modular_mqtt::util::Notify;
+
+    fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>);
+
+    fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>;
 
     async fn sleep(d: Duration);
 
@@ -112,6 +170,15 @@ impl Harness for SyncHarness {
     type Client<V: MqttVersion, O: ClientOpts<V>> = SyncClient<V, O>;
     type Receiver<V: MqttVersion> = std::sync::mpsc::Receiver<Publish<V, QosPacketIdentifier>>;
     type Notify = modular_mqtt::util::Sync;
+
+    fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (ChannelTx::Sync(tx), ChannelRx::Sync(rx))
+    }
+
+    fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T> {
+        JoinHandle::Sync(std::thread::spawn(|| futures::executor::block_on(fut)))
+    }
 
     async fn sleep(d: Duration) {
         std::thread::sleep(d);
@@ -189,6 +256,18 @@ impl Harness for AsyncHarness {
     type Client<V: MqttVersion, O: ClientOpts<V>> = modular_mqtt::AsyncClient<V, O>;
     type Receiver<V: MqttVersion> = tokio::sync::mpsc::Receiver<Publish<V, QosPacketIdentifier>>;
     type Notify = modular_mqtt::util::Async;
+
+    fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        (ChannelTx::Async(tx), ChannelRx::Async(rx))
+    }
+
+    fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T> {
+        // JoinHandle::Async(tokio::task::spawn(fut))
+        JoinHandle::Async(tokio::task::spawn_blocking(|| {
+            futures::executor::block_on(fut)
+        }))
+    }
 
     async fn sleep(d: Duration) {
         tokio::time::sleep(d).await
