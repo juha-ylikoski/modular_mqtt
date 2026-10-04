@@ -1,6 +1,6 @@
-use crate::util::{self, write_packet, GenericClientOpts, Harness};
+use crate::util::{self, GenericClientOpts, Harness};
 
-use std::{hash::Hash, net::TcpListener, time::Duration};
+use std::time::Duration;
 
 use modular_mqtt::{ClientOpts, ClientOptsV3, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
@@ -17,29 +17,29 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::<V>::new(true, 2, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         assert_eq!(data.len(), 0);
         let connect = PingReq::try_read(header, &mut data).unwrap();
         assert_eq!(connect, PingReq);
 
-        write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
-        rx_close.recv().unwrap();
+        stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -55,8 +55,8 @@ where
 
     H::sleep(Duration::from_millis(4100)).await;
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 
 test!(

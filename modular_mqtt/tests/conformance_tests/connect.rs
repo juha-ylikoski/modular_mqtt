@@ -1,6 +1,6 @@
-use crate::util::{self, write_packet, GenericClientOpts, Harness};
+use crate::util::{self, GenericClientOpts, Harness};
 
-use std::{future::Future, net::TcpListener, pin::pin, time::Duration};
+use std::time::Duration;
 
 use bytes::Bytes;
 use modular_mqtt::{error::ConnectError, ClientOpts, ClientOptsV5, SyncClient};
@@ -39,22 +39,22 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -68,8 +68,8 @@ where
     .await
     .unwrap();
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     connect,
@@ -87,13 +87,13 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
@@ -107,10 +107,10 @@ where
             )
             .into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -126,9 +126,9 @@ where
     .await
     .unwrap();
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
+    tx_close.send(()).await;
 
-    handle.join().unwrap();
+    handle.join().await;
 }
 test!(
     connect_username_password,
@@ -146,13 +146,13 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
@@ -171,10 +171,10 @@ where
             )
             .into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -194,8 +194,8 @@ where
     .await
     .unwrap();
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     connect_last_will,
@@ -213,20 +213,20 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "".to_string(), None, None, None,).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .await;
     });
 
     match H::connect::<V, O>(
@@ -242,7 +242,7 @@ where
         Ok(_) => panic!("Should not get here"),
         Err(e) => tester(e),
     }
-    handle.join().unwrap();
+    handle.join().await;
 }
 test!(
     connect_refused,
@@ -270,21 +270,23 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connact_rc).write_to_buf(buf);
-            disconnect.write_to_buf(buf);
-        });
+        stream
+            .write_packet(|buf| {
+                ConnAck::<V>::new(false, connact_rc).write_to_buf(buf);
+                disconnect.write_to_buf(buf);
+            })
+            .await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -297,7 +299,7 @@ where
     )
     .await
     .unwrap();
-    handle.join().unwrap();
+    handle.join().await;
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while H::online(&client) && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

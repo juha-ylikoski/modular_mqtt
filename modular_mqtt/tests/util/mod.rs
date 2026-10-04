@@ -16,6 +16,10 @@ use modular_mqtt_protocol::{
     QosPacketIdentifier, SubAck,
 };
 
+/// Socket buffer size used when reading packets. Only affects how many packets can be
+/// picked up per read, never correctness.
+const CHUNK: usize = 4096;
+
 #[derive(Default)]
 pub struct GenericClientOpts(pub ClientOptsV5);
 
@@ -73,6 +77,7 @@ pub enum ChannelRx<T> {
     #[cfg(feature = "async")]
     Async(tokio::sync::mpsc::Receiver<T>),
 }
+
 #[allow(unused)]
 pub enum ChannelTx<T> {
     Sync(std::sync::mpsc::Sender<T>),
@@ -102,14 +107,181 @@ impl<T> ChannelTx<T> {
     }
 }
 
+/// A fake broker listening on a loopback port.
+///
+/// Which listener backs it depends on the harness: blocking `std::net` for `SyncHarness`,
+/// tokio for `AsyncHarness`. Test cases are generic over `Harness`, so they name this type
+/// and never either concrete one.
+#[allow(unused)]
+pub enum Broker {
+    Sync(std::net::TcpListener),
+    #[cfg(feature = "async")]
+    Async(tokio::net::TcpListener),
+}
+
+#[allow(unused)]
+impl Broker {
+    /// The address a client should connect to.
+    pub fn addr(&self) -> String {
+        match self {
+            Broker::Sync(listener) => listener.local_addr().unwrap().to_string(),
+            #[cfg(feature = "async")]
+            Broker::Async(listener) => listener.local_addr().unwrap().to_string(),
+        }
+    }
+
+    /// Accept the client's connection. Blocks until it arrives.
+    pub async fn accept(&mut self) -> Stream {
+        match self {
+            Broker::Sync(listener) => {
+                let (stream, _) = listener.accept().unwrap();
+                Stream::Sync {
+                    stream,
+                    buf: BytesMut::with_capacity(CHUNK),
+                }
+            }
+            #[cfg(feature = "async")]
+            Broker::Async(listener) => {
+                let (stream, _) = listener.accept().await.unwrap();
+                Stream::Async {
+                    stream,
+                    buf: BytesMut::with_capacity(CHUNK),
+                }
+            }
+        }
+    }
+}
+
+/// One accepted broker connection, with MQTT-packet-oriented reads and writes.
+///
+/// Incoming bytes are buffered, so a packet split across several segments is reassembled and
+/// several packets arriving in one segment are returned one at a time — the framing a real
+/// broker has to do, and something a test broker must not get wrong.
+#[allow(unused)]
+pub enum Stream {
+    Sync {
+        stream: std::net::TcpStream,
+        buf: BytesMut,
+    },
+    #[cfg(feature = "async")]
+    Async {
+        stream: tokio::net::TcpStream,
+        buf: BytesMut,
+    },
+}
+
+/// Take one complete packet out of `buf`, or `None` if more bytes are needed.
+fn take_packet(buf: &mut BytesMut) -> Option<(FixedHeader, Bytes)> {
+    match FixedHeader::parse(buf, modular_mqtt_protocol::MAX_MQTT_PACKET_SIZE) {
+        Ok(Some(packet)) => Some(packet),
+        Ok(None) => None,
+        Err(e) => panic!("Malformed packet from client: {e:?}. Buffered: {buf:?}"),
+    }
+}
+
+fn extend(buf: &mut BytesMut, chunk: &[u8]) {
+    buf.extend_from_slice(chunk);
+}
+
+#[allow(unused)]
+impl Stream {
+    /// Read the next packet, waiting as long as it takes.
+    ///
+    /// # Panics
+    /// If the client closes the connection before a complete packet arrives, or sends a
+    /// packet that does not parse.
+    pub async fn read_packet(&mut self) -> (FixedHeader, Bytes) {
+        match self {
+            Stream::Sync { stream, buf } => {
+                // A previous `read_packet_timeout` may have left a timeout on the socket.
+                stream.set_read_timeout(None).unwrap();
+                loop {
+                    if let Some(packet) = take_packet(buf) {
+                        return packet;
+                    }
+                    let mut chunk = [0u8; CHUNK];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "connection closed while waiting for a packet");
+                    extend(buf, &chunk[..n]);
+                }
+            }
+            Stream::Async { stream, buf } => {
+                use tokio::io::AsyncReadExt;
+                loop {
+                    if let Some(packet) = take_packet(buf) {
+                        return packet;
+                    }
+                    let mut chunk = [0u8; CHUNK];
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    assert!(n > 0, "connection closed while waiting for a packet");
+                    extend(buf, &chunk[..n]);
+                }
+            }
+        }
+    }
+
+    /// Read the next packet if one arrives within `timeout`.
+    ///
+    /// Returns `None` on timeout, and also when the client closed the connection — this is
+    /// how a test asserts that something did *not* arrive.
+    pub async fn read_packet_timeout(&mut self, timeout: Duration) -> Option<(FixedHeader, Bytes)> {
+        match self {
+            Stream::Sync { stream, buf } => {
+                stream.set_read_timeout(Some(timeout)).unwrap();
+                loop {
+                    if let Some(packet) = take_packet(buf) {
+                        return Some(packet);
+                    }
+                    let mut chunk = [0u8; CHUNK];
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => return None,
+                        Ok(n) => extend(buf, &chunk[..n]),
+                    }
+                }
+            }
+            Stream::Async { stream, buf } => {
+                use tokio::io::AsyncReadExt;
+                loop {
+                    if let Some(packet) = take_packet(buf) {
+                        return Some(packet);
+                    }
+                    let mut chunk = [0u8; CHUNK];
+                    match tokio::time::timeout(timeout, stream.read(&mut chunk)).await {
+                        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return None,
+                        Ok(Ok(n)) => extend(buf, &chunk[..n]),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Encode one packet with `f` and send it.
+    pub async fn write_packet(&mut self, f: impl FnOnce(&mut BytesMut)) {
+        let mut buf = BytesMut::with_capacity(CHUNK);
+        f(&mut buf);
+        match self {
+            Stream::Sync { stream, .. } => stream.write_all(&buf).unwrap(),
+            Stream::Async { stream, .. } => {
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(&buf).await.unwrap()
+            }
+        }
+    }
+}
+
 #[allow(unused)]
 pub trait Harness {
     type Client<V: MqttVersion, O: ClientOpts<V>>;
     type Receiver<V: MqttVersion>;
     type Notify: modular_mqtt::util::Notify;
 
+    /// Bind a fake broker on a random loopback port.
+    async fn broker() -> Broker;
+
     fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>);
 
+    /// Run `fut` somewhere it can block without stalling the test: a dedicated thread for
+    /// `SyncHarness`, a runtime task for `AsyncHarness`.
     fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>;
 
     async fn sleep(d: Duration);
@@ -170,6 +342,10 @@ impl Harness for SyncHarness {
     type Client<V: MqttVersion, O: ClientOpts<V>> = SyncClient<V, O>;
     type Receiver<V: MqttVersion> = std::sync::mpsc::Receiver<Publish<V, QosPacketIdentifier>>;
     type Notify = modular_mqtt::util::Sync;
+
+    async fn broker() -> Broker {
+        Broker::Sync(std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+    }
 
     fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -257,16 +433,19 @@ impl Harness for AsyncHarness {
     type Receiver<V: MqttVersion> = tokio::sync::mpsc::Receiver<Publish<V, QosPacketIdentifier>>;
     type Notify = modular_mqtt::util::Async;
 
+    async fn broker() -> Broker {
+        Broker::Async(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap())
+    }
+
     fn channel<T: Send + 'static>() -> (ChannelTx<T>, ChannelRx<T>) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (ChannelTx::Async(tx), ChannelRx::Async(rx))
     }
 
     fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T> {
-        // JoinHandle::Async(tokio::task::spawn(fut))
-        JoinHandle::Async(tokio::task::spawn_blocking(|| {
-            futures::executor::block_on(fut)
-        }))
+        // The broker runs on the runtime, so nothing in it may block: `Broker` and `Stream`
+        // use tokio sockets for this harness.
+        JoinHandle::Async(tokio::task::spawn(fut))
     }
 
     async fn sleep(d: Duration) {
@@ -341,33 +520,6 @@ impl Harness for AsyncHarness {
     {
         r.wait_until_delivered().await;
     }
-}
-
-#[allow(unused)]
-pub fn read_packet<R: Read>(reader: &mut R) -> (FixedHeader, Bytes) {
-    let mut buf = BytesMut::zeroed(4096);
-    let mut len = 0;
-    loop {
-        let n = reader.read(&mut buf[len..]).unwrap();
-        assert!(n > 0, "connection closed while waiting for a packet");
-        len += n;
-        buf.truncate(len);
-        if let Some((header, body)) =
-            FixedHeader::parse(&mut buf, modular_mqtt_protocol::MAX_MQTT_PACKET_SIZE).unwrap()
-        {
-            return (header, body);
-        }
-        buf.resize(len + 4096, 0);
-    }
-}
-
-#[allow(unused)]
-pub fn write_packet<W: Write>(writer: &mut W, fun: impl FnOnce(&mut BytesMut)) {
-    let mut buf = BytesMut::with_capacity(4096);
-    fun(&mut buf);
-    buf.truncate(buf.len());
-    let buf = buf.split();
-    writer.write_all(&buf[..]).unwrap();
 }
 
 pub fn init_logging() {

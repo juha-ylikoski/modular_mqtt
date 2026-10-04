@@ -1,41 +1,14 @@
-use crate::util::{self, write_packet, GenericClientOpts, Harness};
+use crate::util::{self, GenericClientOpts, Harness};
 
-use std::io::Read;
-use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, FixedHeader, MqttTopic,
-    MqttVersion, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
-    QosPacketIdentifier, VersionedConnect, MAX_MQTT_PACKET_SIZE,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
+    PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
+    VersionedConnect,
 };
-
-/// Read one packet from `stream`, giving up after a short read timeout.
-///
-/// Returns `None` on timeout, or when the peer closed the connection. `util::read_packet`
-/// blocks forever, which cannot be used to observe the *absence* of a packet — here, the
-/// absence of a retransmission the client should not have sent.
-fn read_packet_timeout(stream: &mut TcpStream) -> Option<(FixedHeader, Bytes)> {
-    stream
-        .set_read_timeout(Some(Duration::from_millis(150)))
-        .unwrap();
-    let mut buf = BytesMut::zeroed(4096);
-    let mut len = 0;
-    loop {
-        match stream.read(&mut buf[len..]) {
-            Ok(0) | Err(_) => return None,
-            Ok(n) => len += n,
-        }
-        buf.truncate(len);
-        match FixedHeader::parse(&mut buf, MAX_MQTT_PACKET_SIZE) {
-            Ok(Some(packet)) => return Some(packet),
-            Ok(None) => buf.resize(len + 4096, 0),
-            Err(_) => return None,
-        }
-    }
-}
 
 async fn test_publish_qos0<H, V, O>(connack_rc: V::ConnackRc)
 where
@@ -45,23 +18,23 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_msg =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
@@ -74,7 +47,7 @@ where
             )
             .assign_packet_identifier(|| 1, false)
         );
-        rx_close.recv().unwrap();
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -100,8 +73,8 @@ where
     .unwrap()
     .is_none());
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_qos0,
@@ -119,29 +92,29 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_msg =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
 
-        let expected_packet_identifier = recv.recv().unwrap();
+        let expected_packet_identifier = recv.recv().await;
 
         assert_eq!(
             recv_msg,
@@ -153,10 +126,12 @@ where
             )
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
-        write_packet(&mut stream, |buf| {
-            PubAck::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| {
+                PubAck::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -181,12 +156,12 @@ where
     .await
     .unwrap()
     .unwrap();
-    send.send(msg.packet_identifier()).unwrap();
+    send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_qos1,
@@ -204,28 +179,28 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_pub =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
-        let expected_packet_identifier = recv.recv().unwrap();
+        let expected_packet_identifier = recv.recv().await;
         assert_eq!(
             recv_pub,
             Publish::new(
@@ -236,17 +211,21 @@ where
             )
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
-        write_packet(&mut stream, |buf| {
-            PubRec::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| {
+                PubRec::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
-        write_packet(&mut stream, |buf| {
-            PubComp::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| {
+                PubComp::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -271,14 +250,14 @@ where
     .await
     .unwrap()
     .unwrap();
-    send.send(msg.packet_identifier()).unwrap();
+    send.send(msg.packet_identifier()).await;
     tracing::info!("Wait for receive!");
     H::wait_until_delivered(msg).await;
     tracing::info!("Received");
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_qos2,
@@ -297,28 +276,28 @@ where
 {
     util::init_logging();
 
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_pub =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
-        let expected_packet_identifier = recv.recv().unwrap();
+        let expected_packet_identifier = recv.recv().await;
         assert_eq!(
             recv_pub,
             Publish::new(
@@ -330,14 +309,14 @@ where
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
         let (header, mut data) = loop {
-            let (header, mut data) = util::read_packet(&mut stream);
+            let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(ping_req, PingReq);
 
-                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
+                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -358,10 +337,12 @@ where
             .assign_packet_identifier(|| recv_pub2.packet_identifier().unwrap(), false),
         );
 
-        write_packet(&mut stream, |buf| {
-            PubAck::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| {
+                PubAck::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -387,12 +368,12 @@ where
     .await
     .unwrap()
     .unwrap();
-    send.send(msg.packet_identifier()).unwrap();
+    send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_resend_qos1,
@@ -410,28 +391,28 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_pub =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_pub.packet_identifier().is_some());
-        let expected_packet_identifier = recv.recv().unwrap();
+        let expected_packet_identifier = recv.recv().await;
         assert_eq!(
             recv_pub,
             Publish::new(
@@ -443,16 +424,18 @@ where
             .assign_packet_identifier(|| recv_pub.packet_identifier().unwrap(), false)
         );
         let (header, mut data) = loop {
-            let (header, mut data) = util::read_packet(&mut stream);
+            let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(connect, PingReq);
 
-                    write_packet(&mut stream, |buf| {
-                        PingResp.write_to_buf(buf);
-                    });
+                    stream
+                        .write_packet(|buf| {
+                            PingResp.write_to_buf(buf);
+                        })
+                        .await;
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -473,17 +456,21 @@ where
             .assign_packet_identifier(|| expected_packet_identifier, false)
         );
 
-        write_packet(&mut stream, |buf| {
-            PubRec::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| {
+                PubRec::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
-        write_packet(&mut stream, |buf| {
-            PubComp::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| {
+                PubComp::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -509,12 +496,12 @@ where
     .await
     .unwrap()
     .unwrap();
-    send.send(msg.packet_identifier()).unwrap();
+    send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_resend_qos2,
@@ -532,28 +519,28 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::<V>::new(true, 1, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let recv_msg =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
         assert!(recv_msg.packet_identifier().is_some());
-        let expected_packet_identifier = recv.recv().unwrap();
+        let expected_packet_identifier = recv.recv().await;
         assert_eq!(
             recv_msg,
             Publish::new(
@@ -565,19 +552,21 @@ where
             .assign_packet_identifier(|| expected_packet_identifier, false),
         );
 
-        write_packet(&mut stream, |buf| {
-            PubRec::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| {
+                PubRec::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
+            })
+            .await;
 
         let (header, mut data) = loop {
-            let (header, mut data) = util::read_packet(&mut stream);
+            let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(ping_req, PingReq);
 
-                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
+                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -596,14 +585,14 @@ where
         );
 
         let (header, mut data) = loop {
-            let (header, mut data) = util::read_packet(&mut stream);
+            let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
                 ControlPacketType::PingReq => {
                     assert_eq!(data.len(), 0);
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(connect, PingReq);
 
-                    write_packet(&mut stream, |buf| PingResp.write_to_buf(buf));
+                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -613,10 +602,10 @@ where
         };
         let pub_rel2 = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(pub_rel2, PubRel::<V>::new_ok(pub_rel2.packet_identifier()));
-        write_packet(&mut stream, |buf| {
-            PubComp::<V>::new_ok(expected_packet_identifier).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| PubComp::<V>::new_ok(expected_packet_identifier).write_to_buf(buf))
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -642,12 +631,12 @@ where
     .await
     .unwrap()
     .unwrap();
-    send.send(msg.packet_identifier()).unwrap();
+    send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_resend_pubrel_qos2,
@@ -681,25 +670,25 @@ where
     VersionedConnect: From<Connect<V>>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (publish_count_tx, publish_count_rx) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (publish_count_tx, mut publish_count_rx) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
     let test_finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let handle = {
         let test_finished = test_finished.clone();
-        std::thread::spawn(move || {
-            let (mut stream, _addr) = server.accept().unwrap();
-            let (header, mut data) = util::read_packet(&mut stream);
+        H::spawn(async move {
+            let mut stream = broker.accept().await;
+            let (header, mut data) = stream.read_packet().await;
             let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
             assert_eq!(
                 connect,
                 Connect::new(true, 1, "client-id".to_string(), None, None, None).into()
             );
-            write_packet(&mut stream, |buf| {
-                ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-            });
+            stream
+                .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+                .await;
 
             // Ack every PUBLISH we receive and keep listening afterwards, so a client that
             // failed to match our PUBACK has its retransmission counted rather than ignored.
@@ -711,7 +700,9 @@ where
                 {
                     break;
                 }
-                let Some((header, mut data)) = read_packet_timeout(&mut stream) else {
+                let Some((header, mut data)) =
+                    stream.read_packet_timeout(Duration::from_millis(150)).await
+                else {
                     continue;
                 };
                 if !matches!(
@@ -734,14 +725,16 @@ where
                     .assign_packet_identifier(|| msg.packet_identifier().unwrap(), false)
                 );
                 publishes += 1;
-                write_packet(&mut stream, |buf| {
-                    PubAck::<V>::new_ok(msg.packet_identifier().unwrap()).write_to_buf(buf)
-                });
+                stream
+                    .write_packet(|buf| {
+                        PubAck::<V>::new_ok(msg.packet_identifier().unwrap()).write_to_buf(buf)
+                    })
+                    .await;
             }
             // Tolerate a failed assertion in the test body: it drops the receiver, and the
             // broker thread should not add a second, unrelated panic on top of it.
-            let _ = publish_count_tx.send(publishes);
-            rx_close.recv().unwrap();
+            let _ = publish_count_tx.send(publishes).await;
+            rx_close.recv().await;
         })
     };
 
@@ -779,7 +772,7 @@ where
     H::wait_until_delivered(inflight).await;
     test_finished.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let publishes = publish_count_rx.recv().unwrap();
+    let publishes = publish_count_rx.recv().await;
     assert_eq!(
         publishes, 1,
         "QoS 1 publish issued while the backend was idle was retransmitted: the broker saw \
@@ -788,8 +781,8 @@ where
     );
 
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     publish_qos1_while_backend_idle,

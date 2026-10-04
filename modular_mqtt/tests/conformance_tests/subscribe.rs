@@ -1,6 +1,6 @@
-use crate::util::{self, write_packet, GenericClientOpts, Harness};
+use crate::util::{self, GenericClientOpts, Harness};
 
-use std::{net::TcpListener, time::Duration};
+use std::time::Duration;
 
 use modular_mqtt::{util::IntoTopicSubscription, ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
@@ -21,24 +21,24 @@ async fn test_sub_qos0<H, V, O>(
     for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
@@ -50,11 +50,11 @@ async fn test_sub_qos0<H, V, O>(
                 )]
             )
         );
-        send.send(sub.packet_identifier()).unwrap();
-        write_packet(&mut stream, |buf| {
-            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        send.send(sub.packet_identifier()).await;
+        stream
+            .write_packet(|buf| SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf))
+            .await;
+        rx_close.recv().await;
     });
 
     let (_, client) = H::connect::<V, O>(
@@ -75,11 +75,11 @@ async fn test_sub_qos0<H, V, O>(
     )
     .await
     .unwrap();
-    let packet_identifier = recv.recv().unwrap();
+    let packet_identifier = recv.recv().await;
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     sub_qos0,
@@ -117,24 +117,24 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
     for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
@@ -146,17 +146,19 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
                 )]
             )
         );
-        send.send(sub.packet_identifier()).unwrap();
-        write_packet(&mut stream, |buf| {
-            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
-        });
+        send.send(sub.packet_identifier()).await;
+        stream
+            .write_packet(|buf| SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf))
+            .await;
         let topic = MqttTopic::try_from("topic").unwrap();
-        write_packet(&mut stream, |buf| {
-            Publish::<V, Qos>::new(topic, b"test", Qos::AtMostOnce, false)
-                .assign_packet_identifier(|| 1, false)
-                .write_to_buf(buf)
-        });
-        rx_close.recv().unwrap();
+        stream
+            .write_packet(|buf| {
+                Publish::<V, Qos>::new(topic, b"test", Qos::AtMostOnce, false)
+                    .assign_packet_identifier(|| 1, false)
+                    .write_to_buf(buf)
+            })
+            .await;
+        rx_close.recv().await;
     });
 
     let (mut stream, client) = H::connect::<V, O>(
@@ -178,7 +180,7 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
     )
     .await
     .unwrap();
-    let packet_identifier = recv.recv().unwrap();
+    let packet_identifier = recv.recv().await;
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
     let msg = H::recv(&mut stream).await;
     assert_eq!(
@@ -192,8 +194,8 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
         .assign_packet_identifier(|| 1, false)
     );
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     sub_qos0_receive_packet,
@@ -231,24 +233,24 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
     for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
-    let (send, recv) = std::sync::mpsc::channel();
-    let (tx_close, rx_close) = std::sync::mpsc::channel();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (send, mut recv) = H::channel();
+    let (tx_close, mut rx_close) = H::channel();
 
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+    let handle = H::spawn(async move {
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
@@ -260,20 +262,22 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
                 )]
             )
         );
-        send.send(sub.packet_identifier()).unwrap();
-        write_packet(&mut stream, |buf| {
-            SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf)
-        });
+        send.send(sub.packet_identifier()).await;
+        stream
+            .write_packet(|buf| SubAck::<V>::new(sub.packet_identifier(), sub_rc).write_to_buf(buf))
+            .await;
         let topic = MqttTopic::try_from("topic").unwrap();
-        write_packet(&mut stream, |buf| {
-            Publish::<V, Qos>::new(topic, b"test", Qos::AtLeastOnce, false)
-                .assign_packet_identifier(|| 42, false)
-                .write_to_buf(buf)
-        });
-        let (header, mut data) = util::read_packet(&mut stream);
+        stream
+            .write_packet(|buf| {
+                Publish::<V, Qos>::new(topic, b"test", Qos::AtLeastOnce, false)
+                    .assign_packet_identifier(|| 42, false)
+                    .write_to_buf(buf)
+            })
+            .await;
+        let (header, mut data) = stream.read_packet().await;
         let ack = PubAck::<V>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(ack, PubAck::new_ok(42));
-        rx_close.recv().unwrap();
+        rx_close.recv().await;
     });
 
     let (mut stream, client) = H::connect::<V, O>(
@@ -295,7 +299,7 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
     )
     .await
     .unwrap();
-    let packet_identifier = recv.recv().unwrap();
+    let packet_identifier = recv.recv().await;
     assert_eq!(suback, SubAck::new(packet_identifier, sub_rc2));
     let msg = H::recv(&mut stream).await;
     assert_eq!(
@@ -309,8 +313,8 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
         .assign_packet_identifier(|| 42, false)
     );
     H::disconnect(client).await.unwrap();
-    tx_close.send(()).unwrap();
-    handle.join().unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
 }
 test!(
     sub_qos1_receive_packet,
@@ -348,25 +352,25 @@ async fn test_sub_qos2_receive_packet<H, V, O>(
     for<'a> &'a str: IntoTopicSubscription<V>,
 {
     util::init_logging();
-    let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = server.local_addr().unwrap();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
     let (send, mut recv) = H::channel();
     let (pub_done_tx, mut pub_done_rx) = H::channel();
     let (tx_close, mut rx_close) = H::channel();
 
     let handle = H::spawn(async move {
-        let (mut stream, _addr) = server.accept().unwrap();
-        let (header, mut data) = util::read_packet(&mut stream);
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
             Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
         );
-        write_packet(&mut stream, |buf| {
-            ConnAck::<V>::new(false, connack_rc).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
 
-        let (header, mut data) = util::read_packet(&mut stream);
+        let (header, mut data) = stream.read_packet().await;
         let sub = Subscribe::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             sub,
@@ -379,21 +383,27 @@ async fn test_sub_qos2_receive_packet<H, V, O>(
             )
         );
         send.send(sub.packet_identifier()).await;
-        write_packet(&mut stream, |buf| {
-            SubAck::<V>::new(sub.packet_identifier(), sub_rc2).write_to_buf(buf)
-        });
+        stream
+            .write_packet(|buf| {
+                SubAck::<V>::new(sub.packet_identifier(), sub_rc2).write_to_buf(buf)
+            })
+            .await;
         let topic = MqttTopic::try_from("topic").unwrap();
-        write_packet(&mut stream, |buf| {
-            Publish::<V, Qos>::new(topic, b"test", Qos::ExactlyOnce, false)
-                .assign_packet_identifier(|| 42, false)
-                .write_to_buf(buf)
-        });
-        let (header, mut data) = util::read_packet(&mut stream);
+        stream
+            .write_packet(|buf| {
+                Publish::<V, Qos>::new(topic, b"test", Qos::ExactlyOnce, false)
+                    .assign_packet_identifier(|| 42, false)
+                    .write_to_buf(buf)
+            })
+            .await;
+        let (header, mut data) = stream.read_packet().await;
         let rec = PubRec::<V>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(rec, PubRec::new_ok(42));
 
-        write_packet(&mut stream, |buf| PubRel::<V>::new_ok(42).write_to_buf(buf));
-        let (header, mut data) = util::read_packet(&mut stream);
+        stream
+            .write_packet(|buf| PubRel::<V>::new_ok(42).write_to_buf(buf))
+            .await;
+        let (header, mut data) = stream.read_packet().await;
         let rec = PubComp::<V>::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(rec, PubComp::new_ok(42));
         pub_done_tx.send(()).await;
