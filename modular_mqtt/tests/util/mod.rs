@@ -205,6 +205,7 @@ impl Stream {
                     extend(buf, &chunk[..n]);
                 }
             }
+            #[cfg(feature = "async")]
             Stream::Async { stream, buf } => {
                 use tokio::io::AsyncReadExt;
                 loop {
@@ -239,6 +240,7 @@ impl Stream {
                     }
                 }
             }
+            #[cfg(feature = "async")]
             Stream::Async { stream, buf } => {
                 use tokio::io::AsyncReadExt;
                 loop {
@@ -261,6 +263,7 @@ impl Stream {
         f(&mut buf);
         match self {
             Stream::Sync { stream, .. } => stream.write_all(&buf).unwrap(),
+            #[cfg(feature = "async")]
             Stream::Async { stream, .. } => {
                 use tokio::io::AsyncWriteExt;
                 stream.write_all(&buf).await.unwrap()

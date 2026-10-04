@@ -75,7 +75,16 @@ impl<V: MqttVersion> InflightMessage<V, Sync> {
 #[cfg(feature = "async")]
 impl<V: MqttVersion> InflightMessage<V, Async> {
     pub async fn wait_until_delivered(&self) {
-        self.delivered.notified().await
+        // register interest *before* checking, so a mark_delivered between
+        // the check and the await is not lost
+        let notified = self.delivered.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable(); // registers with the Notify now
+
+        if InflightMessageState::Sent == *self.state.lock().unwrap() {
+            return;
+        }
+        notified.await;
     }
     pub fn mark_delivered(&self) {
         self.delivered.notify_waiters();
