@@ -13,6 +13,7 @@ use crate::{
     error::BackendError,
     util::InflightMessage,
     util::{connect_async, read_into_buf_async},
+    Instant,
 };
 
 use tokio::sync::{mpsc, Mutex};
@@ -22,6 +23,7 @@ use super::{Action, BackendStateMachine};
 
 enum ReadFinished {
     Success(FixedHeader, Bytes),
+    Partial,
     TimedOut,
 }
 
@@ -188,8 +190,9 @@ where
             self.read_inflight_ch().await?;
 
             self.write_buf_to_stream().await?;
-            match self.read_next_timeout().await? {
+            match self.read_next_msg().await? {
                 ReadFinished::Success(fixed_header, buf) => {
+                    self.read_inflight_ch().await?;
                     match self.state_machine.handle_msg(fixed_header, buf)? {
                         Action::None => (),
                         Action::SubAckSend(sub_ack) => {
@@ -212,7 +215,24 @@ where
                         }
                     }
                 }
+                ReadFinished::Partial => {
+                    tracing::debug!("Got partial read");
+                }
                 ReadFinished::TimedOut => {
+                    if !self.read_buf.is_empty()
+                        && Instant::now().saturating_duration_since(self.state_machine.last_read)
+                            > Duration::from_secs(
+                                self.state_machine.shared.opts.keep_alive().into(),
+                            )
+                    {
+                        // Partial packet pending: the peer stalled mid-packet. A PINGREQ here
+                        // would desync the stream — the PINGRESP would be parsed as payload.
+                        return Err(BackendError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "Broker stalled mid-packet",
+                        )));
+                    }
+                    self.state_machine.last_read = Instant::now();
                     tracing::debug!("Sending ping request to broker");
                     PingReq.write_to_buf(&mut self.state_machine.write_buf);
                 }
@@ -233,7 +253,7 @@ where
         writer.flush().await
     }
 
-    async fn read_next_msg(&mut self) -> Result<Option<(FixedHeader, Bytes)>, BackendError> {
+    async fn read_next_msg(&mut self) -> Result<ReadFinished, BackendError> {
         // Check if we already have a packet in buffer
         if !self.read_buf.is_empty() {
             tracing::trace!("Buffer has data {:?}. Try to parse it", self.read_buf);
@@ -241,45 +261,38 @@ where
                 &mut self.read_buf,
                 self.state_machine.shared.opts.max_packet_size(),
             ) {
-                Ok(Some(v)) => return Ok(Some(v)),
+                Ok(Some(v)) => return Ok(ReadFinished::Success(v.0, v.1)),
                 Err(e) => return Err(BackendError::MqttError(e)),
                 Ok(None) => (),
             }
         }
 
-        match read_into_buf_async(
-            &mut self.reader,
-            &mut self.read_buf,
-            self.state_machine.next_read_timeout(),
-        )
-        .await
-        {
+        let timeout = self.state_machine.next_read_timeout();
+
+        match read_into_buf_async(&mut self.reader, &mut self.read_buf, timeout).await {
             Ok(Ok(0)) => Err(BackendError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "Stream disconnected",
             ))),
-            Ok(Ok(_)) => FixedHeader::parse(
-                &mut self.read_buf,
-                self.state_machine.shared.opts.max_packet_size(),
-            )
-            .map_err(BackendError::MqttError),
-            Ok(Err(e)) => Err(BackendError::IoError(e)),
-            Err(_) => Ok(None),
-        }
-    }
-
-    async fn read_next_timeout(&mut self) -> Result<ReadFinished, BackendError> {
-        match self.read_next_msg().await {
-            Ok(Some((header, buf))) => {
-                self.read_inflight_ch().await?;
-                tracing::trace!("Received new packet: header={header:?} body={buf:?}");
-                Ok(ReadFinished::Success(header, buf))
+            Ok(Ok(_)) => {
+                self.state_machine.last_read = Instant::now();
+                match FixedHeader::parse(
+                    &mut self.read_buf,
+                    self.state_machine.shared.opts.max_packet_size(),
+                ) {
+                    Ok(Some((header, buf))) => {
+                        tracing::trace!("Received new packet: header={header:?} body={buf:?}");
+                        Ok(ReadFinished::Success(header, buf))
+                    }
+                    Ok(None) => Ok(ReadFinished::Partial),
+                    Err(e) => Err(BackendError::MqttError(e)),
+                }
             }
-            Ok(None) => {
-                tracing::trace!("Read timed out");
+            Ok(Err(e)) => Err(BackendError::IoError(e)),
+            Err(_) => {
+                tracing::trace!("Read timed out or not enough data");
                 Ok(ReadFinished::TimedOut)
             }
-            Err(e) => Err(e),
         }
     }
 }

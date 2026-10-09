@@ -23,6 +23,8 @@ pub mod sync_backend;
 #[cfg(feature = "async")]
 pub mod async_backend;
 
+const MIN_READ_TIMEOUT: Duration = Duration::from_millis(5);
+
 /// Data shared between client and backend
 pub struct Shared<V, O>
 where
@@ -47,6 +49,7 @@ where
     pub write_buf: BytesMut,
     pub inflight_msgs: HashMap<u16, Arc<InflightMessage<V, R>>>,
     pub next_resend_deadline: Option<Instant>,
+    pub last_read: Instant,
     pub shared: Arc<Shared<V, O>>,
 }
 
@@ -69,19 +72,17 @@ where
     O: ClientOpts<V>,
     R: crate::util::Notify,
 {
-    /// How long the next blocking read may wait: capped to `keep_alive` (so keep-alive pings
-    /// stay on schedule), but shortened to `next_resend_deadline` so a short `resend_interval`
-    /// isn't silently stretched out to `keep_alive` while idle.
-    fn next_read_timeout(&self) -> Duration {
-        let keep_alive = Duration::from_secs(self.shared.opts.keep_alive().into());
+    /// How long the next blocking read may wait:
+    fn next_read_timeout(&self) -> Instant {
         let timeout = match self.next_resend_deadline {
-            Some(deadline) => {
-                let until_deadline = deadline.saturating_duration_since(Instant::now());
-                keep_alive.min(until_deadline).max(Duration::from_millis(1))
-            }
-            None => keep_alive,
+            Some(resend) => resend
+                .min(self.last_read + Duration::from_secs(self.shared.opts.keep_alive().into())),
+            None => self.last_read + Duration::from_secs(self.shared.opts.keep_alive().into()),
         };
-        tracing::trace!("Next timeout in {timeout:?}");
+
+        let now = Instant::now();
+        let timeout = (now + MIN_READ_TIMEOUT).max(timeout);
+        tracing::trace!("Next timeout in {:?}", timeout - now);
         timeout
     }
 

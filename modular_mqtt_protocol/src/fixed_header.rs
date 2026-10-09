@@ -179,6 +179,10 @@ impl FixedHeader {
         if packet_len < 2 {
             return Ok(None);
         }
+
+        let orig = buf;
+        let buf: &[u8] = &*orig;
+
         let control_packet_type = ControlPacketType::try_from_byte(buf[0])?;
 
         let mut peek: &[u8] = &buf[1..];
@@ -201,11 +205,8 @@ impl FixedHeader {
             return Ok(None);
         }
 
-        buf.advance(1 + variable_int_len);
-        if remaining_length > buf.remaining() {
-            return Err(MalformedPacket::new("Packet too short to parse"));
-        }
-        let body = buf.split_to(remaining_length).freeze();
+        orig.advance(1 + variable_int_len);
+        let body = orig.split_to(remaining_length).freeze();
 
         Ok(Some((
             Self::new(control_packet_type, remaining_length),
@@ -491,5 +492,121 @@ mod test {
         assert!(FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .is_none())
+    }
+
+    /// PUBLISH, flags 0, remaining_length = 128 -> 2-byte VBI, 131 bytes total.
+    fn two_byte_vbi_packet() -> Vec<u8> {
+        let mut v = vec![0b0011_0000, 0x80, 0x01];
+        v.extend((0..128).map(|i| i as u8));
+        v
+    }
+    #[test]
+    fn every_proper_prefix_is_incomplete_and_leaves_buffer_untouched() {
+        let packet = two_byte_vbi_packet();
+        for len in 0..packet.len() {
+            let mut buf = BytesMut::from(&packet[..len]);
+            let before = buf.clone();
+            assert_eq!(
+                FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap(),
+                None,
+                "{len}-byte prefix must be reported as incomplete"
+            );
+            assert_eq!(
+                buf, before,
+                "parse consumed bytes on an incomplete packet (len={len})"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_is_independent_of_read_chunk_size() {
+        // The invariant M1 depends on: a streaming reader must produce the same
+        // result regardless of how the bytes were split across reads.
+        let packet = two_byte_vbi_packet();
+        for chunk in [1usize, 2, 3, 5, 64, 4096] {
+            let mut buf = BytesMut::new();
+            let mut got = None;
+            for piece in packet.chunks(chunk) {
+                buf.extend_from_slice(piece);
+                if got.is_none() {
+                    got = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).unwrap();
+                }
+            }
+            let (header, body) = got.unwrap_or_else(|| panic!("never completed at chunk={chunk}"));
+            assert_eq!(header.remaining_length, 128);
+            assert_eq!(body.len(), 128);
+        }
+    }
+    #[test]
+    fn truncated_variable_byte_integer_is_incomplete() {
+        for prefix in [
+            &[0x30u8][..],           // no VBI byte yet
+            &[0x30, 0x80][..],       // 1 continuation byte
+            &[0x30, 0x80, 0x80][..], // 2 continuation bytes
+        ] {
+            let mut buf = BytesMut::from(prefix);
+            assert!(
+                FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+                    .unwrap()
+                    .is_none(),
+                "{prefix:?} should be incomplete"
+            );
+        }
+    }
+
+    #[test]
+    fn five_continuation_bytes_is_malformed() {
+        // Guards against widening the Ok(None) net to cover real protocol errors.
+        let mut buf = BytesMut::from(&[0x30, 0x80, 0x80, 0x80, 0x80][..]);
+        assert!(FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).is_err());
+    }
+
+    #[test]
+    fn errors_decidable_from_the_first_byte_survive_truncation() {
+        for bytes in [
+            &[0x00u8, 0x00][..], // reserved packet type 0
+            &[0x36, 0x00][..],   // PUBLISH with QoS = 3
+            &[0x60, 0x00][..],   // PUBREL with flags 0 (must be 0b0010)
+        ] {
+            let mut buf = BytesMut::from(bytes);
+            assert!(
+                FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE).is_err(),
+                "{bytes:?} should be a protocol error, not 'incomplete'"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_declared_length_errors_even_when_incomplete() {
+        // Pins that PacketTooLarge is checked before the completeness guard,
+        // so nobody "fixes" it into Ok(None).
+        // 120 = 0x78, so this is a single-byte VBI: declared packet size is 122.
+        let mut buf = BytesMut::from(&[0x30, 120, 0x00][..]);
+        assert!(matches!(
+            FixedHeader::parse(&mut buf, 100),
+            Err(Error::PacketTooLarge {
+                packet_size: 122,
+                max_configured_size: 100
+            })
+        ));
+    }
+
+    #[test]
+    fn leftover_bytes_are_preserved_for_the_next_packet() {
+        let mut buf = BytesMut::from(&[0x40, 0x02, 0xAA, 0xBB, 0xD0, 0x00][..]);
+
+        let (h1, b1) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(h1.control_packet_type, ControlPacketType::PubAck);
+        assert_eq!(&b1[..], &[0xAA, 0xBB]);
+        assert_eq!(buf.len(), 2, "second packet must stay in the buffer");
+
+        let (h2, b2) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(h2.control_packet_type, ControlPacketType::PingResp);
+        assert!(b2.is_empty());
+        assert!(buf.is_empty());
     }
 }

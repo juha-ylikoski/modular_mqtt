@@ -168,14 +168,14 @@ pub fn read_into_buf(reader: &mut impl Read, buf: &mut BytesMut) -> std::io::Res
 pub async fn read_into_buf_async(
     reader: &mut crate::connection::async_stream::AsyncReader,
     buf: &mut BytesMut,
-    timeout: Duration,
+    timeout: tokio::time::Instant,
 ) -> Result<std::io::Result<usize>, tokio::time::error::Elapsed> {
     use tokio::io::AsyncReadExt;
 
     tracing::trace!("Try to read data from stream. Timeout={timeout:?}");
     let old_len = buf.len();
     buf.resize(old_len + STREAM_READ_CHUNK_SIZE, 0);
-    let result = match tokio::time::timeout(timeout, reader.read(&mut buf[old_len..])).await {
+    let result = match tokio::time::timeout_at(timeout, reader.read(&mut buf[old_len..])).await {
         Ok(r) => r,
         Err(timeout) => {
             buf.truncate(old_len);
@@ -279,7 +279,7 @@ where
         match read_into_buf_async(
             reader,
             read_buf,
-            Duration::from_secs(opts.keep_alive().into()),
+            tokio::time::Instant::now() + Duration::from_secs(opts.keep_alive().into()),
         )
         .await
         {

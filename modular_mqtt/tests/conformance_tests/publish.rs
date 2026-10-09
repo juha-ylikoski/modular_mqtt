@@ -2,7 +2,7 @@ use crate::util::{self, GenericClientOpts, Harness};
 
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
@@ -788,6 +788,91 @@ test!(
     publish_qos1_while_backend_idle,
     test_publish_qos1_while_backend_idle,
     10000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
+
+async fn test_large_publish_paced_across_keepalive<H, V, O>(connack_rc: V::ConnackRc)
+where
+    H: Harness,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    VersionedConnect: From<Connect<V>>,
+{
+    util::init_logging();
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
+    let (tx_disconnect, mut rx_disconnect) = H::channel();
+
+    let payload: Vec<u8> = (0..5000u32).map(|i| i as u8).collect();
+    let _payload = payload.clone();
+
+    let handle = H::spawn(async move {
+        let payload = _payload;
+
+        let mut stream = broker.accept().await;
+        let (header, mut data) = stream.read_packet().await;
+        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
+        stream
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
+
+        let id = || 100;
+
+        let mut packet = BytesMut::new();
+        Publish::<V, Qos>::new(
+            MqttTopic::try_from("t/large").unwrap(),
+            payload,
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(id, false)
+        .write_to_buf(&mut packet);
+        assert!(packet.len() > 4096, "must exceed STREAM_READ_CHUNK_SIZE");
+
+        // Gaps (300ms) sit above MIN_READ_TIMEOUT (5ms) but below keep_alive (2s),
+        // and the 3s total exceeds keep_alive — so the deadline must be refreshed
+        // on every read or the client falsely declares a stall.
+        for chunk in packet.chunks(500) {
+            stream
+                .write_packet(|buf| buf.extend_from_slice(chunk))
+                .await;
+            assert!(
+                stream
+                    .read_packet_timeout(Duration::from_millis(50))
+                    .await
+                    .is_none(),
+                "client sent a packet mid-transfer"
+            );
+            H::sleep(Duration::from_millis(300)).await;
+        }
+        tx_disconnect.send(()).await;
+        rx_close.recv().await;
+    });
+    let (mut rx, client) = H::connect::<V, O>(
+        GenericClientOpts(ClientOptsV5 {
+            client_id: "client-id".to_string(),
+            keep_alive: 2,
+            ..Default::default()
+        }),
+        addr.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let msg = H::recv(&mut rx).await;
+    assert_eq!(msg.payload(), &payload[..], "payload corrupted");
+    rx_disconnect.recv().await;
+    H::disconnect(client).await.unwrap();
+    tx_close.send(()).await;
+    handle.join().await;
+}
+
+test!(
+    large_publish_paced_across_keepalive,
+    test_large_publish_paced_across_keepalive,
+    20000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );

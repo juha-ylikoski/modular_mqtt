@@ -287,7 +287,7 @@ pub trait Harness {
     /// `SyncHarness`, a runtime task for `AsyncHarness`.
     fn spawn<T: Send + 'static>(fut: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>;
 
-    async fn sleep(d: Duration);
+    fn sleep(d: Duration) -> impl std::future::Future<Output = ()> + std::marker::Send;
 
     async fn connect<V, O>(
         opts: GenericClientOpts,

@@ -152,6 +152,7 @@ where
                     receive_inflight: Vec::new(),
                     write_buf,
                     inflight_msgs: HashMap::new(),
+                    last_read: crate::Instant::now(),
                     next_resend_deadline: None,
                     shared: shared.clone(),
                 },
