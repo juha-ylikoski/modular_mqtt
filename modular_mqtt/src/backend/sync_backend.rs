@@ -64,19 +64,14 @@ where
         res
     }
 
-    fn auto_reconnect(
-        &mut self,
-        min_retry_interval: Duration,
-        max_retry_interval: Duration,
-    ) -> Result<(), BackendError> {
-        let wait = exponential_backoff(min_retry_interval, max_retry_interval, self.retry_count);
-        std::thread::sleep(wait);
+    fn auto_reconnect(&mut self, after: Duration) -> Result<(), BackendError> {
+        std::thread::sleep(after);
+        tracing::info!("Try to reconnect now");
         let res = self.reconnect();
         if res.is_ok() {
             tracing::info!("Successfully reconnected!");
-            self.retry_count = 0;
+            *self.state_machine.shared.online.write().unwrap() = true;
         }
-        self.retry_count += 1;
         res
     }
 
@@ -84,6 +79,8 @@ where
         loop {
             tracing::debug!("Start listening for mqtt messages");
             let mut res = self.loop_bg_thread();
+            *self.state_machine.shared.online.write().unwrap() = false;
+
             if res.is_err() && *self.backend_killer.lock().unwrap() {
                 tracing::info!("Shutting down!");
                 return Ok(());
@@ -95,21 +92,35 @@ where
                     min_retry_interval,
                     max_retry_interval,
                 } => loop {
-                    if let Err(BackendError::IoError(e)) = &res {
-                        tracing::warn!(
-                            "Got io error: {e}. Trying to reconnect after {min_retry_interval:?}."
-                        );
-                        res = self.auto_reconnect(min_retry_interval, max_retry_interval);
-                    } else if let Err(BackendError::NoPingResponse) = &res {
-                        tracing::warn!(
-                            "Did not receive ping response. Trying to automatically reconnect"
-                        );
-                        res = self.auto_reconnect(min_retry_interval, max_retry_interval);
-                    } else {
-                        return res;
+                    let err = match &res {
+                        Ok(_) => break,
+                        Err(e) => e,
+                    };
+
+                    let wait = exponential_backoff(
+                        min_retry_interval,
+                        max_retry_interval,
+                        self.retry_count,
+                    );
+                    match err {
+                        BackendError::IoError(e) => {
+                            tracing::warn!("Got io error: {e}. Trying to reconnect after {wait:?}");
+                            res = self.auto_reconnect(wait);
+                        }
+                        BackendError::NoPingResponse => {
+                            tracing::warn!(
+                                "Did not receive ping response. Trying to reconnect after {wait:?}"
+                            );
+                            res = self.auto_reconnect(wait);
+                        }
+                        _ => {
+                            return res;
+                        }
                     }
-                    if res.is_ok() {
-                        break;
+                    if res.is_err() {
+                        self.retry_count += 1;
+                    } else {
+                        self.retry_count = 0;
                     }
                 },
             }
@@ -194,7 +205,7 @@ where
     }
 
     fn prune_communicators(&mut self) {
-        self.unsuback_comm.prune();
+        self.suback_comm.prune();
         self.unsuback_comm.prune();
     }
 

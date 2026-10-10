@@ -10,7 +10,7 @@ use crate::{
     client_communication::async_communicator::AsyncClientCommunicator,
     client_opts::{exponential_backoff, ClientOpts, OnDisconnectBehavior},
     connection::async_stream::{AsyncReader, AsyncWriter},
-    error::BackendError,
+    error::{BackendError, ConnectError},
     util::{connect_async, read_into_buf_async, InflightMessage},
     Instant, CONNECTION_TIMEOUT, PACKET_TIMEOUT,
 };
@@ -72,32 +72,27 @@ where
     }
 
     async fn prune_communicators(&mut self) {
-        self.unsuback_comm.prune().await;
+        self.suback_comm.prune().await;
         self.unsuback_comm.prune().await;
     }
 
-    async fn auto_reconnect(
-        &mut self,
-        min_retry_interval: Duration,
-        max_retry_interval: Duration,
-    ) -> Result<(), BackendError> {
-        let wait = exponential_backoff(min_retry_interval, max_retry_interval, self.retry_count);
-        tokio::time::sleep(wait).await;
+    async fn auto_reconnect(&mut self, after: Duration) -> Result<(), BackendError> {
+        tokio::time::sleep(after).await;
+        tracing::info!("Try to reconnect now");
         let res = self.reconnect().await;
         if res.is_ok() {
             tracing::info!("Successfully reconnected!");
-            self.retry_count = 0;
+            *self.state_machine.shared.online.write().unwrap() = true;
         }
-        self.retry_count += 1;
         res
     }
 
     async fn task(mut self) -> Result<(), BackendError> {
-        let mut i = 0;
-
         loop {
             tracing::debug!("Start listening for mqtt messages");
             let mut res = self.loop_bg_task().await;
+
+            *self.state_machine.shared.online.write().unwrap() = false;
 
             match self.state_machine.shared.opts.on_disconnect() {
                 OnDisconnectBehavior::Panic => return res,
@@ -105,33 +100,39 @@ where
                     min_retry_interval,
                     max_retry_interval,
                 } => loop {
-                    if let Err(BackendError::IoError(e)) = &res {
-                        tracing::warn!(
-                            "Got io error: {e}. Trying to reconnect after {min_retry_interval:?}."
-                        );
-                        res = self
-                            .auto_reconnect(min_retry_interval, max_retry_interval)
-                            .await;
-                    } else if let Err(BackendError::NoPingResponse) = &res {
-                        tracing::warn!(
-                            "Did not receive ping response. Trying to automatically reconnect"
-                        );
-                        res = self
-                            .auto_reconnect(min_retry_interval, max_retry_interval)
-                            .await;
-                    } else {
-                        return res;
+                    let err = match &res {
+                        Ok(_) => break,
+                        Err(e) => e,
+                    };
+
+                    let wait = exponential_backoff(
+                        min_retry_interval,
+                        max_retry_interval,
+                        self.retry_count,
+                    );
+
+                    match err {
+                        BackendError::IoError(e) => {
+                            tracing::warn!("Got io error: {e}. Trying to reconnect after {wait:?}");
+                            res = self.auto_reconnect(wait).await;
+                        }
+                        BackendError::NoPingResponse => {
+                            tracing::warn!(
+                                "Did not receive ping response. Trying to reconnect after {wait:?}"
+                            );
+                            res = self.auto_reconnect(wait).await;
+                        }
+                        _ => {
+                            return res;
+                        }
                     }
-                    if res.is_ok() {
-                        break;
+                    if res.is_err() {
+                        self.retry_count += 1;
+                    } else {
+                        self.retry_count = 0;
                     }
                 },
             }
-            if i > 50 {
-                self.prune_communicators().await;
-                i = 0;
-            }
-            i += 1;
         }
     }
 
@@ -163,7 +164,13 @@ where
         .await
         {
             Ok(Ok(connack)) => Ok(connack),
-            Ok(Err(e)) => Err(BackendError::ReconnectError(e)),
+            Ok(Err(e)) => {
+                if let ConnectError::IoError(e) = e {
+                    Err(BackendError::IoError(e))
+                } else {
+                    Err(BackendError::ReconnectError(e))
+                }
+            }
             Err(_) => Err(BackendError::IoError(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Timed out waiting for connack",
@@ -221,6 +228,7 @@ where
     }
 
     async fn loop_bg_task(&mut self) -> Result<(), BackendError> {
+        let mut i = 0;
         loop {
             self.state_machine.check_resend_msgs();
             self.read_inflight_ch().await?;
@@ -290,6 +298,12 @@ where
                 }
             }
             self.write_buf_to_stream().await?;
+
+            if i > 50 {
+                self.prune_communicators().await;
+                i = 0;
+            }
+            i += 1;
         }
     }
 
