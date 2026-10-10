@@ -69,7 +69,7 @@ pub struct PublishProperties {
     /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
     /// if the publication is the result of a match to more than one subscription, in this case their
     /// order is not significant.
-    subscription_identifier: Option<u64>,
+    subscription_identifier: Vec<u64>,
     /// UTF-8 Encoded String describing the content of the Will Message
     /// The value of the Content Type is defined by the sending and receiving application.
     content_type: Option<String>,
@@ -138,12 +138,12 @@ impl PacketProperties for PublishProperties {
                     properties.user_property.push(UserProperty { key, value });
                 }
                 PropertyIdentifier::SubscriptionIdentifier => {
-                    if properties.subscription_identifier.is_some() {
-                        return Err(Error::ProtocolError(
-                            "SubscriptionIdentifier specified multiple times",
-                        ));
+                    let id = read_variable_len_int(data)?;
+                    if id == 0 {
+                        return Err(Error::ProtocolError("Subscription identifier cannot be 0"));
                     }
-                    properties.subscription_identifier = Some(read_variable_len_int(data)?);
+
+                    properties.subscription_identifier.push(id);
                 }
                 PropertyIdentifier::ContentType => {
                     if properties.content_type.is_some() {
@@ -158,6 +158,8 @@ impl PacketProperties for PublishProperties {
                 }
             }
         }
+        properties.subscription_identifier.sort();
+        properties.subscription_identifier.dedup();
         Ok(properties)
     }
 
@@ -177,9 +179,9 @@ impl PacketProperties for PublishProperties {
             .serialize(PropertyIdentifier::CorrelationData, buf);
         self.user_property
             .serialize(PropertyIdentifier::UserProperty, buf);
-        if let Some(id) = self.subscription_identifier {
+        for id in &self.subscription_identifier {
             write_variable_len_int(PropertyIdentifier::SubscriptionIdentifier as u64, buf);
-            write_variable_len_int(id, buf);
+            write_variable_len_int(*id, buf);
         }
         self.content_type
             .serialize(PropertyIdentifier::ContentType, buf);
@@ -194,8 +196,9 @@ impl PacketProperties for PublishProperties {
             + self.user_property.property_len()
             + self
                 .subscription_identifier
-                .map(|id| 1 + variable_len_int_size(id as usize))
-                .unwrap_or_default()
+                .iter()
+                .map(|id| 1 + variable_len_int_size(*id as usize))
+                .sum::<usize>()
             + self.content_type.property_len()
     }
 }
@@ -378,8 +381,8 @@ impl<Q> Publish<MqttV5_0_0, Q> {
         &self.properties.user_property
     }
 
-    pub fn subscription_identifier(&self) -> Option<u64> {
-        self.properties.subscription_identifier
+    pub fn subscription_identifier(&self) -> &[u64] {
+        &self.properties.subscription_identifier
     }
 
     pub fn content_type(&self) -> Option<&str> {
@@ -414,9 +417,21 @@ impl Publish<MqttV5_0_0, Qos> {
         self.properties.user_property = user_properties;
         self
     }
-    pub fn set_subscription_identifier(mut self, identifier: u64) -> Self {
-        self.properties.subscription_identifier = Some(identifier);
-        self
+    pub fn set_subscription_identifier(mut self, mut identifiers: Vec<u64>) -> Result<Self, Error> {
+        identifiers.sort();
+        identifiers.dedup();
+        if identifiers.contains(&0) {
+            return Err(Error::ProtocolError(
+                "Publish packet subscription identifier cannot be 0",
+            ));
+        }
+        if identifiers.iter().any(|id| *id > 268435455) {
+            return Err(Error::ProtocolError(
+                "Publish packet cannot contain subscription id > 268435455",
+            ));
+        }
+        self.properties.subscription_identifier = identifiers;
+        Ok(self)
     }
     pub fn set_content_type(mut self, content_type: String) -> Self {
         self.properties.content_type = Some(content_type);
@@ -993,7 +1008,8 @@ mod test_v5 {
                 value: "value1".to_string(),
             },
         ])
-        .set_subscription_identifier(12)
+        .set_subscription_identifier(vec![12])
+        .unwrap()
         .set_content_type("test".to_string())
         .assign_packet_identifier(|| 0, false);
         let mut buf = Vec::new();
@@ -1054,13 +1070,13 @@ mod test_v5 {
                 value: "value1".to_string(),
             },
         ];
-        expected.properties.subscription_identifier = Some(12);
+        expected.properties.subscription_identifier = vec![12, 13];
         expected.properties.content_type = Some("test".to_string());
 
         let msg = [
-            48, 96, 0, 5, b't', b'o', b'p', b'i', b'c', //
+            48, 98, 0, 5, b't', b'o', b'p', b'i', b'c', //
             // Properties
-            81, //
+            83, //
             // payload format
             1, 0, //
             // Message expiry
@@ -1079,6 +1095,8 @@ mod test_v5 {
             b'u', b'e', b'1', //
             // Subscription identifier
             11, 12, //
+            // Subscription identifier
+            11, 13, //
             // Content type
             3, 0, 4, b't', b'e', b's', b't', //
             // payload
@@ -1089,5 +1107,126 @@ mod test_v5 {
             .unwrap()
             .unwrap();
         assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
+    }
+
+    #[test]
+    fn deserialize_duplicate_subscription_ids() {
+        let mut expected = Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
+
+        expected.properties.subscription_identifier = vec![12];
+
+        let msg = [
+            48, 19, 0, 5, b't', b'o', b'p', b'i', b'c', //
+            // Properties
+            4, //
+            // Subscription identifier
+            11, 12, //
+            // Subscription identifier
+            11, 12, //
+            // payload
+            b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn deserialize_subscription_id_zero() {
+        let msg = [
+            48, 17, 0, 5, b't', b'o', b'p', b'i', b'c', //
+            // Properties
+            2, //
+            // Subscription identifier
+            11, 0, //
+            // payload
+            b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body) {
+            Ok(_) => panic!("Should be protocol error"),
+            Err(Error::ProtocolError(error)) => {
+                assert_eq!(error, "Subscription identifier cannot be 0")
+            }
+            _ => panic!("Should be protocol error"),
+        }
+    }
+
+    #[test]
+    fn serialize_subscription_id_zero() {
+        match Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .set_subscription_identifier(vec![0, 1])
+        {
+            Ok(_) => panic!("Should be protocol error"),
+            Err(Error::ProtocolError(error)) => {
+                assert_eq!(error, "Publish packet subscription identifier cannot be 0")
+            }
+            _ => panic!("Should be protocol error"),
+        };
+    }
+
+    #[test]
+    fn serialize_subscription_id_too_large() {
+        match Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .set_subscription_identifier(vec![0xffffffffffffffff])
+        {
+            Ok(_) => panic!("Should be protocol error"),
+            Err(Error::ProtocolError(error)) => {
+                assert_eq!(
+                    error,
+                    "Publish packet cannot contain subscription id > 268435455"
+                )
+            }
+            _ => panic!("Should be protocol error"),
+        };
+    }
+
+    #[test]
+    fn subscription_ids_round_trip() {
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .set_subscription_identifier(vec![12, 13, 12])
+        .unwrap() // duplicate on purpose
+        .assign_packet_identifier(|| 0, false);
+
+        let mut wire = Vec::new();
+        msg.write_to_buf(&mut wire);
+
+        let mut buf = BytesMut::from(&wire[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap(),
+            msg
+        );
     }
 }
