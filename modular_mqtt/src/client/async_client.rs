@@ -18,7 +18,7 @@ use crate::{
         connect_async, InflightMessage, InflightMessageState, IntoTopicSubscription,
         STREAM_READ_CHUNK_SIZE,
     },
-    Instant,
+    Instant, CONNECTION_TIMEOUT,
 };
 
 use tokio::{
@@ -108,7 +108,9 @@ where
         let (inflight_sender, inflight_receiver) = mpsc::channel(100);
 
         let connack = match tokio::time::timeout(
-            Duration::from_secs(opts.keep_alive().into()),
+            opts.keep_alive()
+                .map(|v| Duration::from_secs(v.into()))
+                .unwrap_or(CONNECTION_TIMEOUT),
             connect_async(
                 &opts,
                 &mut read_buf,
@@ -152,7 +154,9 @@ where
                     receive_inflight: Vec::new(),
                     write_buf,
                     inflight_msgs: HashMap::new(),
+                    last_write: crate::Instant::now(),
                     last_read: crate::Instant::now(),
+                    ping_sent: None,
                     next_resend_deadline: None,
                     shared: shared.clone(),
                 },

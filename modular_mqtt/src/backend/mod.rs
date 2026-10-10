@@ -15,7 +15,7 @@ use bytes::{Bytes, BytesMut};
 use crate::{
     error::BackendError,
     util::{InflightMessage, InflightMessageState},
-    ClientOpts, Instant,
+    ClientOpts, Instant, PACKET_TIMEOUT, PING_FREQUENCY, PING_TIMEOUT,
 };
 
 pub mod sync_backend;
@@ -49,7 +49,9 @@ where
     pub write_buf: BytesMut,
     pub inflight_msgs: HashMap<u16, Arc<InflightMessage<V, R>>>,
     pub next_resend_deadline: Option<Instant>,
+    pub last_write: Instant,
     pub last_read: Instant,
+    pub ping_sent: Option<Instant>,
     pub shared: Arc<Shared<V, O>>,
 }
 
@@ -72,18 +74,33 @@ where
     O: ClientOpts<V>,
     R: crate::util::Notify,
 {
+    fn ping_cadence(keep_alive: u16) -> Duration {
+        let keep_alive_ms = keep_alive as u64 * 1000;
+        Duration::from_millis(keep_alive_ms * PING_FREQUENCY / 100)
+    }
+
     /// How long the next blocking read may wait:
-    fn next_read_timeout(&self) -> Instant {
-        let timeout = match self.next_resend_deadline {
-            Some(resend) => resend
-                .min(self.last_read + Duration::from_secs(self.shared.opts.keep_alive().into())),
-            None => self.last_read + Duration::from_secs(self.shared.opts.keep_alive().into()),
+    fn next_read_timeout(&self, packet_pending: bool) -> Option<Instant> {
+        let mut timeout = match (self.next_resend_deadline, self.shared.opts.keep_alive()) {
+            (Some(resend), Some(keep_alive)) => {
+                resend.min(self.last_write + Self::ping_cadence(keep_alive))
+            }
+            (Some(resend), None) => resend,
+            (None, Some(keep_alive)) => self.last_write + Self::ping_cadence(keep_alive),
+            (None, None) => return None,
         };
 
+        if let Some(ping_sent) = self.ping_sent {
+            timeout = timeout.min(ping_sent + PING_TIMEOUT);
+        }
+
         let now = Instant::now();
-        let timeout = (now + MIN_READ_TIMEOUT).max(timeout);
+        let mut timeout = (now + MIN_READ_TIMEOUT).max(timeout);
+        if packet_pending {
+            timeout = timeout.max(now + PACKET_TIMEOUT)
+        }
         tracing::trace!("Next timeout in {:?}", timeout - now);
-        timeout
+        Some(timeout)
     }
 
     fn re_write_qos1_and_qos2_to_write_buf(&mut self) {
@@ -165,6 +182,7 @@ where
             ControlPacketType::PingResp => {
                 let resp = PingResp::try_read_entire_buf(fixed_header, body)?;
                 tracing::debug!("Received PingResp from server: {resp:?}");
+                self.ping_sent = None;
                 Ok(Action::None)
             }
             ControlPacketType::SubAck => {

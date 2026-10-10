@@ -49,7 +49,7 @@ where
     fn connect_error(connack: &ConnAck<V>) -> ConnectError;
     fn connect_msg(&self) -> Connect<V>;
     fn max_packet_size(&self) -> usize;
-    fn keep_alive(&self) -> u16;
+    fn keep_alive(&self) -> Option<u16>;
     fn ack_retention(&self) -> Duration;
     fn client_id(&self) -> &str;
     fn on_disconnect(&self) -> OnDisconnectBehavior;
@@ -119,8 +119,12 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
         self.max_packet_size
     }
 
-    fn keep_alive(&self) -> u16 {
-        self.keep_alive
+    fn keep_alive(&self) -> Option<u16> {
+        if self.keep_alive == 0 {
+            None
+        } else {
+            Some(self.keep_alive)
+        }
     }
 
     fn ack_retention(&self) -> Duration {
@@ -282,8 +286,12 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
         self.max_packet_size
     }
 
-    fn keep_alive(&self) -> u16 {
-        self.keep_alive
+    fn keep_alive(&self) -> Option<u16> {
+        if self.keep_alive == 0 {
+            None
+        } else {
+            Some(self.keep_alive)
+        }
     }
 
     fn ack_retention(&self) -> Duration {

@@ -56,6 +56,9 @@ pub enum BackendError {
     #[error("Broker sent erroneous disconnect")]
     Disconnected(Option<modular_mqtt_protocol::DisconnectReasonCode>),
 
+    #[error("Server did not respond to pingresp")]
+    NoPingResponse,
+
     #[error("Failed to reconnect to mqtt broker")]
     ReconnectError(ConnectError),
 }

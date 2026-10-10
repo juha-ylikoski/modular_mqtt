@@ -29,3 +29,15 @@ pub type AsyncClientV5 = AsyncClient<MqttV5_0_0, ClientOptsV5>;
 pub(crate) use std::time::Instant;
 #[cfg(feature = "async")]
 pub(crate) use tokio::time::Instant;
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const PING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long timeout can there be between fragmented packet
+/// fragment reads
+const PACKET_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Frequency of how often pings are send
+///
+/// this value is multiplied with keep alive to get
+/// absolute value (in seconds)
+const PING_FREQUENCY: u64 = 70;

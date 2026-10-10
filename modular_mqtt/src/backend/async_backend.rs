@@ -11,9 +11,8 @@ use crate::{
     client_opts::{exponential_backoff, ClientOpts, OnDisconnectBehavior},
     connection::async_stream::{AsyncReader, AsyncWriter},
     error::BackendError,
-    util::InflightMessage,
-    util::{connect_async, read_into_buf_async},
-    Instant,
+    util::{connect_async, read_into_buf_async, InflightMessage},
+    Instant, CONNECTION_TIMEOUT, PACKET_TIMEOUT,
 };
 
 use tokio::sync::{mpsc, Mutex};
@@ -60,13 +59,42 @@ where
         res
     }
 
+    async fn disconnect(&self) -> Result<(), BackendError> {
+        let mut stream = self.writer.lock().await;
+        let old_stream = std::mem::replace(&mut *stream, AsyncWriter::Disconnected);
+        match old_stream {
+            AsyncWriter::Tcp(mut tcp_stream) => {
+                let _ = tcp_stream.shutdown().await;
+            }
+            AsyncWriter::Disconnected => (),
+        };
+        Err(BackendError::NoPingResponse)
+    }
+
     async fn prune_communicators(&mut self) {
         self.unsuback_comm.prune().await;
         self.unsuback_comm.prune().await;
     }
 
+    async fn auto_reconnect(
+        &mut self,
+        min_retry_interval: Duration,
+        max_retry_interval: Duration,
+    ) -> Result<(), BackendError> {
+        let wait = exponential_backoff(min_retry_interval, max_retry_interval, self.retry_count);
+        tokio::time::sleep(wait).await;
+        let res = self.reconnect().await;
+        if res.is_ok() {
+            tracing::info!("Successfully reconnected!");
+            self.retry_count = 0;
+        }
+        self.retry_count += 1;
+        res
+    }
+
     async fn task(mut self) -> Result<(), BackendError> {
         let mut i = 0;
+
         loop {
             tracing::debug!("Start listening for mqtt messages");
             let mut res = self.loop_bg_task().await;
@@ -78,24 +106,24 @@ where
                     max_retry_interval,
                 } => loop {
                     if let Err(BackendError::IoError(e)) = &res {
-                        self.retry_count += 1;
                         tracing::warn!(
                             "Got io error: {e}. Trying to reconnect after {min_retry_interval:?}."
                         );
-                        let wait = exponential_backoff(
-                            min_retry_interval,
-                            max_retry_interval,
-                            self.retry_count,
+                        res = self
+                            .auto_reconnect(min_retry_interval, max_retry_interval)
+                            .await;
+                    } else if let Err(BackendError::NoPingResponse) = &res {
+                        tracing::warn!(
+                            "Did not receive ping response. Trying to automatically reconnect"
                         );
-                        tokio::time::sleep(wait).await;
-                        res = self.reconnect().await;
-                        if res.is_ok() {
-                            tracing::info!("Successfully reconnected!");
-                            self.retry_count = 0;
-                            break;
-                        }
+                        res = self
+                            .auto_reconnect(min_retry_interval, max_retry_interval)
+                            .await;
                     } else {
                         return res;
+                    }
+                    if res.is_ok() {
+                        break;
                     }
                 },
             }
@@ -111,13 +139,19 @@ where
         tracing::info!("Reconnecting to mqtt broker");
         self.read_buf.clear();
         self.state_machine.write_buf.clear();
+        self.state_machine.ping_sent = None;
         let stream = TcpStream::connect(&self.state_machine.shared.broker_addr).await?;
         let (read_half, write_half) = stream.into_split();
         let mut reader = AsyncReader::Tcp(read_half);
         let mut writer = AsyncWriter::Tcp(write_half);
 
         let connack = match tokio::time::timeout(
-            Duration::from_secs(self.state_machine.shared.opts.keep_alive().into()),
+            self.state_machine
+                .shared
+                .opts
+                .keep_alive()
+                .map(|v| Duration::from_secs(v.into()))
+                .unwrap_or(CONNECTION_TIMEOUT),
             connect_async(
                 &self.state_machine.shared.opts,
                 &mut self.read_buf,
@@ -135,6 +169,8 @@ where
                 "Timed out waiting for connack",
             ))),
         }?;
+        self.state_machine.last_write = Instant::now();
+        self.state_machine.last_read = Instant::now();
 
         if !connack.rc_is_success() {
             return Err(BackendError::ReconnectError(O::connect_error(&connack)));
@@ -219,22 +255,38 @@ where
                     tracing::debug!("Got partial read");
                 }
                 ReadFinished::TimedOut => {
-                    if !self.read_buf.is_empty()
-                        && Instant::now().saturating_duration_since(self.state_machine.last_read)
-                            > Duration::from_secs(
-                                self.state_machine.shared.opts.keep_alive().into(),
-                            )
-                    {
-                        // Partial packet pending: the peer stalled mid-packet. A PINGREQ here
-                        // would desync the stream — the PINGRESP would be parsed as payload.
-                        return Err(BackendError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "Broker stalled mid-packet",
-                        )));
+                    if let AsyncWriter::Disconnected = *self.writer.lock().await {
+                        return Ok(());
                     }
-                    self.state_machine.last_read = Instant::now();
-                    tracing::debug!("Sending ping request to broker");
-                    PingReq.write_to_buf(&mut self.state_machine.write_buf);
+
+                    if !self.read_buf.is_empty() {
+                        if Instant::now().saturating_duration_since(self.state_machine.last_read)
+                            > self
+                                .state_machine
+                                .shared
+                                .opts
+                                .keep_alive()
+                                .map(|v| Duration::from_secs(v.into()))
+                                .unwrap_or(PACKET_TIMEOUT)
+                        {
+                            // Partial packet pending: the peer stalled mid-packet. A PINGREQ here
+                            // would desync the stream — the PINGRESP would be parsed as payload.
+                            return Err(BackendError::IoError(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "Broker stalled mid-packet",
+                            )));
+                        }
+                    } else {
+                        if self.state_machine.shared.opts.keep_alive().is_some() {
+                            // We should never eny here with Some() if ping was responded
+                            if self.state_machine.ping_sent.is_some() {
+                                return self.disconnect().await;
+                            }
+                            tracing::debug!("Sending ping request to broker");
+                            PingReq.write_to_buf(&mut self.state_machine.write_buf);
+                            self.state_machine.ping_sent = Some(Instant::now());
+                        }
+                    }
                 }
             }
             self.write_buf_to_stream().await?;
@@ -250,7 +302,9 @@ where
         let write = self.state_machine.write_buf.split();
         tracing::trace!("Send data: {write:?}");
         writer.write_all(&write[..]).await?;
-        writer.flush().await
+        let res = writer.flush().await;
+        self.state_machine.last_write = Instant::now();
+        res
     }
 
     async fn read_next_msg(&mut self) -> Result<ReadFinished, BackendError> {
@@ -267,7 +321,9 @@ where
             }
         }
 
-        let timeout = self.state_machine.next_read_timeout();
+        let timeout = self
+            .state_machine
+            .next_read_timeout(!self.read_buf.is_empty());
 
         match read_into_buf_async(&mut self.reader, &mut self.read_buf, timeout).await {
             Ok(Ok(0)) => Err(BackendError::IoError(std::io::Error::new(

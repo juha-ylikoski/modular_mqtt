@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
 use modular_mqtt_protocol::{
-    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, MqttTopic, MqttVersion, Packet,
-    PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos, QosPacketIdentifier,
-    VersionedConnect,
+    ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, FixedHeader, MqttTopic,
+    MqttVersion, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
+    QosPacketIdentifier, VersionedConnect,
 };
 
 async fn test_publish_qos0<H, V, O>(connack_rc: V::ConnackRc)
@@ -831,22 +831,37 @@ where
         .write_to_buf(&mut packet);
         assert!(packet.len() > 4096, "must exceed STREAM_READ_CHUNK_SIZE");
 
+        let mut got_ping = false;
         // Gaps (300ms) sit above MIN_READ_TIMEOUT (5ms) but below keep_alive (2s),
         // and the 3s total exceeds keep_alive — so the deadline must be refreshed
         // on every read or the client falsely declares a stall.
         for chunk in packet.chunks(500) {
+            H::sleep(Duration::from_millis(300)).await;
             stream
                 .write_packet(|buf| buf.extend_from_slice(chunk))
                 .await;
-            assert!(
-                stream
-                    .read_packet_timeout(Duration::from_millis(50))
-                    .await
-                    .is_none(),
-                "client sent a packet mid-transfer"
-            );
-            H::sleep(Duration::from_millis(300)).await;
+
+            match stream.read_packet_timeout(Duration::from_millis(50)).await {
+                Some((fixed_header, mut data)) => {
+                    assert!(
+                        matches!(fixed_header.control_packet_type, ControlPacketType::PingReq),
+                        "client sent a packet mid-transfer"
+                    );
+                    PingReq::try_read(fixed_header, &mut data).unwrap();
+                    got_ping = true;
+                }
+                None => (),
+            }
         }
+        if !got_ping {
+            let (header, mut data) = stream.read_packet().await;
+            assert_eq!(data.len(), 0);
+            let ping = PingReq::try_read(header, &mut data).unwrap();
+            assert_eq!(ping, PingReq);
+        }
+
+        stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+
         tx_disconnect.send(()).await;
         rx_close.recv().await;
     });

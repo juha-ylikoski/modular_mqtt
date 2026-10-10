@@ -20,7 +20,7 @@ use crate::{
         connect_sync, InflightMessage, InflightMessageState, IntoTopicSubscription,
         STREAM_READ_CHUNK_SIZE,
     },
-    Instant,
+    Instant, CONNECTION_TIMEOUT,
 };
 
 type Backend = std::thread::JoinHandle<Result<(), crate::error::BackendError>>;
@@ -110,7 +110,11 @@ where
         let mut read_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);
         let mut write_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);
 
-        reader.set_read_timeout(Some(Duration::from_secs(opts.keep_alive().into())))?;
+        reader.set_read_timeout(Some(
+            opts.keep_alive()
+                .map(|v| Duration::from_secs(v.into()))
+                .unwrap_or(CONNECTION_TIMEOUT),
+        ))?;
 
         let (msg_sender, msg_receiver) = mpsc::channel();
         let suback_comm = SyncClientCommunicator::new(opts.ack_retention());
@@ -153,7 +157,9 @@ where
                     receive_inflight: Vec::new(),
                     write_buf,
                     inflight_msgs: HashMap::new(),
+                    last_write: crate::Instant::now(),
                     last_read: crate::Instant::now(),
+                    ping_sent: None,
                     next_resend_deadline: None,
                     shared: shared.clone(),
                 },
