@@ -284,16 +284,14 @@ where
                                 "Broker stalled mid-packet",
                             )));
                         }
-                    } else {
-                        if self.state_machine.shared.opts.keep_alive().is_some() {
-                            // We should never eny here with Some() if ping was responded
-                            if self.state_machine.ping_sent.is_some() {
-                                return self.disconnect().await;
-                            }
-                            tracing::debug!("Sending ping request to broker");
-                            PingReq.write_to_buf(&mut self.state_machine.write_buf);
-                            self.state_machine.ping_sent = Some(Instant::now());
+                    } else if self.state_machine.shared.opts.keep_alive().is_some() {
+                        // We should never eny here with Some() if ping was responded
+                        if self.state_machine.ping_sent.is_some() {
+                            return self.disconnect().await;
                         }
+                        tracing::debug!("Sending ping request to broker");
+                        PingReq.write_to_buf(&mut self.state_machine.write_buf);
+                        self.state_machine.ping_sent = Some(Instant::now());
                     }
                 }
             }

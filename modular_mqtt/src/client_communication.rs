@@ -10,67 +10,68 @@ use crate::error::ClientError;
 type Mid = u16;
 
 #[derive(Clone)]
-pub struct ClientCommunicator<I, W>
+pub struct SyncClientCommunicator<V>
 where
-    I: Clone,
-    W: Clone,
+    V: Clone,
 {
     retention: Duration,
-    data: I,
-    wakeup: W,
+    #[allow(clippy::type_complexity)]
+    wakeup: Arc<(
+        std::sync::Mutex<HashMap<Mid, (Instant, V)>>,
+        std::sync::Condvar,
+    )>,
 }
 
-pub type SyncData<V> = Arc<std::sync::RwLock<HashMap<Mid, (Instant, V)>>>;
-pub type SyncWakeup = Arc<(std::sync::Mutex<Mid>, std::sync::Condvar)>;
-
-pub type SyncClientCommunicator<V> = ClientCommunicator<SyncData<V>, SyncWakeup>;
-
-impl<V> ClientCommunicator<SyncData<V>, SyncWakeup>
+impl<V> SyncClientCommunicator<V>
 where
     V: Clone,
 {
     pub fn new(retention: Duration) -> Self {
         Self {
             retention,
-            data: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            wakeup: Arc::new((std::sync::Mutex::new(0), std::sync::Condvar::new())),
+            wakeup: Arc::new((
+                std::sync::Mutex::new(HashMap::new()),
+                std::sync::Condvar::new(),
+            )),
         }
     }
 
     pub fn insert(&self, k: Mid, v: V) {
-        self.data.write().unwrap().insert(k, (Instant::now(), v));
-        let (lock, cvar) = &*self.wakeup;
-        let mut mid = lock.lock().unwrap();
-        *mid = k;
-        cvar.notify_all();
+        self.wakeup.0.lock().unwrap().insert(k, (Instant::now(), v));
+        self.wakeup.1.notify_all();
     }
 
     pub fn get(&self, k: Mid, timeout: Duration) -> Result<V, ClientError> {
-        // Check if already there (maybe due to race condition)
-        if let Some(v) = self.data.read().unwrap().get(&k) {
-            return Ok(v.1.clone());
-        }
+        /// Upper bound on a single park, so a missed notification costs latency rather
+        /// than the full timeout. The lock is held continuously across "check map" and
+        /// "wait", so `notify_all` cannot actually be missed — this is insurance against
+        /// a future refactor breaking that, not a correctness requirement.
+        const MAX_PARK: Duration = Duration::from_millis(500);
 
-        let now = Instant::now();
+        let mut now = Instant::now();
         let timeout_at = now + timeout;
-        let (lock, cvar) = &*self.wakeup;
-        let mut mid = lock.lock().unwrap();
-        while *mid != k {
-            let timeout = timeout_at.duration_since(now);
-            let res = cvar.wait_timeout(mid, timeout).unwrap();
-            mid = res.0;
-            if res.1.timed_out() {
+        let mut lock = self.wakeup.0.lock().unwrap();
+        let cvar = &self.wakeup.1;
+        let mut res = lock.get(&k).cloned();
+        while res.is_none() {
+            let timeout = timeout_at.saturating_duration_since(now);
+            let wait_res = cvar.wait_timeout(lock, timeout.min(MAX_PARK)).unwrap();
+            res = wait_res.0.get(&k).cloned();
+            lock = wait_res.0;
+            now = Instant::now();
+            if now > timeout_at && res.is_none() {
                 return Err(ClientError::Timeout);
             }
         }
 
-        Ok(self.data.read().unwrap().get(&k).unwrap().1.clone())
+        Ok(res.unwrap().1)
     }
 
-    pub fn prune(&mut self) {
+    pub fn prune(&self) {
         let now = Instant::now();
-        self.data
-            .write()
+        self.wakeup
+            .0
+            .lock()
             .unwrap()
             .retain(|_, (creation_time, _)| now.duration_since(*creation_time) < self.retention);
     }
@@ -140,12 +141,17 @@ pub mod async_communicator {
 
     use tokio::time::Instant;
 
-    pub type AsyncData<V> = Arc<tokio::sync::RwLock<HashMap<Mid, (tokio::time::Instant, V)>>>;
-    pub type AsyncWakeup = Arc<tokio::sync::Notify>;
+    #[derive(Clone)]
+    pub struct AsyncClientCommunicator<V>
+    where
+        V: Clone,
+    {
+        retention: Duration,
+        data: Arc<tokio::sync::RwLock<HashMap<Mid, (tokio::time::Instant, V)>>>,
+        wakeup: Arc<tokio::sync::Notify>,
+    }
 
-    pub type AsyncClientCommunicator<V> = ClientCommunicator<AsyncData<V>, AsyncWakeup>;
-
-    impl<V> ClientCommunicator<AsyncData<V>, AsyncWakeup>
+    impl<V> AsyncClientCommunicator<V>
     where
         V: Clone,
     {
@@ -177,7 +183,7 @@ pub mod async_communicator {
             }
         }
 
-        pub async fn prune(&mut self) {
+        pub async fn prune(&self) {
             let now = Instant::now();
             self.data.write().await.retain(|_, (creation_time, _)| {
                 now.duration_since(*creation_time) < self.retention
