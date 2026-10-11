@@ -42,6 +42,8 @@ impl MqttLastWill for MqttLastWill3_1_1 {
 
     fn try_read(flags: u8, data: &mut Bytes) -> Result<Self, Error> {
         let topic = extract_str(data)?;
+        let topic = MqttTopic::try_from(topic)?;
+        let topic = topic.0;
         let payload = extract_bytes(data)?;
         Ok(MqttLastWill3_1_1 {
             topic,
@@ -225,6 +227,8 @@ impl MqttLastWill for MqttLastWill5_0_0 {
             }
         }
         let topic = extract_str(data)?;
+        let topic = MqttTopic::try_from(topic)?;
+        let topic = topic.0;
         let payload = extract_bytes(data)?;
 
         Ok(MqttLastWill5_0_0 {
@@ -2025,6 +2029,58 @@ mod test_de_v3 {
     }
 
     #[test]
+    fn invalid_will_topic() {
+        let msg = [
+            16,
+            27,
+            // Protocol name
+            0,
+            4,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            // Protocol level
+            4,
+            // flags
+            (1 << 5) | (2 << 3) | (1 << 2),
+            // Keep alive
+            0,
+            0,
+            // Client identifier
+            0,
+            7,
+            b'c',
+            b'l',
+            b'i',
+            b'e',
+            b'n',
+            b't',
+            b'2',
+            // Will topic
+            0,
+            4,
+            b'w',
+            b'i',
+            b'l',
+            b'#',
+            // Will payload
+            0,
+            0,
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match VersionedConnect::try_read(header, &mut body) {
+            Err(Error::MalformedPacket(MalformedPacket::InvalidMqttTopic)) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
+    }
+
+    #[test]
     fn username() {
         let msg = [
             16,
@@ -2434,6 +2490,62 @@ mod test_de_v5 {
             VersionedConnect::try_read(header, &mut body).unwrap(),
             VersionedConnect::V5(expected)
         );
+    }
+
+    #[test]
+    fn invalid_will_no_properties() {
+        let msg = [
+            16,
+            29,
+            // Protocol name
+            0,
+            4,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            // Protocol level
+            5,
+            // flags
+            (1 << 5) | (2 << 3) | (1 << 2),
+            // Keep alive
+            0,
+            0,
+            // Properties
+            0,
+            // Client identifier
+            0,
+            7,
+            b'c',
+            b'l',
+            b'i',
+            b'e',
+            b'n',
+            b't',
+            b'2',
+            // Will properties
+            0,
+            // Will topic
+            0,
+            4,
+            b'w',
+            b'i',
+            b'l',
+            b'#',
+            // Will payload
+            0,
+            0,
+        ];
+        let mut reader = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match VersionedConnect::try_read(header, &mut body) {
+            Err(Error::MalformedPacket(MalformedPacket::InvalidMqttTopic)) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
     }
 
     #[test]

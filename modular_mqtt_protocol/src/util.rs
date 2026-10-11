@@ -44,15 +44,22 @@ pub enum QosPacketIdentifier {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MqttTopic(pub(crate) String);
 
+impl MqttTopic {
+    fn check_topic(topic: &str) -> Result<(), Error> {
+        if topic.is_empty() || topic.contains('#') || topic.contains('+') {
+            Err(MalformedPacket::InvalidMqttTopic.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a str> for MqttTopic {
     type Error = Error;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        if value.contains('#') || value.contains('+') {
-            Err(MalformedPacket::InvalidMqttTopic.into())
-        } else {
-            Ok(Self(value.to_string()))
-        }
+        Self::check_topic(value)?;
+        Ok(Self(value.to_string()))
     }
 }
 
@@ -60,11 +67,8 @@ impl TryFrom<String> for MqttTopic {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.contains('#') || value.contains('+') {
-            Err(MalformedPacket::InvalidMqttTopic.into())
-        } else {
-            Ok(Self(value))
-        }
+        Self::check_topic(value.as_str())?;
+        Ok(Self(value))
     }
 }
 
@@ -235,5 +239,38 @@ mod test {
         } else {
             panic!("Should not get here");
         }
+    }
+
+    fn test_topic(topic: &str, is_valid: bool) {
+        let res = MqttTopic::try_from(topic);
+        let res_owned = MqttTopic::try_from(topic.to_string());
+
+        for res in [res, res_owned] {
+            match (res.is_ok(), is_valid) {
+                (false, false) => (),
+                (false, true) => panic!("Failed to parse mqtt topic {topic:?}"),
+                (true, false) => panic!("Topic parsed when it should have failed {topic:?}"),
+                (true, true) => assert_eq!(topic, res.unwrap().0),
+            }
+        }
+    }
+
+    macro_rules! test_topic {
+        ($test_name:ident, $topic:literal, $is_valid:literal) => {
+            #[test]
+            fn $test_name() {
+                test_topic($topic, $is_valid);
+            }
+        };
+    }
+
+    mod mqtt_topic {
+        use super::*;
+        test_topic!(valid_topic, "valid_topic", true);
+        test_topic!(valid_topic_levels, "level1/level2/level3", true);
+        test_topic!(whitespace, "level1/level 2/level3", true);
+        test_topic!(wildcard, "level1/#", false);
+        test_topic!(wildcard_plus, "level1/+/level3", false);
+        test_topic!(empty, "", false);
     }
 }

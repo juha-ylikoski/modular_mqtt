@@ -2,7 +2,10 @@ use std::fmt::Debug;
 
 use bytes::{BufMut, Bytes};
 
-use crate::{disconnect::MaybeReasonCode, suback::SubAckRcs, util::variable_len_int_size, Error};
+use crate::{
+    disconnect::MaybeReasonCode, publish::PublishPropertiesTrait, suback::SubAckRcs,
+    util::variable_len_int_size, Error,
+};
 
 mod sealed {
     use crate::{MqttV3_1_1, MqttV5_0_0};
@@ -47,7 +50,7 @@ pub trait MqttVersion:
     type TopicSubscription: crate::subscribe::TopicSubscription;
     type UnsubscribeProperties: PacketProperties;
     type UnSubAckProperties: PacketProperties;
-    type PublishProperties: PacketProperties + Default;
+    type PublishProperties: PacketProperties + Default + PublishPropertiesTrait;
     type ConnectProperties: PacketProperties + Default;
     type LastWill: crate::connect::MqttLastWill;
 }

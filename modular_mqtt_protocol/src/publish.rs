@@ -114,7 +114,12 @@ impl PacketProperties for PublishProperties {
                     if properties.topic_alias.is_some() {
                         return Err(Error::ProtocolError("TopicAlias specified multiple times"));
                     }
-                    properties.topic_alias = Some(data.try_get_u16()?);
+
+                    let alias = data.try_get_u16()?;
+                    if alias == 0 {
+                        return Err(Error::ProtocolError("Topic alias cannot be 0"));
+                    }
+                    properties.topic_alias = Some(alias);
                 }
                 PropertyIdentifier::ResponseTopic => {
                     if properties.response_topic.is_some() {
@@ -203,6 +208,25 @@ impl PacketProperties for PublishProperties {
     }
 }
 
+pub trait PublishPropertiesTrait {
+    fn check_pub_topic(&self, topic: String) -> Result<String, Error> {
+        MqttTopic::try_from(topic).map(|v| v.0)
+    }
+}
+
+impl PublishPropertiesTrait for PublishProperties {
+    fn check_pub_topic(&self, topic: String) -> Result<String, Error> {
+        if topic.is_empty() && self.topic_alias.is_none() {
+            Err(Error::ProtocolError(
+                "Mqtt topic cannot be empty while topic alias is not specified",
+            ))
+        } else {
+            MqttTopic::try_from(topic).map(|v| v.0)
+        }
+    }
+}
+impl PublishPropertiesTrait for () {}
+
 #[derive(Debug, Clone, PartialEq)]
 /// A PUBLISH Control Packet is sent from a Client to a Server or from Server to a Client to transport an Application Message.
 pub struct Publish<V: MqttVersion, Q> {
@@ -285,6 +309,8 @@ impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
         };
 
         let properties = V::PublishProperties::try_read(data)?;
+
+        let topic = properties.check_pub_topic(topic)?;
 
         let payload = data.clone();
         data.advance(payload.len());
@@ -409,10 +435,7 @@ impl Publish<MqttV5_0_0, Qos> {
         self.properties.response_topic = Some(topic);
         self
     }
-    pub fn set_topic_alias(mut self, alias: u16) -> Self {
-        self.properties.topic_alias = Some(alias);
-        self
-    }
+
     pub fn set_correlation_data(mut self, data: Bytes) -> Self {
         self.properties.correlation_data = Some(data);
         self
@@ -440,6 +463,22 @@ impl Publish<MqttV5_0_0, Qos> {
     pub fn set_content_type(mut self, content_type: String) -> Self {
         self.properties.content_type = Some(content_type);
         self
+    }
+}
+
+impl Publish<MqttV5_0_0, QosPacketIdentifier> {
+    pub fn set_topic_alias(mut self, alias: u16) -> Result<Self, Error> {
+        if alias == 0 {
+            return Err(Error::ProtocolError("Topic alias cannot be 0"));
+        }
+        self.properties.topic_alias = Some(alias);
+        Ok(self)
+    }
+
+    pub fn into_topic_alias(self, alias: u16) -> Result<Self, Error> {
+        let mut msg = self.set_topic_alias(alias)?;
+        msg.topic.clear();
+        Ok(msg)
     }
 }
 
@@ -637,6 +676,21 @@ mod test_v3 {
             .unwrap()
             .unwrap();
         assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
+    }
+
+    #[test]
+    fn deserialize_invalid_topic() {
+        let msg = [48, 7, 0, 5, b't', b'o', b'p', b'i', b'#'];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match Publish::<MqttV3_1_1, QosPacketIdentifier>::try_read(header, &mut body) {
+            Err(Error::MalformedPacket(MalformedPacket::InvalidMqttTopic)) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
     }
 
     #[test]
@@ -938,6 +992,22 @@ mod test_v5 {
             .unwrap();
         assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
+
+    #[test]
+    fn deserialize_invalid_topic() {
+        let msg = [48, 8, 0, 5, b't', b'o', b'p', b'i', b'#', 0];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body) {
+            Err(Error::MalformedPacket(MalformedPacket::InvalidMqttTopic)) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
+    }
+
     #[test]
     fn deserialize_qos() {
         let expected = Publish::<MqttV5_0_0, Qos>::new(
@@ -1054,7 +1124,6 @@ mod test_v5 {
         )
         .set_payload_format(PayloadFormat::Binary)
         .set_message_expiry_interval(10)
-        .set_topic_alias(11)
         .set_response_topic("response".to_string())
         .set_correlation_data(Bytes::from_static(b"badcafee"))
         .set_user_property(vec![
@@ -1070,7 +1139,9 @@ mod test_v5 {
         .set_subscription_identifier(vec![12])
         .unwrap()
         .set_content_type("test".to_string())
-        .assign_packet_identifier(|| 0, false);
+        .assign_packet_identifier(|| 0, false)
+        .set_topic_alias(11)
+        .unwrap();
         let mut buf = Vec::new();
         msg.write_to_buf(&mut buf);
         assert_eq!(
@@ -1140,7 +1211,7 @@ mod test_v5 {
             1, 0, //
             // Message expiry
             2, 0, 0, 0, 10, //
-            // Message expiry
+            // topic alias
             35, 0, 11, //
             // Response topic
             8, 0, 8, b'r', b'e', b's', b'p', b'o', b'n', b's', b'e', //
@@ -1413,5 +1484,46 @@ mod test_v5 {
                 b'a', b'd'
             ]
         );
+    }
+
+    #[test]
+    fn topic_alias_0_fail_ser() {
+        match Publish::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false)
+        .set_topic_alias(0)
+        {
+            Err(Error::ProtocolError("Topic alias cannot be 0")) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
+    }
+
+    #[test]
+    fn topic_alias_0_fail_de() {
+        let msg = [
+            48, 18, 0, 5, b't', b'o', b'p', b'i', b'c', //
+            // Properties
+            3, //
+            // topic alias
+            35, 0, 0, //
+            // payload
+            b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        match Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body) {
+            Err(Error::ProtocolError("Topic alias cannot be 0")) => (),
+            _ => {
+                panic!("Should be protocol error")
+            }
+        }
     }
 }
