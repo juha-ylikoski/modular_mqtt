@@ -11,6 +11,7 @@ use crate::{error::ConnectError, util::IntoTopicSubscription};
 const DEFAULT_ACK_RETENTION: Duration = Duration::from_mins(1);
 const DEFAULT_KEEP_ALIVE: u16 = 30;
 const DEFAULT_CLIENT_ID: &str = "";
+const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn exponential_backoff(
     min_retry_interval: Duration,
@@ -68,6 +69,7 @@ where
     fn subscribe_packet(&self, id: u16, subs: Vec<V::TopicSubscription>) -> Subscribe<V>;
     fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<V>;
     fn disconnect_packet(&self) -> Disconnect<V>;
+    fn write_timeout(&self) -> Duration;
 }
 
 pub struct ClientOptsV3 {
@@ -81,6 +83,8 @@ pub struct ClientOptsV3 {
     pub max_packet_size: usize,
     pub resend_interval: Duration,
     pub ack_retention: Duration,
+    /// How long can a single write to socket pend before error is raised
+    pub write_timeout: Duration,
 }
 
 impl Default for ClientOptsV3 {
@@ -96,6 +100,7 @@ impl Default for ClientOptsV3 {
             max_packet_size: MAX_MQTT_PACKET_SIZE,
             resend_interval: crate::RESENT_INTERVAL,
             ack_retention: DEFAULT_ACK_RETENTION,
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
         }
     }
 }
@@ -170,6 +175,9 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
     fn disconnect_packet(&self) -> Disconnect<MqttV3_1_1> {
         Disconnect::new_v3()
     }
+    fn write_timeout(&self) -> Duration {
+        self.write_timeout
+    }
 }
 
 pub struct ClientOptsV5 {
@@ -183,6 +191,8 @@ pub struct ClientOptsV5 {
     pub max_packet_size: usize,
     pub resend_interval: Duration,
     pub ack_retention: Duration,
+    /// How long can a single write to socket pend before error is raised
+    pub write_timeout: Duration,
 
     pub subscription_no_local: bool,
     pub subscription_keep_retain: bool,
@@ -233,6 +243,7 @@ impl Default for ClientOptsV5 {
             max_packet_size: MAX_MQTT_PACKET_SIZE,
             resend_interval: crate::RESENT_INTERVAL,
             ack_retention: DEFAULT_ACK_RETENTION,
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
             subscription_no_local: true,
             subscription_keep_retain: true,
             subscription_retain_handling: RetainHandling::SendAtSubscribe,
@@ -347,6 +358,9 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
             Vec::new(),
             None,
         )
+    }
+    fn write_timeout(&self) -> Duration {
+        self.write_timeout
     }
 }
 

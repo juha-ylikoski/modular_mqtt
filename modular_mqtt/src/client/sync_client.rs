@@ -52,7 +52,8 @@ where
         let mut writer = self.writer.lock().unwrap();
         let out = write_buf.split();
         tracing::trace!("Send data: {out:?}");
-        writer.write_all(&out[..])
+        writer.write_all(&out[..])?;
+        writer.flush()
     }
     fn handle_recv_error(&self) -> ClientError {
         let be = match self.backend.lock().unwrap().take() {
@@ -104,6 +105,9 @@ where
         ConnectError,
     > {
         let stream = TcpStream::connect(&broker)?;
+        stream
+            .set_write_timeout(Some(opts.write_timeout()))
+            .unwrap();
         let mut reader = SyncReader::Tcp(stream.try_clone().unwrap());
         let mut writer = SyncWriter::Tcp(stream);
         let mut read_buf = BytesMut::with_capacity(STREAM_READ_CHUNK_SIZE);

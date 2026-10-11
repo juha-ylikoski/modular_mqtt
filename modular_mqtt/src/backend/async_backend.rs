@@ -308,8 +308,19 @@ where
         let mut writer = self.writer.lock().await;
         let write = self.state_machine.write_buf.split();
         tracing::trace!("Send data: {write:?}");
-        writer.write_all(&write[..]).await?;
-        let res = writer.flush().await;
+        let res =
+            match tokio::time::timeout(self.state_machine.shared.opts.write_timeout(), async {
+                writer.write_all(&write[..]).await?;
+                writer.flush().await
+            })
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Timed out waiting writing to stream",
+                )),
+            };
         self.state_machine.last_write = Instant::now();
         res
     }

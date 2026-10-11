@@ -54,7 +54,18 @@ where
         let mut writer = self.writer.lock().await;
         let out = write_buf.split();
         tracing::trace!("Send data: {out:?}");
-        writer.write_all(&out[..]).await
+        match tokio::time::timeout(self.shared.opts.write_timeout(), async {
+            writer.write_all(&out[..]).await?;
+            writer.flush().await
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Timed out waiting writing to stream",
+            )),
+        }
     }
     async fn handle_recv_error(&self) -> ClientError {
         let be = match self.backend.lock().await.take() {
