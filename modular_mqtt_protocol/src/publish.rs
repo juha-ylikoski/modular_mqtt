@@ -63,7 +63,7 @@ pub struct PublishProperties {
     /// the Response Message is for when it is received
     /// The value of the Correlation Data only has meaning to the sender of the Request Message
     /// and receiver of the Response Message.
-    correlation_data: Bytes,
+    correlation_data: Option<Bytes>,
     user_property: Vec<UserProperty>,
     /// The Subscription Identifier can have the value of 1 to 268,435,455. It is a Protocol Error if
     /// the Subscription Identifier has a value of 0. Multiple Subscription Identifiers will be included
@@ -125,12 +125,12 @@ impl PacketProperties for PublishProperties {
                     properties.response_topic = Some(extract_str(data)?);
                 }
                 PropertyIdentifier::CorrelationData => {
-                    if !properties.correlation_data.is_empty() {
+                    if properties.correlation_data.is_some() {
                         return Err(Error::ProtocolError(
                             "CorrelationData specified multiple times",
                         ));
                     }
-                    properties.correlation_data = extract_bytes(data)?;
+                    properties.correlation_data = Some(extract_bytes(data)?);
                 }
                 PropertyIdentifier::UserProperty => {
                     let key = extract_str(data)?;
@@ -377,7 +377,7 @@ impl<Q> Publish<MqttV5_0_0, Q> {
         self.properties.response_topic.as_deref()
     }
 
-    pub fn correlation_data(&self) -> Bytes {
+    pub fn correlation_data(&self) -> Option<Bytes> {
         self.properties.correlation_data.clone()
     }
 
@@ -414,7 +414,7 @@ impl Publish<MqttV5_0_0, Qos> {
         self
     }
     pub fn set_correlation_data(mut self, data: Bytes) -> Self {
-        self.properties.correlation_data = data;
+        self.properties.correlation_data = Some(data);
         self
     }
     pub fn set_user_property(mut self, user_properties: Vec<UserProperty>) -> Self {
@@ -489,6 +489,16 @@ mod test_v3 {
             &[48, 9, 0, 4, b'f', b'o', b'o', b'2', b'f', b'o', b'o']
         );
     }
+    #[test]
+    fn serialize_empty() {
+        let topic = MqttTopic::try_from("topic").unwrap();
+        let msg = Publish::<MqttV3_1_1, Qos>::new(topic, Bytes::new(), Qos::AtMostOnce, false)
+            .assign_packet_identifier(|| 0, false);
+        let mut buf = Vec::new();
+        msg.write_to_buf(&mut buf);
+        assert_eq!(&buf, &[48, 7, 0, 5, b't', b'o', b'p', b'i', b'c']);
+    }
+
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
@@ -611,6 +621,24 @@ mod test_v3 {
             .unwrap();
         assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
     }
+
+    #[test]
+    fn deserialize_empty() {
+        let expected = Publish::<MqttV3_1_1, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::new(),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
+        let msg = [48, 7, 0, 5, b't', b'o', b'p', b'i', b'c'];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
+    }
+
     #[test]
     fn deserialize_qos() {
         let expected = Publish::<MqttV3_1_1, Qos>::new(
@@ -758,6 +786,17 @@ mod test_v5 {
             &[48, 10, 0, 4, b'f', b'o', b'o', b'2', 0, b'f', b'o', b'o']
         );
     }
+
+    #[test]
+    fn serialize_empty() {
+        let topic = MqttTopic::try_from("topic").unwrap();
+        let msg = Publish::<MqttV5_0_0, Qos>::new(topic, Bytes::new(), Qos::AtMostOnce, false)
+            .assign_packet_identifier(|| 0, false);
+        let mut buf = Vec::new();
+        msg.write_to_buf(&mut buf);
+        assert_eq!(&buf, &[48, 8, 0, 5, b't', b'o', b'p', b'i', b'c', 0,]);
+    }
+
     #[test]
     fn serialize_qos() {
         let topic = MqttTopic::try_from("topic").unwrap();
@@ -877,6 +916,22 @@ mod test_v5 {
         let msg = [
             48, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
         ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(Publish::try_read(header, &mut body).unwrap(), expected);
+    }
+    #[test]
+    fn deserialize_empty() {
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::new(),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false);
+        let msg = [48, 8, 0, 5, b't', b'o', b'p', b'i', b'c', 0];
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -1063,7 +1118,7 @@ mod test_v5 {
         expected.properties.message_expiry_interval = Some(10);
         expected.properties.topic_alias = Some(11);
         expected.properties.response_topic = Some("response".to_string());
-        expected.properties.correlation_data = Bytes::from_static(b"badcafee");
+        expected.properties.correlation_data = Some(Bytes::from_static(b"badcafee"));
         expected.properties.user_property = vec![
             UserProperty {
                 key: "property0".to_string(),

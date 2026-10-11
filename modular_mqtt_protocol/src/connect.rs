@@ -106,7 +106,7 @@ pub struct MqttLastWill5_0_0 {
     response_topic: Option<String>,
     /// The Correlation Data is used by the sender of the Request Message to identify which request the Response Message is for when it is received
     /// The value of the Correlation Data only has meaning to the sender of the Request Message and receiver of the Response Message.
-    correlation_data: Bytes,
+    correlation_data: Option<Bytes>,
     user_property: Vec<UserProperty>,
 }
 
@@ -122,7 +122,7 @@ impl MqttLastWill for MqttLastWill5_0_0 {
             message_expiry_interval: None,
             content_type: None,
             response_topic: None,
-            correlation_data: Bytes::new(),
+            correlation_data: None,
             user_property: Vec::new(),
         }
     }
@@ -134,7 +134,7 @@ impl MqttLastWill for MqttLastWill5_0_0 {
         let mut message_expiry_interval = None;
         let mut content_type = None;
         let mut response_topic = None;
-        let mut correlation_data = Bytes::new();
+        let mut correlation_data = None;
         let mut user_property = Vec::new();
 
         if data.remaining() < properties_len {
@@ -202,12 +202,12 @@ impl MqttLastWill for MqttLastWill5_0_0 {
                     response_topic = Some(extract_str(properties)?);
                 }
                 PropertyIdentifier::CorrelationData => {
-                    if !correlation_data.is_empty() {
+                    if correlation_data.is_some() {
                         return Err(Error::ProtocolError(
                             "CorrelationData specified multiple times",
                         ));
                     }
-                    correlation_data = extract_bytes(properties)?;
+                    correlation_data = Some(extract_bytes(properties)?);
                 }
                 PropertyIdentifier::UserProperty => {
                     let key = extract_str(properties)?;
@@ -323,10 +323,10 @@ impl MqttLastWill5_0_0 {
     }
 
     pub fn set_correlation_data(mut self, new_correlation_data: Bytes) -> Self {
-        self.correlation_data = new_correlation_data;
+        self.correlation_data = Some(new_correlation_data);
         self
     }
-    pub fn correlation_data(&self) -> Bytes {
+    pub fn correlation_data(&self) -> Option<Bytes> {
         self.correlation_data.clone()
     }
 
@@ -1329,6 +1329,71 @@ mod test_ser_v5 {
     }
 
     #[test]
+    fn empty_will_no_properties() {
+        let mut buf = Vec::new();
+        let msg = Connect::<MqttV5_0_0>::new(
+            false,
+            0,
+            "client2".to_string(),
+            Some(MqttLastWill5_0_0::new(
+                MqttTopic::try_from("will").unwrap(),
+                Bytes::new(),
+                Qos::ExactlyOnce,
+                true,
+            )),
+            None,
+            None,
+        );
+        msg.write_to_buf(&mut buf);
+        assert_eq!(
+            &buf,
+            &[
+                16,
+                29,
+                // Protocol name
+                0,
+                4,
+                b'M',
+                b'Q',
+                b'T',
+                b'T',
+                // Protocol level
+                5,
+                // flags
+                (1 << 5) | (2 << 3) | (1 << 2),
+                // Keep alive
+                0,
+                0,
+                // properties
+                0,
+                // payload
+                // Client identifier
+                0,
+                7,
+                b'c',
+                b'l',
+                b'i',
+                b'e',
+                b'n',
+                b't',
+                b'2',
+                // Will properties
+                0,
+                // Will topic
+                0,
+                4,
+                b'w',
+                b'i',
+                b'l',
+                b'l',
+                // Will payload
+                0,
+                0,
+            ]
+        );
+    }
+
+    #[test]
     fn will_properties() {
         let mut buf = Vec::new();
         let msg = Connect::<MqttV5_0_0>::new(
@@ -1895,6 +1960,70 @@ mod test_de_v3 {
             VersionedConnect::V3(expected)
         );
     }
+
+    #[test]
+    fn empty_will() {
+        let msg = [
+            16,
+            27,
+            // Protocol name
+            0,
+            4,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            // Protocol level
+            4,
+            // flags
+            (1 << 5) | (2 << 3) | (1 << 2),
+            // Keep alive
+            0,
+            0,
+            // Client identifier
+            0,
+            7,
+            b'c',
+            b'l',
+            b'i',
+            b'e',
+            b'n',
+            b't',
+            b'2',
+            // Will topic
+            0,
+            4,
+            b'w',
+            b'i',
+            b'l',
+            b'l',
+            // Will payload
+            0,
+            0,
+        ];
+        let expected = Connect::new(
+            false,
+            0,
+            "client2".to_string(),
+            Some(MqttLastWill3_1_1::new(
+                "will".try_into().unwrap(),
+                Bytes::new(),
+                Qos::ExactlyOnce,
+                true,
+            )),
+            None,
+            None,
+        );
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V3(expected)
+        );
+    }
+
     #[test]
     fn username() {
         let msg = [
@@ -2224,6 +2353,73 @@ mod test_de_v5 {
             Some(MqttLastWill5_0_0::new(
                 MqttTopic::try_from("will").unwrap(),
                 Bytes::from_static(b"payload"),
+                Qos::ExactlyOnce,
+                true,
+            )),
+            None,
+            None,
+        );
+        let mut reader = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            VersionedConnect::try_read(header, &mut body).unwrap(),
+            VersionedConnect::V5(expected)
+        );
+    }
+
+    #[test]
+    fn empty_will_no_properties() {
+        let msg = [
+            16,
+            29,
+            // Protocol name
+            0,
+            4,
+            b'M',
+            b'Q',
+            b'T',
+            b'T',
+            // Protocol level
+            5,
+            // flags
+            (1 << 5) | (2 << 3) | (1 << 2),
+            // Keep alive
+            0,
+            0,
+            // Properties
+            0,
+            // Client identifier
+            0,
+            7,
+            b'c',
+            b'l',
+            b'i',
+            b'e',
+            b'n',
+            b't',
+            b'2',
+            // Will properties
+            0,
+            // Will topic
+            0,
+            4,
+            b'w',
+            b'i',
+            b'l',
+            b'l',
+            // Will payload
+            0,
+            0,
+        ];
+        let expected = Connect::new(
+            false,
+            0,
+            "client2".to_string(),
+            Some(MqttLastWill5_0_0::new(
+                MqttTopic::try_from("will").unwrap(),
+                Bytes::new(),
                 Qos::ExactlyOnce,
                 true,
             )),

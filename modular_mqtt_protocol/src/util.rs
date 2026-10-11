@@ -97,9 +97,7 @@ pub fn write_str(string: &str, buf: &mut impl BufMut) {
 pub fn extract_bytes(data: &mut Bytes) -> Result<Bytes, Error> {
     let length = data.try_get_u16()? as usize;
     if length == 0 {
-        Err(MalformedPacket::new(
-            "Packet bytes cannot have length of 0.",
-        ))
+        Ok(Bytes::new())
     } else if data.len() < length {
         Err(MalformedPacket::new("Packet too short to read bytes"))
     } else {
