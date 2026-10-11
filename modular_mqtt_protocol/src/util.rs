@@ -92,7 +92,7 @@ pub fn extract_str(data: &mut Bytes) -> Result<String, Error> {
 }
 
 pub fn write_str(string: &str, buf: &mut impl BufMut) {
-    assert!(string.len() < 0xffff);
+    assert!(string.len() <= 0xffff);
     let length = string.len();
     buf.put_u16(length as u16);
     buf.put(string.as_bytes());

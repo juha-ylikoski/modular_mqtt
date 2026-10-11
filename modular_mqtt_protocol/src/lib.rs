@@ -25,6 +25,8 @@ pub use unsubscribe::Unsubscribe;
 pub use util::{MqttTopic, Qos, QosPacketIdentifier};
 pub use version::MqttVersion;
 
+use crate::util::write_str;
+
 mod ack_messages;
 mod auth;
 mod connack;
@@ -304,10 +306,8 @@ impl Property for Vec<UserProperty> {
         if !self.is_empty() {
             for property in self {
                 buf.put_u8(identifier);
-                buf.put_u16(property.key.len() as u16);
-                buf.put(property.key.as_bytes());
-                buf.put_u16(property.value.len() as u16);
-                buf.put(property.value.as_bytes());
+                write_str(&property.key, buf);
+                write_str(&property.value, buf);
             }
         }
     }

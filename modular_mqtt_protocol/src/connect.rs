@@ -56,6 +56,7 @@ impl MqttLastWill for MqttLastWill3_1_1 {
     fn write_to_buf(&self, buf: &mut impl BufMut) {
         write_str(&self.topic, buf);
         let pl_len = self.payload.len();
+        assert!(pl_len <= 0xffff);
         buf.put_u16(pl_len as u16);
         buf.put(&self.payload[..]);
     }
@@ -265,6 +266,7 @@ impl MqttLastWill for MqttLastWill5_0_0 {
 
         write_str(&self.topic, buf);
         let pl_len = self.payload.len();
+        assert!(pl_len <= 0xffff);
         buf.put_u16(pl_len as u16);
         buf.put(&self.payload[..]);
     }
@@ -791,6 +793,7 @@ impl<V: MqttVersion> Connect<V> {
         }
         if let Some(password) = &self.password {
             let pl_len = password.len();
+            assert!(pl_len <= 0xffff);
             buf.put_u16(pl_len as u16);
             buf.put(&password[..]);
         }
