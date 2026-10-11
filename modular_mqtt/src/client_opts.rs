@@ -49,7 +49,7 @@ where
 {
     fn connect_error(connack: &ConnAck<V>) -> ConnectError;
     fn connect_msg(&self) -> Connect<V>;
-    fn max_packet_size(&self) -> usize;
+    fn max_packet_size(&self, connack: Option<&ConnAck<V>>) -> usize;
     fn keep_alive(&self) -> Option<u16>;
     fn ack_retention(&self) -> Duration;
     fn client_id(&self) -> &str;
@@ -120,7 +120,7 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
             self.password.clone(),
         )
     }
-    fn max_packet_size(&self) -> usize {
+    fn max_packet_size(&self, #[allow(unused)] connack: Option<&ConnAck<MqttV3_1_1>>) -> usize {
         self.max_packet_size
     }
 
@@ -293,7 +293,12 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
         connect.set_user_property(self.user_property.clone())
     }
 
-    fn max_packet_size(&self) -> usize {
+    fn max_packet_size(&self, connack: Option<&ConnAck<MqttV5_0_0>>) -> usize {
+        if let Some(connack) = connack {
+            if let Some(broker_max_packet_size) = connack.maximum_packet_size() {
+                return self.max_packet_size.min(broker_max_packet_size as usize);
+            }
+        }
         self.max_packet_size
     }
 

@@ -25,6 +25,9 @@ pub enum ClientError {
 
     #[error("Client has been manually disconnected and recovery is impossible")]
     Disconnected,
+
+    #[error("Tried to write larger message than what broker is willing to accept")]
+    TooLargeMessage { broker_max: usize, msg_size: usize },
 }
 
 #[derive(Debug, Error)]

@@ -142,6 +142,7 @@ where
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
+            max_packet_size: RwLock::new(opts.max_packet_size(Some(&connack))),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),
@@ -222,6 +223,7 @@ where
             });
 
             _inflight.msg.write_to_buf(&mut *write_buf);
+            self.shared.check_write_buf_size(&mut write_buf)?;
 
             if self
                 .inflight_ch
@@ -234,6 +236,7 @@ where
             inflight = Some(_inflight);
         } else {
             msg.write_to_buf(&mut *write_buf);
+            self.shared.check_write_buf_size(&mut write_buf)?;
         }
         self.flush(&mut write_buf).await?;
         Ok(inflight)
@@ -257,6 +260,7 @@ where
         {
             let mut write_buf = self.write_buf.lock().await;
             msg.write_to_buf(&mut *write_buf);
+            self.shared.check_write_buf_size(&mut write_buf)?;
             self.flush(&mut write_buf).await?;
             drop(write_buf);
         }
@@ -285,6 +289,7 @@ where
         {
             let mut write_buf = self.write_buf.lock().await;
             msg.write_to_buf(&mut *write_buf);
+            self.shared.check_write_buf_size(&mut write_buf)?;
             self.flush(&mut write_buf).await?;
         }
         let suback = self.unsuback_comm.get(msg.packet_identifier()).await?;

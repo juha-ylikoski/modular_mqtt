@@ -87,6 +87,19 @@ where
             Ok(())
         }
     }
+
+    fn check_write_buf_size(&self, write_buf: &mut BytesMut) -> Result<(), ClientError> {
+        if write_buf.len() > self.shared.max_packet_size() {
+            let e = ClientError::TooLargeMessage {
+                broker_max: self.shared.max_packet_size(),
+                msg_size: write_buf.len(),
+            };
+            write_buf.clear();
+            Err(e)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl<V, O> Client<V, O>
@@ -135,6 +148,7 @@ where
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
+            max_packet_size: RwLock::new(opts.max_packet_size(Some(&connack))),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),
@@ -221,6 +235,7 @@ where
             });
 
             _inflight.msg.write_to_buf(&mut *write_buf);
+            self.check_write_buf_size(&mut write_buf)?;
 
             if self
                 .inflight_ch
@@ -232,6 +247,7 @@ where
             inflight = Some(_inflight);
         } else {
             msg.write_to_buf(&mut *write_buf);
+            self.check_write_buf_size(&mut write_buf)?;
         }
         self.flush(&mut write_buf)?;
         Ok(inflight)
@@ -255,6 +271,7 @@ where
         {
             let mut write_buf = self.write_buf.lock().unwrap();
             msg.write_to_buf(&mut *write_buf);
+            self.check_write_buf_size(&mut write_buf)?;
             self.flush(&mut write_buf)?;
             drop(write_buf);
         }
@@ -287,6 +304,7 @@ where
         {
             let mut write_buf = self.write_buf.lock().unwrap();
             msg.write_to_buf(&mut *write_buf);
+            self.check_write_buf_size(&mut write_buf)?;
             self.flush(&mut write_buf)?;
         }
         let suback = self.unsuback_comm.get(msg.packet_identifier(), timeout)?;

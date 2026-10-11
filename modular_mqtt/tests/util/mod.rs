@@ -49,6 +49,7 @@ impl From<GenericClientOpts> for ClientOptsV3 {
             max_packet_size: value.0.max_packet_size,
             resend_interval: value.0.resend_interval,
             ack_retention: value.0.ack_retention,
+            write_timeout: value.0.write_timeout,
         }
     }
 }

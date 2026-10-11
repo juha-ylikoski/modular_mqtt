@@ -165,6 +165,8 @@ where
             return Err(BackendError::ReconnectError(O::connect_error(&connack)));
         }
 
+        self.state_machine.shared.set_max_packet_size(&connack);
+
         if self.state_machine.shared.opts.should_resubscribe(&connack) {
             let subs = self
                 .state_machine
@@ -316,7 +318,7 @@ where
             tracing::trace!("Buffer has data. Try to parse it");
             match FixedHeader::parse(
                 &mut self.read_buf,
-                self.state_machine.shared.opts.max_packet_size(),
+                self.state_machine.shared.max_packet_size(),
             ) {
                 Ok(Some(v)) => return Ok(ReadFinished::Success(v.0, v.1)),
                 Err(e) => return Err(BackendError::MqttError(e)),
@@ -341,7 +343,7 @@ where
                 self.state_machine.last_read = Instant::now();
                 match FixedHeader::parse(
                     &mut self.read_buf,
-                    self.state_machine.shared.opts.max_packet_size(),
+                    self.state_machine.shared.max_packet_size(),
                 ) {
                     Ok(Some((header, buf))) => {
                         tracing::trace!("Received new packet: header={header:?} body={buf:?}");
