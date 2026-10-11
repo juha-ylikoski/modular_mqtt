@@ -45,8 +45,15 @@ where
     O: ClientOpts<V>,
 {
     pub fn next_packet_identifier(&self) -> u16 {
-        self.next_packet_identifier
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let mid = self
+            .next_packet_identifier
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if mid == 0 {
+            self.next_packet_identifier
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            mid
+        }
     }
     pub fn assert_online(&self) -> Result<(), ClientError> {
         if !*self.online.read().unwrap() {
