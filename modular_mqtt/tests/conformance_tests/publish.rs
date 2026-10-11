@@ -3,7 +3,7 @@ use crate::util::{self, GenericClientOpts, Harness};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use modular_mqtt::{ClientOpts, ClientOptsV5, SyncClient};
+use modular_mqtt::{ClientOpts, ClientOptsV5, OnDisconnectBehavior, SyncClient};
 use modular_mqtt_protocol::{
     ConnAck, Connect, ConnectRcV3, ConnectRcV5, ControlPacketType, FixedHeader, MqttTopic,
     MqttVersion, Packet, PingReq, PingResp, PubAck, PubComp, PubRec, PubRel, Publish, Qos,
@@ -326,6 +326,8 @@ where
         };
         let recv_pub2 =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
+        // This is a re-delivery attempt, so DUP must be set [MQTT-3.3.1-1]. The first
+        // PUBLISH above is asserted with dup: false, which pins both directions.
         assert_eq!(
             recv_pub2,
             Publish::new(
@@ -334,7 +336,7 @@ where
                 Qos::AtLeastOnce,
                 false
             )
-            .assign_packet_identifier(|| recv_pub2.packet_identifier().unwrap(), false),
+            .assign_packet_identifier(|| recv_pub2.packet_identifier().unwrap(), true),
         );
 
         stream
@@ -445,6 +447,8 @@ where
         };
         let recv_pub2 =
             Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
+        // Re-delivery attempt: DUP must be set [MQTT-3.3.1-1]. The first PUBLISH
+        // above asserts dup: false, so both directions are covered.
         assert_eq!(
             recv_pub2,
             Publish::new(
@@ -453,7 +457,7 @@ where
                 Qos::ExactlyOnce,
                 false
             )
-            .assign_packet_identifier(|| expected_packet_identifier, false)
+            .assign_packet_identifier(|| expected_packet_identifier, true)
         );
 
         stream
@@ -642,6 +646,114 @@ test!(
     publish_resend_pubrel_qos2,
     test_publish_resend_pubrel_qos2,
     5000,
+    (ConnectRcV3::Accepted),
+    (ConnectRcV5::Accepted)
+);
+
+/// Re-delivering a PUBLISH after a reconnect must also set DUP [MQTT-3.3.1-1].
+///
+/// `check_resend_msgs` covers the resend-interval path; this covers the other
+/// re-delivery path, `re_write_qos1_and_qos2_to_write_buf`, which rewrites every
+/// in-flight message onto the fresh socket. The first PUBLISH asserts `dup: false`,
+/// so both directions are pinned.
+///
+/// The broker hangs up without acknowledging, the client reconnects, and the
+/// retransmission must arrive with DUP set.
+async fn test_publish_resend_dup_after_reconnect<H, V, O>(connack_rc: V::ConnackRc)
+where
+    H: Harness,
+    V: MqttVersion,
+    O: ClientOpts<V> + From<GenericClientOpts>,
+    VersionedConnect: From<Connect<V>>,
+{
+    util::init_logging();
+
+    let mut broker = H::broker().await;
+    let addr = broker.addr();
+    let (tx_close, mut rx_close) = H::channel();
+    // `publish` returns as soon as the message is queued, so the client thread would
+    // otherwise race ahead and disconnect before the broker has hung up and the
+    // reconnect has happened. The broker signals once its assertions are done.
+    let (tx_done, mut rx_done) = H::channel();
+
+    let handle = H::spawn(async move {
+        // First connection: handshake, take the PUBLISH, then hang up unacknowledged.
+        let mut first = broker.accept().await;
+        let (header, mut data) = first.read_packet().await;
+        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
+        first
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
+
+        let (header, mut data) = first.read_packet().await;
+        let first_pub =
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
+        assert!(!first_pub.dup(), "first delivery must not set DUP");
+        let mid = first_pub.packet_identifier().unwrap();
+        drop(first); // close the socket without sending a PUBACK
+
+        // Second connection: the client must retransmit with DUP set.
+        let mut second = broker.accept().await;
+        let (header, mut data) = second.read_packet().await;
+        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
+        second
+            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .await;
+
+        let (header, mut data) = second.read_packet().await;
+        let resent =
+            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(
+            resent.packet_identifier(),
+            Some(mid),
+            "same packet identifier"
+        );
+        assert!(resent.dup(), "re-delivery after reconnect must set DUP");
+
+        second
+            .write_packet(|buf| PubAck::<V>::new_ok(mid).write_to_buf(buf))
+            .await;
+        tx_done.send(()).await;
+        rx_close.recv().await;
+    });
+
+    let (_, client) = H::connect::<V, O>(
+        GenericClientOpts(ClientOptsV5 {
+            client_id: "client-id".to_string(),
+            keep_alive: 30,
+            on_disconnect: OnDisconnectBehavior::ReconnectExponentialBackoff {
+                min_retry_interval: Duration::from_millis(50),
+                max_retry_interval: Duration::from_millis(200),
+            },
+            ..Default::default()
+        }),
+        addr.to_string(),
+    )
+    .await
+    .unwrap();
+
+    H::publish(
+        &client,
+        Publish::new(
+            MqttTopic::try_from("topic").unwrap(),
+            b"payload",
+            Qos::AtLeastOnce,
+            false,
+        ),
+    )
+    .await
+    .unwrap();
+
+    rx_done.recv().await;
+    H::disconnect(client).await;
+    tx_close.send(()).await;
+    handle.join().await;
+}
+
+test!(
+    publish_resend_dup_after_reconnect,
+    test_publish_resend_dup_after_reconnect,
+    10000,
     (ConnectRcV3::Accepted),
     (ConnectRcV5::Accepted)
 );
@@ -841,7 +953,9 @@ where
                 .write_packet(|buf| buf.extend_from_slice(chunk))
                 .await;
 
-            if let Some((fixed_header, mut data)) = stream.read_packet_timeout(Duration::from_millis(50)).await {
+            if let Some((fixed_header, mut data)) =
+                stream.read_packet_timeout(Duration::from_millis(50)).await
+            {
                 assert!(
                     matches!(fixed_header.control_packet_type, ControlPacketType::PingReq),
                     "client sent a packet mid-transfer"

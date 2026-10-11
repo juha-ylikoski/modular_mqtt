@@ -262,41 +262,7 @@ impl<V: MqttVersion> Publish<V, Qos> {
 
 impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
     fn write_to_buf(&self, buf: &mut impl BufMut) {
-        let remaining_length = 2
-            + self.topic.len()
-            + {
-                if matches!(
-                    self.qos,
-                    QosPacketIdentifier::AtLeastOnce(_) | QosPacketIdentifier::ExactlyOnce(_)
-                ) {
-                    assert!(self.packet_identifier().is_some());
-                    2
-                } else {
-                    assert!(self.packet_identifier().is_none());
-                    0
-                }
-            }
-            + self.properties.properties_block_len()
-            + self.payload.len();
-
-        let fixed_header = FixedHeader::new(
-            super::fixed_header::ControlPacketType::Publish {
-                dup: self.dup,
-                qos: self.qos.into(),
-                retain: self.retain,
-            },
-            remaining_length,
-        );
-        fixed_header.write_to_buf(buf);
-
-        write_str(&self.topic, buf);
-        match self.qos {
-            QosPacketIdentifier::AtMostOnce => (),
-            QosPacketIdentifier::AtLeastOnce(packet_identifier)
-            | QosPacketIdentifier::ExactlyOnce(packet_identifier) => buf.put_u16(packet_identifier),
-        }
-        self.properties.write_properties(buf);
-        buf.put(&self.payload[..]);
+        self.write_to_buf_with_opts(buf, self.dup);
     }
 
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
@@ -353,6 +319,44 @@ impl<V: MqttVersion> Publish<V, QosPacketIdentifier> {
 
     pub fn payload(&self) -> &Bytes {
         &self.payload
+    }
+
+    pub fn write_to_buf_with_opts(&self, buf: &mut impl BufMut, dup: bool) {
+        let remaining_length = 2
+            + self.topic.len()
+            + {
+                if matches!(
+                    self.qos,
+                    QosPacketIdentifier::AtLeastOnce(_) | QosPacketIdentifier::ExactlyOnce(_)
+                ) {
+                    assert!(self.packet_identifier().is_some());
+                    2
+                } else {
+                    assert!(self.packet_identifier().is_none());
+                    0
+                }
+            }
+            + self.properties.properties_block_len()
+            + self.payload.len();
+
+        let fixed_header = FixedHeader::new(
+            super::fixed_header::ControlPacketType::Publish {
+                dup,
+                qos: self.qos.into(),
+                retain: self.retain,
+            },
+            remaining_length,
+        );
+        fixed_header.write_to_buf(buf);
+
+        write_str(&self.topic, buf);
+        match self.qos {
+            QosPacketIdentifier::AtMostOnce => (),
+            QosPacketIdentifier::AtLeastOnce(packet_identifier)
+            | QosPacketIdentifier::ExactlyOnce(packet_identifier) => buf.put_u16(packet_identifier),
+        }
+        self.properties.write_properties(buf);
+        buf.put(&self.payload[..]);
     }
 }
 
@@ -1227,6 +1231,132 @@ mod test_v5 {
         assert_eq!(
             Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap(),
             msg
+        );
+    }
+
+    /// QoS 0, topic "topic", payload "payload". Only the fixed header's DUP bit
+    /// differs between these two encodings, so the expected arrays differ solely
+    /// in their first byte: 0x30 without DUP, 0x38 with it.
+    const QOS0_PLAIN: &[u8] = &[
+        48, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+    ];
+    const QOS0_DUP: &[u8] = &[
+        56, 15, 0, 5, b't', b'o', b'p', b'i', b'c', 0, b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+    ];
+
+    fn qos0(dup: bool) -> Publish<MqttV5_0_0, QosPacketIdentifier> {
+        Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, dup)
+    }
+
+    #[test]
+    fn write_to_buf_uses_the_dup_field() {
+        let mut plain = Vec::new();
+        qos0(false).write_to_buf(&mut plain);
+        assert_eq!(&plain, QOS0_PLAIN);
+
+        let mut dup = Vec::new();
+        qos0(true).write_to_buf(&mut dup);
+        assert_eq!(&dup, QOS0_DUP);
+    }
+
+    /// The re-delivery path: the backend re-serializes an unchanged message, so
+    /// DUP has to come from the override rather than from the stored message
+    /// [MQTT-3.3.1-1].
+    #[test]
+    fn write_to_buf_with_opts_sets_dup_for_retransmit() {
+        let msg = qos0(false);
+        let mut wire = Vec::new();
+        msg.write_to_buf_with_opts(&mut wire, true);
+        assert_eq!(&wire, QOS0_DUP);
+
+        // Byte-identical to a message that was constructed with DUP already set.
+        let mut constructed_dup = Vec::new();
+        qos0(true).write_to_buf(&mut constructed_dup);
+        assert_eq!(&wire, &constructed_dup);
+    }
+
+    /// The override is an encode-time argument, not a mutation: a later plain
+    /// write of the same message must be unaffected.
+    #[test]
+    fn write_to_buf_with_opts_does_not_mutate_the_message() {
+        let msg = qos0(false);
+
+        let mut resend = Vec::new();
+        msg.write_to_buf_with_opts(&mut resend, true);
+        assert_eq!(&resend, QOS0_DUP);
+
+        let mut afterwards = Vec::new();
+        msg.write_to_buf(&mut afterwards);
+        assert_eq!(&afterwards, QOS0_PLAIN);
+        assert!(!msg.dup());
+    }
+
+    /// The opposite direction, which the client side needs to clear a stale DUP
+    /// before sending [MQTT-3.3.1-2].
+    #[test]
+    fn write_to_buf_with_opts_can_clear_dup() {
+        let msg = qos0(true);
+
+        let mut cleared = Vec::new();
+        msg.write_to_buf_with_opts(&mut cleared, false);
+        assert_eq!(&cleared, QOS0_PLAIN);
+        assert!(msg.dup(), "the message itself is unchanged");
+    }
+
+    /// The DUP bit has to survive the wire in both directions, otherwise the
+    /// re-delivery guarantee is only half-observable.
+    #[test]
+    fn dup_round_trips_through_the_wire() {
+        for dup in [false, true] {
+            let mut wire = Vec::new();
+            qos0(dup).write_to_buf(&mut wire);
+
+            let mut buf = BytesMut::from(&wire[..]);
+            let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+                .unwrap()
+                .unwrap();
+            let decoded =
+                Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap();
+            assert_eq!(decoded.dup(), dup, "DUP did not round-trip for dup={dup}");
+        }
+    }
+
+    /// QoS 1 is the case that actually gets retransmitted, so check the DUP bit
+    /// alongside the packet identifier rather than only on a QoS 0 packet.
+    #[test]
+    fn retransmit_sets_dup_on_a_qos1_publish() {
+        let msg = Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtLeastOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false);
+
+        let mut plain = Vec::new();
+        msg.write_to_buf(&mut plain);
+        assert_eq!(
+            &plain,
+            &[
+                50, 17, 0, 5, b't', b'o', b'p', b'i', b'c', 0, 42, 0, b'p', b'a', b'y', b'l', b'o',
+                b'a', b'd'
+            ]
+        );
+
+        let mut resend = Vec::new();
+        msg.write_to_buf_with_opts(&mut resend, true);
+        assert_eq!(
+            &resend,
+            &[
+                58, 17, 0, 5, b't', b'o', b'p', b'i', b'c', 0, 42, 0, b'p', b'a', b'y', b'l', b'o',
+                b'a', b'd'
+            ]
         );
     }
 }

@@ -130,7 +130,9 @@ where
         for (mid, msg) in self.inflight_msgs.iter() {
             match &mut *msg.state.lock().unwrap() {
                 InflightMessageState::PubAck(instant) | InflightMessageState::PubRec(instant) => {
-                    msg.msg.write_to_buf(&mut self.write_buf);
+                    // Re-delivering after a reconnect is still a re-delivery attempt,
+                    // so DUP must be set [MQTT-3.3.1-1].
+                    msg.msg.write_to_buf_with_opts(&mut self.write_buf, true);
                     *instant = now;
                 }
                 InflightMessageState::PubComp(instant) => {
@@ -155,7 +157,7 @@ where
                     if now.saturating_duration_since(sent_time) > self.shared.opts.resend_interval()
                     {
                         tracing::warn!("Resending packet with identifier {}", packet_identifier);
-                        msg.msg.write_to_buf(&mut self.write_buf);
+                        msg.msg.write_to_buf_with_opts(&mut self.write_buf, true);
                         *msg.state.lock().unwrap() = InflightMessageState::PubAck(now);
                         now
                     } else {
@@ -167,7 +169,7 @@ where
                     if now.saturating_duration_since(sent_time) > self.shared.opts.resend_interval()
                     {
                         tracing::warn!("Resending packet with identifier {}", packet_identifier);
-                        msg.msg.write_to_buf(&mut self.write_buf);
+                        msg.msg.write_to_buf_with_opts(&mut self.write_buf, true);
                         *msg.state.lock().unwrap() = InflightMessageState::PubRec(now);
                         now
                     } else {

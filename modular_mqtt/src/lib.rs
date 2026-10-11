@@ -11,7 +11,7 @@ pub mod util;
 pub const RESENT_INTERVAL: Duration = Duration::from_secs(10);
 
 pub use client::sync_client::Client as SyncClient;
-pub use client_opts::{ClientOpts, ClientOptsV3, ClientOptsV5};
+pub use client_opts::{ClientOpts, ClientOptsV3, ClientOptsV5, OnDisconnectBehavior};
 use modular_mqtt_protocol::{MqttV3_1_1, MqttV5_0_0};
 
 pub type SyncClientV3 = SyncClient<MqttV3_1_1, ClientOptsV3>;
