@@ -77,7 +77,7 @@ async fn test_sub_qos0<H, V, O>(
     .unwrap();
     let packet_identifier = recv.recv().await;
     assert_eq!(suback, SubAck::<V>::new(packet_identifier, sub_rc2));
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -193,7 +193,7 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
         )
         .assign_packet_identifier(|| 1, false)
     );
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -312,7 +312,7 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
         )
         .assign_packet_identifier(|| 42, false)
     );
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -443,7 +443,7 @@ async fn test_sub_qos2_receive_packet<H, V, O>(
         .assign_packet_identifier(|| 42, false)
     );
     pub_done_rx.recv().await;
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }

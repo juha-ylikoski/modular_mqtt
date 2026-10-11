@@ -48,16 +48,6 @@ where
     V: MqttVersion,
     O: ClientOpts<V>,
 {
-    fn next_packet_identifier(&self) -> u16 {
-        self.shared
-            .next_packet_identifier
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-    fn assert_online(&self) {
-        if !*self.shared.online.read().unwrap() {
-            panic!("Connection to mqtt broker was disconnect. Cannot proceed.");
-        }
-    }
     fn flush(&self, write_buf: &mut BytesMut) -> std::io::Result<()> {
         let mut writer = self.writer.lock().unwrap();
         let out = write_buf.split();
@@ -65,27 +55,36 @@ where
         writer.write_all(&out[..])
     }
     fn handle_recv_error(&self) -> ClientError {
-        let be = self.backend.lock().unwrap().take().unwrap();
+        let be = match self.backend.lock().unwrap().take() {
+            Some(be) => be,
+            None => return ClientError::Disconnected,
+        };
         if be.is_finished() {
             return match be.join() {
-                Ok(Ok(_)) => {
-                    panic!("Backend thread has freed sender but did not error out");
-                }
+                Ok(Ok(_)) => ClientError::Disconnected,
                 Ok(Err(e)) => ClientError::BackendError(e),
                 Err(e) => ClientError::BackendCrashed(e),
             };
         } else {
-            panic!("Backend thread has freed sender but is not dead");
+            ClientError::Disconnected
         }
-    }
-
-    pub fn online(&self) -> bool {
-        *self.shared.online.read().unwrap()
     }
 
     fn kill_bg_thread(&self) {
         let mut killer = self.backend_killer.lock().unwrap();
         *killer = true;
+    }
+
+    pub fn online(&self) -> bool {
+        self.shared.online()
+    }
+    fn assert_working(&self) -> Result<(), ClientError> {
+        self.shared.assert_online()?;
+        if self.backend.lock().unwrap().is_none() {
+            Err(ClientError::Disconnected)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -185,8 +184,9 @@ where
         &self,
         msg: Publish<V, Qos>,
     ) -> Result<Option<Arc<InflightMessage<V, crate::util::Sync>>>, ClientError> {
+        self.assert_working()?;
+
         let mut write_buf = self.write_buf.lock().unwrap();
-        self.assert_online();
 
         let msg = msg.assign_packet_identifier(
             || {
@@ -239,13 +239,13 @@ where
         qos: Qos,
         timeout: Duration,
     ) -> Result<SubAck<V>, ClientError> {
-        self.assert_online();
+        self.assert_working()?;
         let subs = topics
             .into_iter()
             .map(|topic| self.shared.opts.topic_subscription(topic, qos))
             .collect();
 
-        let packet_identifier = self.next_packet_identifier();
+        let packet_identifier = self.shared.next_packet_identifier();
         let msg = self.shared.opts.subscribe_packet(packet_identifier, subs);
         tracing::debug!("Sending subscribe: {msg:?}");
         {
@@ -273,8 +273,8 @@ where
         topics: Vec<String>,
         timeout: Duration,
     ) -> Result<UnsubAck<V>, ClientError> {
-        self.assert_online();
-        let packet_identifier = self.next_packet_identifier();
+        self.assert_working()?;
+        let packet_identifier = self.shared.next_packet_identifier();
         let msg = self
             .shared
             .opts
@@ -295,36 +295,60 @@ where
         Ok(suback)
     }
 
-    pub fn disconnect(self) -> Result<(), ClientError> {
-        let mut write_buf = self.write_buf.lock().unwrap();
-        self.assert_online();
-        tracing::debug!("Sending Disconnect");
-        self.kill_bg_thread();
+    pub fn disconnect(self) {
+        fn shutdown_stream(old_stream: SyncWriter) {
+            tracing::debug!("Disconnect socket");
+            match old_stream {
+                SyncWriter::Tcp(tcp_stream) => {
+                    // Unblocks the background thread's in-progress socket read (which can otherwise
+                    // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
+                    let _ = tcp_stream.shutdown(std::net::Shutdown::Both);
+                }
+                SyncWriter::Disconnected => (),
+            }
+        }
 
-        self.shared
-            .opts
-            .disconnect_packet()
-            .write_to_buf(&mut *write_buf);
-        self.flush(&mut write_buf)?;
+        if self.backend.lock().unwrap().is_none() {
+            return;
+        }
+
+        let mut write_buf = self.write_buf.lock().unwrap();
         let mut stream = self.writer.lock().unwrap();
         let old_stream = std::mem::replace(&mut *stream, SyncWriter::Disconnected);
         drop(stream);
-
-        tracing::debug!("Disconnect socket");
-        match old_stream {
-            SyncWriter::Tcp(tcp_stream) => {
-                // Unblocks the background thread's in-progress socket read (which can otherwise
-                // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
-                let _ = tcp_stream.shutdown(std::net::Shutdown::Both);
-            }
-            SyncWriter::Disconnected => (),
-        }
-
         let mut backend = self.backend.lock().unwrap();
         let backend = backend.take();
-        if let Some(backend) = backend {
-            backend.join().unwrap().unwrap();
+
+        if self.online() {
+            tracing::debug!("Sending Disconnect");
+            self.kill_bg_thread();
+
+            self.shared
+                .opts
+                .disconnect_packet()
+                .write_to_buf(&mut *write_buf);
+            let _ = self.flush(&mut write_buf);
+
+            shutdown_stream(old_stream);
+
+            if let Some(backend) = backend {
+                match backend.join() {
+                    Ok(Ok(_)) => tracing::info!("Backend disconnected successfully"),
+                    Ok(Err(e)) => tracing::error!("Backend thread exited with error {e:?}"),
+                    Err(e) => tracing::error!("Backend thread panicked {e:?}"),
+                };
+            }
+        } else {
+            tracing::debug!("Already disconnected. Killing bg thread");
+            self.kill_bg_thread();
+            shutdown_stream(old_stream);
+            if let Some(backend) = backend {
+                match backend.join() {
+                    Ok(Ok(_)) => tracing::info!("Backend disconnected successfully"),
+                    Ok(Err(e)) => tracing::error!("Backend thread exited with error {e:?}"),
+                    Err(e) => tracing::error!("Backend thread panicked {e:?}"),
+                };
+            }
         }
-        Ok(())
     }
 }

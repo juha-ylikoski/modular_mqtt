@@ -56,5 +56,5 @@ fn main() {
     tracing::info!("Published!");
     inflight.wait_until_delivered();
     tracing::info!("Broker received!");
-    client.disconnect().unwrap();
+    client.disconnect();
 }

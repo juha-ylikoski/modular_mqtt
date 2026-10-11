@@ -321,7 +321,7 @@ pub trait Harness {
         O: ClientOpts<V>,
         T: IntoTopicSubscription<V>;
 
-    async fn disconnect<V, O>(c: Self::Client<V, O>) -> Result<(), ClientError>
+    async fn disconnect<V, O>(c: Self::Client<V, O>)
     where
         V: MqttVersion,
         O: ClientOpts<V>;
@@ -407,7 +407,7 @@ impl Harness for SyncHarness {
         c.subscribe(topics, qos, timeout)
     }
 
-    async fn disconnect<V, O>(c: Self::Client<V, O>) -> Result<(), ClientError>
+    async fn disconnect<V, O>(c: Self::Client<V, O>)
     where
         V: MqttVersion,
         O: ClientOpts<V>,
@@ -502,7 +502,7 @@ impl Harness for AsyncHarness {
         }
     }
 
-    async fn disconnect<V, O>(c: Self::Client<V, O>) -> Result<(), ClientError>
+    async fn disconnect<V, O>(c: Self::Client<V, O>)
     where
         V: MqttVersion,
         O: ClientOpts<V>,

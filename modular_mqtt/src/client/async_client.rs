@@ -50,16 +50,6 @@ where
     V: MqttVersion,
     O: ClientOpts<V>,
 {
-    fn next_packet_identifier(&self) -> u16 {
-        self.shared
-            .next_packet_identifier
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-    fn assert_online(&self) {
-        if !*self.shared.online.read().unwrap() {
-            panic!("Connection to mqtt broker was disconnect. Cannot proceed.");
-        }
-    }
     async fn flush(&self, write_buf: &mut BytesMut) -> std::io::Result<()> {
         let mut writer = self.writer.lock().await;
         let out = write_buf.split();
@@ -67,22 +57,31 @@ where
         writer.write_all(&out[..]).await
     }
     async fn handle_recv_error(&self) -> ClientError {
-        let be = self.backend.lock().await.take().unwrap();
+        let be = match self.backend.lock().await.take() {
+            Some(be) => be,
+            None => return ClientError::Disconnected,
+        };
         if be.is_finished() {
             match be.await {
-                Ok(Ok(_)) => {
-                    panic!("Backend thread has freed sender but did not error out");
-                }
+                Ok(Ok(_)) => ClientError::Disconnected,
                 Ok(Err(e)) => ClientError::BackendError(e),
                 Err(e) => ClientError::BackendCrashed(Box::new(e)),
             }
         } else {
-            panic!("Backend thread has freed sender but is not dead");
+            ClientError::Disconnected
         }
     }
 
     pub fn online(&self) -> bool {
-        *self.shared.online.read().unwrap()
+        self.shared.online()
+    }
+    async fn assert_working(&self) -> Result<(), ClientError> {
+        self.shared.assert_online()?;
+        if self.backend.lock().await.is_none() {
+            Err(ClientError::Disconnected)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -180,8 +179,8 @@ where
         &self,
         msg: Publish<V, Qos>,
     ) -> Result<Option<Arc<InflightMessage<V, crate::util::Async>>>, ClientError> {
+        self.assert_working().await?;
         let mut write_buf = self.write_buf.lock().await;
-        self.assert_online();
 
         let msg = msg.assign_packet_identifier(
             || {
@@ -234,13 +233,13 @@ where
         topics: Vec<impl IntoTopicSubscription<V>>,
         qos: Qos,
     ) -> Result<SubAck<V>, ClientError> {
-        self.assert_online();
+        self.assert_working().await?;
         let subs = topics
             .into_iter()
             .map(|topic| self.shared.opts.topic_subscription(topic, qos))
             .collect();
 
-        let packet_identifier = self.next_packet_identifier();
+        let packet_identifier = self.shared.next_packet_identifier();
         let msg = self.shared.opts.subscribe_packet(packet_identifier, subs);
 
         tracing::debug!("Sending subscribe: {msg:?}");
@@ -265,8 +264,8 @@ where
     }
 
     pub async fn unsubscribe(&self, topics: Vec<String>) -> Result<UnsubAck<V>, ClientError> {
-        self.assert_online();
-        let packet_identifier = self.next_packet_identifier();
+        self.assert_working().await?;
+        let packet_identifier = self.shared.next_packet_identifier();
         let msg = self
             .shared
             .opts
@@ -287,30 +286,45 @@ where
         Ok(suback)
     }
 
-    pub async fn disconnect(self) -> Result<(), ClientError> {
-        let mut write_buf = self.write_buf.lock().await;
-        self.assert_online();
-        tracing::debug!("Sending Disconnect");
+    pub async fn disconnect(self) {
+        async fn shutdown_stream(old_stream: AsyncWriter) {
+            tracing::debug!("Disconnect socket");
+            if let AsyncWriter::Tcp(mut tcp) = old_stream {
+                // Unblocks the background thread's in-progress socket read (which can otherwise
+                // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
+                let _ = tcp.shutdown().await;
+            }
+        }
 
-        self.shared
-            .opts
-            .disconnect_packet()
-            .write_to_buf(&mut *write_buf);
-        self.flush(&mut write_buf).await?;
+        if self.backend.lock().await.is_none() {
+            return;
+        }
+
         let mut stream = self.writer.lock().await;
         let old_stream = std::mem::replace(&mut *stream, AsyncWriter::Disconnected);
         drop(stream);
-        if let AsyncWriter::Tcp(mut tcp) = old_stream {
-            // Unblocks the background thread's in-progress socket read (which can otherwise
-            // block for up to `keep_alive` seconds) so it notices `kill_bg_thread` promptly.
-            let _ = tcp.shutdown().await;
-        }
-
         let mut backend = self.backend.lock().await;
         let backend = backend.take();
-        if let Some(backend) = backend {
-            backend.abort();
+
+        let mut write_buf = self.write_buf.lock().await;
+        if self.online() {
+            tracing::debug!("Sending Disconnect");
+
+            self.shared
+                .opts
+                .disconnect_packet()
+                .write_to_buf(&mut *write_buf);
+            let _ = self.flush(&mut write_buf).await;
+            shutdown_stream(old_stream).await;
+
+            if let Some(backend) = backend {
+                backend.abort();
+            }
+        } else {
+            tracing::debug!("Already disconnected. Killing bg thread");
+            if let Some(backend) = backend {
+                backend.abort();
+            }
         }
-        Ok(())
     }
 }

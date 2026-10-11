@@ -19,6 +19,12 @@ pub enum ClientError {
 
     #[error("Backend error {0:?}")]
     BackendCrashed(Box<dyn Any + Send + 'static>),
+
+    #[error("Client is offline")]
+    Offline,
+
+    #[error("Client has been manually disconnected and recovery is impossible")]
+    Disconnected,
 }
 
 #[derive(Debug, Error)]

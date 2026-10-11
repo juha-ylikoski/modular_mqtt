@@ -13,7 +13,7 @@ use modular_mqtt_protocol::{
 use bytes::{Bytes, BytesMut};
 
 use crate::{
-    error::BackendError,
+    error::{BackendError, ClientError},
     util::{InflightMessage, InflightMessageState},
     ClientOpts, Instant, PACKET_TIMEOUT, PING_FREQUENCY, PING_TIMEOUT,
 };
@@ -36,6 +36,27 @@ where
     pub online: RwLock<bool>,
     pub subscriptions: Mutex<Vec<V::TopicSubscription>>,
     pub next_packet_identifier: std::sync::atomic::AtomicU16,
+}
+
+impl<V, O> Shared<V, O>
+where
+    V: MqttVersion,
+    O: ClientOpts<V>,
+{
+    pub fn next_packet_identifier(&self) -> u16 {
+        self.next_packet_identifier
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn assert_online(&self) -> Result<(), ClientError> {
+        if !*self.online.read().unwrap() {
+            Err(ClientError::Offline)
+        } else {
+            Ok(())
+        }
+    }
+    pub fn online(&self) -> bool {
+        *self.online.read().unwrap()
+    }
 }
 
 pub struct BackendStateMachine<V, O, R>

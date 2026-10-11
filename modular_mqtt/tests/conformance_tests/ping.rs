@@ -37,8 +37,8 @@ where
 
         let (header, mut data) = stream.read_packet().await;
         assert_eq!(data.len(), 0);
-        let connect = PingReq::try_read(header, &mut data).unwrap();
-        assert_eq!(connect, PingReq);
+        let ping = PingReq::try_read(header, &mut data).unwrap();
+        assert_eq!(ping, PingReq);
 
         stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
         rx_close.recv().await;
@@ -56,7 +56,7 @@ where
     .unwrap();
 
     H::sleep(Duration::from_millis(1500)).await;
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -124,7 +124,7 @@ where
     .unwrap();
 
     H::sleep(Duration::from_millis(6300)).await;
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -206,7 +206,7 @@ where
         bytes::Bytes::from_static(b"hello")
     );
     rx_dc.recv().await;
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }

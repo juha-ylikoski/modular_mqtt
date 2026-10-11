@@ -72,7 +72,7 @@ where
     .await
     .unwrap()
     .is_none());
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -159,7 +159,7 @@ where
     send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -255,7 +255,7 @@ where
     H::wait_until_delivered(msg).await;
     tracing::info!("Received");
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -371,7 +371,7 @@ where
     send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -499,7 +499,7 @@ where
     send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -634,7 +634,7 @@ where
     send.send(msg.packet_identifier()).await;
     H::wait_until_delivered(msg).await;
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -780,7 +780,7 @@ where
          had not been drained from inflight_ch into inflight_msgs yet."
     );
 
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -841,16 +841,13 @@ where
                 .write_packet(|buf| buf.extend_from_slice(chunk))
                 .await;
 
-            match stream.read_packet_timeout(Duration::from_millis(50)).await {
-                Some((fixed_header, mut data)) => {
-                    assert!(
-                        matches!(fixed_header.control_packet_type, ControlPacketType::PingReq),
-                        "client sent a packet mid-transfer"
-                    );
-                    PingReq::try_read(fixed_header, &mut data).unwrap();
-                    got_ping = true;
-                }
-                None => (),
+            if let Some((fixed_header, mut data)) = stream.read_packet_timeout(Duration::from_millis(50)).await {
+                assert!(
+                    matches!(fixed_header.control_packet_type, ControlPacketType::PingReq),
+                    "client sent a packet mid-transfer"
+                );
+                PingReq::try_read(fixed_header, &mut data).unwrap();
+                got_ping = true;
             }
         }
         if !got_ping {
@@ -879,7 +876,7 @@ where
     let msg = H::recv(&mut rx).await;
     assert_eq!(msg.payload(), &payload[..], "payload corrupted");
     rx_disconnect.recv().await;
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }

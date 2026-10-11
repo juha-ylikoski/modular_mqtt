@@ -192,13 +192,8 @@ where
                 .unwrap()
                 .clone();
             if !subs.is_empty() {
-                let msg = Subscribe::<V>::new(
-                    self.state_machine
-                        .shared
-                        .next_packet_identifier
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                    subs,
-                );
+                let msg =
+                    Subscribe::<V>::new(self.state_machine.shared.next_packet_identifier(), subs);
                 msg.write_to_buf(&mut self.state_machine.write_buf);
             }
         }

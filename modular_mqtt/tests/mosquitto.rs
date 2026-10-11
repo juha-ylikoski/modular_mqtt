@@ -106,8 +106,8 @@ fn mosquitto_publish_v3(
             )
             .assign_packet_identifier(|| 1, false)
         );
-        client_w.disconnect().unwrap();
-        client_r.disconnect().unwrap();
+        client_w.disconnect();
+        client_r.disconnect();
         tx.send(()).unwrap()
     });
 
@@ -169,8 +169,8 @@ fn mosquitto_publish_v5(
             )
             .assign_packet_identifier(|| 1, false)
         );
-        client_w.disconnect().unwrap();
-        client_r.disconnect().unwrap();
+        client_w.disconnect();
+        client_r.disconnect();
         tx.send(()).unwrap()
     });
 
@@ -219,8 +219,8 @@ fn mosquitto_unsub_v3(opts1: ClientOptsV3, opts2: ClientOptsV3, suback_data: Vec
             .is_none());
 
         assert!(stream_r.recv_timeout(Duration::from_secs(1)).is_err());
-        client_w.disconnect().unwrap();
-        client_r.disconnect().unwrap();
+        client_w.disconnect();
+        client_r.disconnect();
         tx.send(()).unwrap()
     });
 
@@ -274,8 +274,8 @@ fn mosquitto_unsub_v5(
             .is_none());
 
         assert!(stream_r.recv_timeout(Duration::from_secs(1)).is_err());
-        client_w.disconnect().unwrap();
-        client_r.disconnect().unwrap();
+        client_w.disconnect();
+        client_r.disconnect();
         tx.send(()).unwrap()
     });
 
@@ -528,8 +528,8 @@ mod async_client {
                 )
                 .assign_packet_identifier(|| 1, false)
             );
-            client_w.disconnect().await.unwrap();
-            client_r.disconnect().await.unwrap();
+            client_w.disconnect().await;
+            client_r.disconnect().await;
             tx.send(()).await.unwrap()
         });
 
@@ -590,8 +590,8 @@ mod async_client {
                 )
                 .assign_packet_identifier(|| 1, false)
             );
-            client_w.disconnect().await.unwrap();
-            client_r.disconnect().await.unwrap();
+            client_w.disconnect().await;
+            client_r.disconnect().await;
             tx.send(()).await.unwrap()
         });
 
@@ -648,8 +648,8 @@ mod async_client {
                     .await
                     .is_err()
             );
-            client_w.disconnect().await.unwrap();
-            client_r.disconnect().await.unwrap();
+            client_w.disconnect().await;
+            client_r.disconnect().await;
             tx.send(()).await.unwrap()
         });
 
@@ -707,8 +707,8 @@ mod async_client {
                     .await
                     .is_err()
             );
-            client_w.disconnect().await.unwrap();
-            client_r.disconnect().await.unwrap();
+            client_w.disconnect().await;
+            client_r.disconnect().await;
             tx.send(()).await.unwrap()
         });
 

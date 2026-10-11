@@ -67,7 +67,7 @@ where
     )
     .await
     .unwrap();
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
@@ -125,7 +125,7 @@ where
     )
     .await
     .unwrap();
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
 
     handle.join().await;
@@ -193,7 +193,7 @@ where
     )
     .await
     .unwrap();
-    H::disconnect(client).await.unwrap();
+    H::disconnect(client).await;
     tx_close.send(()).await;
     handle.join().await;
 }
