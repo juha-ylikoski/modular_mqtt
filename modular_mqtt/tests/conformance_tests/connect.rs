@@ -49,7 +49,9 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
@@ -97,7 +99,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(
+            Connect::try_new(
                 true,
                 30,
                 "".to_string(),
@@ -105,6 +107,7 @@ where
                 Some("username".to_string()),
                 Some(Bytes::from_static(b"password"))
             )
+            .unwrap()
             .into()
         );
         stream
@@ -156,7 +159,7 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(
+            Connect::try_new(
                 true,
                 30,
                 "".to_string(),
@@ -169,6 +172,7 @@ where
                 None,
                 None,
             )
+            .unwrap()
             .into()
         );
         stream
@@ -222,7 +226,9 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 30, "".to_string(), None, None, None,).into()
+            Connect::try_new(true, 30, "".to_string(), None, None, None,)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
@@ -279,7 +285,9 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| {

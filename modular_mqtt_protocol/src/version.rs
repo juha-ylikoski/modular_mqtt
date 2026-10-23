@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes};
 
 use crate::{
     disconnect::MaybeReasonCode, publish::PublishPropertiesTrait, suback::SubAckRcs,
-    util::variable_len_int_size, Error,
+    util::variable_len_int_size, Error, MqttV5_0_0,
 };
 
 mod sealed {
@@ -53,6 +53,15 @@ pub trait MqttVersion:
     type PublishProperties: PacketProperties + Default + PublishPropertiesTrait;
     type ConnectProperties: PacketProperties + Default;
     type LastWill: crate::connect::MqttLastWill;
+
+    fn create_connect(
+        clean_session: bool,
+        keep_alive: u16,
+        client_identifier: String,
+        will: Option<Self::LastWill>,
+        username: Option<String>,
+        password: Option<Bytes>,
+    ) -> Result<crate::Connect<Self>, Error>;
 }
 
 impl MqttVersion for crate::MqttV3_1_1 {
@@ -69,6 +78,30 @@ impl MqttVersion for crate::MqttV3_1_1 {
     type PublishProperties = ();
     type ConnectProperties = ();
     type LastWill = crate::connect::MqttLastWill3_1_1;
+
+    fn create_connect(
+        clean_session: bool,
+        keep_alive: u16,
+        client_identifier: String,
+        will: Option<crate::MqttLastWill3_1_1>,
+        username: Option<String>,
+        password: Option<Bytes>,
+    ) -> Result<crate::Connect<Self>, Error> {
+        if username.is_none() && password.is_some() {
+            Err(Error::ProtocolError(
+                "Username cannot be none while password is some",
+            ))
+        } else {
+            Ok(crate::Connect::new(
+                clean_session,
+                keep_alive,
+                client_identifier,
+                will,
+                username,
+                password,
+            ))
+        }
+    }
 }
 
 impl MqttVersion for crate::MqttV5_0_0 {
@@ -85,6 +118,24 @@ impl MqttVersion for crate::MqttV5_0_0 {
     type PublishProperties = crate::publish::PublishProperties;
     type ConnectProperties = crate::connect::ConnectProperties;
     type LastWill = crate::connect::MqttLastWill5_0_0;
+
+    fn create_connect(
+        clean_session: bool,
+        keep_alive: u16,
+        client_identifier: String,
+        will: Option<crate::MqttLastWill5_0_0>,
+        username: Option<String>,
+        password: Option<Bytes>,
+    ) -> Result<crate::Connect<MqttV5_0_0>, Error> {
+        Ok(crate::Connect::new(
+            clean_session,
+            keep_alive,
+            client_identifier,
+            will,
+            username,
+            password,
+        ))
+    }
 }
 
 impl PacketProperties for () {

@@ -111,7 +111,8 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
     }
 
     fn connect_msg(&self) -> Connect<MqttV3_1_1> {
-        Connect::new(
+        // TODO this should be raised more gracefully to the user
+        Connect::<MqttV3_1_1>::try_new(
             self.clean_session,
             self.keep_alive,
             self.client_id.clone(),
@@ -119,6 +120,7 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
             self.username.clone(),
             self.password.clone(),
         )
+        .expect("Failed to create mqttv3 connect")
     }
     fn max_packet_size(&self, #[allow(unused)] connack: Option<&ConnAck<MqttV3_1_1>>) -> usize {
         self.max_packet_size
@@ -264,14 +266,15 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
     }
 
     fn connect_msg(&self) -> Connect<MqttV5_0_0> {
-        let mut connect = Connect::new(
+        let mut connect = Connect::<MqttV5_0_0>::try_new(
             self.clean_session,
             self.keep_alive,
             self.client_id.clone(),
             self.will.clone(),
             self.username.clone(),
             self.password.clone(),
-        );
+        )
+        .unwrap();
         if let Some(opt) = self.session_expiry_interval {
             connect = connect.set_session_expiry_interval(opt);
         }

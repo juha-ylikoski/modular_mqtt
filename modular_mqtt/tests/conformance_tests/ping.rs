@@ -29,7 +29,9 @@ where
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::<V>::new(true, 2, "client-id".to_string(), None, None, None).into()
+            Connect::<V>::try_new(true, 2, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))

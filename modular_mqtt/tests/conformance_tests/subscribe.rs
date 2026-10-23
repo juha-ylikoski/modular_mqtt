@@ -32,7 +32,9 @@ async fn test_sub_qos0<H, V, O>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
@@ -128,7 +130,9 @@ async fn test_sub_qos0_receive_packet<H, V, O>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
@@ -244,7 +248,9 @@ async fn test_sub_qos1_receive_packet<H, V, O>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
@@ -364,7 +370,9 @@ async fn test_sub_qos2_receive_packet<H, V, O>(
         let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(
             connect,
-            Connect::<V>::new(true, 30, "client-id".to_string(), None, None, None).into()
+            Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None)
+                .unwrap()
+                .into()
         );
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
