@@ -216,10 +216,14 @@ pub trait PublishPropertiesTrait {
 
 impl PublishPropertiesTrait for PublishProperties {
     fn check_pub_topic(&self, topic: String) -> Result<String, Error> {
-        if topic.is_empty() && self.topic_alias.is_none() {
-            Err(Error::ProtocolError(
-                "Mqtt topic cannot be empty while topic alias is not specified",
-            ))
+        if topic.is_empty() {
+            if self.topic_alias.is_none() {
+                Err(Error::ProtocolError(
+                    "Mqtt topic cannot be empty while topic alias is not specified",
+                ))
+            } else {
+                Ok(String::new())
+            }
         } else {
             MqttTopic::try_from(topic).map(|v| v.0)
         }
@@ -1154,7 +1158,7 @@ mod test_v5 {
                 1, 0, //
                 // Message expiry
                 2, 0, 0, 0, 10, //
-                // Message expiry
+                // Topic alias
                 35, 0, 11, //
                 // Response topic
                 8, 0, 8, b'r', b'e', b's', b'p', b'o', b'n', b's', b'e', //
@@ -1175,6 +1179,36 @@ mod test_v5 {
             ]
         );
     }
+
+    #[test]
+    fn serialize_empty_topic_with_topic_alias() {
+        let topic = MqttTopic::try_from("topic").unwrap();
+        let msg = Publish::new(
+            topic,
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 0, false)
+        .into_topic_alias(11)
+        .unwrap();
+
+        let mut buf = Vec::new();
+        msg.write_to_buf(&mut buf);
+        assert_eq!(
+            &buf,
+            &[
+                48, 13, 0, 0, //
+                // Properties
+                3, //
+                // topic alias
+                35, 0, 11, //
+                // payload
+                b'p', b'a', b'y', b'l', b'o', b'a', b'd'
+            ]
+        );
+    }
+
     #[test]
     fn deserialize_properties() {
         let mut expected = Publish::<MqttV5_0_0, Qos>::new(
@@ -1525,5 +1559,36 @@ mod test_v5 {
                 panic!("Should be protocol error")
             }
         }
+    }
+
+    #[test]
+    fn deserialize_topic_alias() {
+        let msg = [
+            48, 13, 0, 0, //
+            // Properties
+            3, //
+            // topic alias
+            35, 0, 1, //
+            // payload
+            b'p', b'a', b'y', b'l', b'o', b'a', b'd',
+        ];
+        let expected = Publish::<MqttV5_0_0, Qos>::new(
+            MqttTopic::try_from("topic").unwrap(),
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .assign_packet_identifier(|| 42, false)
+        .into_topic_alias(1)
+        .unwrap();
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap(),
+            expected
+        );
     }
 }
