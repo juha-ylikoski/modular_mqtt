@@ -201,11 +201,15 @@ impl PacketProperties for SubAckDataV5 {
 
 pub trait SubAckRcs {
     fn succeeded(&self) -> Vec<bool>;
+    fn is_empty(&self) -> bool;
 }
 
 impl SubAckRcs for Vec<SubRcV3> {
     fn succeeded(&self) -> Vec<bool> {
         self.iter().map(|rc| *rc != SubRcV3::Failure).collect()
+    }
+    fn is_empty(&self) -> bool {
+        self.is_empty()
     }
 }
 
@@ -219,6 +223,9 @@ impl SubAckRcs for SubAckDataV5 {
                     || *rc == SubRcV5::SuccessQos2
             })
             .collect()
+    }
+    fn is_empty(&self) -> bool {
+        self.return_codes.is_empty()
     }
 }
 
@@ -245,10 +252,17 @@ impl<V: MqttVersion> Packet for SubAck<V> {
         assert_eq!(header.control_packet_type, ControlPacketType::SubAck);
         let packet_identifier = data.try_get_u16()?;
 
-        Ok(Self {
+        let packet = Self {
             packet_identifier,
             data: V::SubAckData::try_read(data)?,
-        })
+        };
+        if packet.data.is_empty() {
+            return Err(Error::ProtocolError(
+                "SubAck packet cannot have 0 return codes",
+            ));
+        }
+
+        Ok(packet)
     }
 }
 
@@ -256,7 +270,14 @@ impl<V: MqttVersion> SubAck<V> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
+    /// Create new suback package
+    ///
+    /// # Panics
+    /// - If `data.len() == 0`
     pub fn new(packet_identifier: u16, data: V::SubAckData) -> Self {
+        if data.is_empty() {
+            panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 return codes.")
+        }
         Self {
             packet_identifier,
             data,

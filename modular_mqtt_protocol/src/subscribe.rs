@@ -116,6 +116,12 @@ impl<T: TopicSubscription> PacketProperties for Vec<T> {
             subscriptions.push(T::try_from_byte(topic, options)?);
         }
 
+        if subscriptions.is_empty() {
+            return Err(Error::ProtocolError(
+                "Subscribe packet cannot have 0 subscriptions",
+            ));
+        }
+
         Ok(subscriptions)
     }
 
@@ -262,13 +268,14 @@ impl<V: MqttVersion> Packet for Subscribe<V> {
         }
         let packet_identifier = data.try_get_u16()?;
 
+        let options = V::SubscribeData::try_read(data)?;
+
         if !data.has_remaining() {
             return Err(MalformedPacket::new(
                 "Subscribe packet cannot have 0 subscriptions",
             ));
         }
 
-        let options = V::SubscribeData::try_read(data)?;
         let subscriptions = Vec::<V::TopicSubscription>::try_read(data)?;
 
         Ok(Self {

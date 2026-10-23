@@ -95,6 +95,13 @@ impl<V: MqttVersion> Packet for Unsubscribe<V> {
             let topic = extract_str(data)?;
             topics.push(topic.to_string());
         }
+
+        if topics.is_empty() {
+            return Err(Error::ProtocolError(
+                "Unsubscribe packet cannot have 0 topics",
+            ));
+        }
+
         Ok(Self {
             packet_identifier,
             topics,
@@ -113,7 +120,14 @@ impl<V: MqttVersion> Unsubscribe<V> {
     }
 }
 impl Unsubscribe<MqttV3_1_1> {
+    /// Create new unsubscribe package
+    ///
+    /// # Panics
+    /// - If `topics.len() == 0`
     pub fn new_v3(packet_identifier: u16, topics: Vec<String>) -> Self {
+        if topics.is_empty() {
+            panic!("Protocol violation. Cannot create MQTT unsubscribe-packet with 0 topics.");
+        }
         Self {
             packet_identifier,
             topics,
@@ -123,11 +137,18 @@ impl Unsubscribe<MqttV3_1_1> {
 }
 
 impl Unsubscribe<MqttV5_0_0> {
+    /// Create new unsubscribe package
+    ///
+    /// # Panics
+    /// - If `topics.len() == 0`
     pub fn new_v5(
         packet_identifier: u16,
         topics: Vec<String>,
         user_property: Vec<UserProperty>,
     ) -> Self {
+        if topics.is_empty() {
+            panic!("Protocol violation. Cannot create MQTT unsubscribe-packet with 0 topics.");
+        }
         Self {
             packet_identifier,
             topics,

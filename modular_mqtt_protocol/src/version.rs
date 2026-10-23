@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes};
 
 use crate::{
     disconnect::MaybeReasonCode, publish::PublishPropertiesTrait, suback::SubAckRcs,
-    util::variable_len_int_size, Error, MqttV5_0_0,
+    unsuback::ValidUnsubAckData, util::variable_len_int_size, Error, MqttV5_0_0,
 };
 
 mod sealed {
@@ -49,7 +49,7 @@ pub trait MqttVersion:
     type SubAckData: PacketProperties + SubAckRcs;
     type TopicSubscription: crate::subscribe::TopicSubscription;
     type UnsubscribeProperties: PacketProperties;
-    type UnSubAckProperties: PacketProperties;
+    type UnSubAckProperties: ValidUnsubAckData + PacketProperties;
     type PublishProperties: PacketProperties + Default + PublishPropertiesTrait;
     type ConnectProperties: PacketProperties + Default;
     type LastWill: crate::connect::MqttLastWill;

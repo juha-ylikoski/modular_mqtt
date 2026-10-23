@@ -42,6 +42,12 @@ impl TryFrom<u8> for UnsubAckReasonCode {
     }
 }
 
+pub trait ValidUnsubAckData {
+    fn is_valid(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnSubAckDataV5 {
     pub reason_code: Vec<UnsubAckReasonCode>,
@@ -90,6 +96,13 @@ impl PacketProperties for UnSubAckDataV5 {
             out.reason_code
                 .push(UnsubAckReasonCode::try_from(data.try_get_u8()?)?);
         }
+
+        if out.reason_code.is_empty() {
+            return Err(Error::ProtocolError(
+                "UnSubAck packet cannot have 0 return codes",
+            ));
+        }
+
         Ok(out)
     }
 
@@ -113,6 +126,14 @@ impl PacketProperties for UnSubAckDataV5 {
         self.reason.property_len() + self.user_property.property_len()
     }
 }
+
+impl ValidUnsubAckData for UnSubAckDataV5 {
+    fn is_valid(&self) -> bool {
+        !self.reason_code.is_empty()
+    }
+}
+
+impl ValidUnsubAckData for () {}
 
 #[derive(Debug, Clone, PartialEq)]
 /// The UNSUBACK Packet is sent by the Server to the Client to confirm receipt of an UNSUBSCRIBE Packet.
@@ -152,7 +173,14 @@ impl<V: MqttVersion> UnsubAck<V> {
         self.packet_identifier
     }
 
+    /// Create new suback package
+    ///
+    /// # Panics
+    /// - If `properties.reason_code.len() == 0`
     pub fn new(packet_identifier: u16, properties: V::UnSubAckProperties) -> Self {
+        if !properties.is_valid() {
+            panic!("Protocol violation. Cannot create MQTT unsuback-packet with 0 return codes.")
+        }
         Self {
             packet_identifier,
             properties,
