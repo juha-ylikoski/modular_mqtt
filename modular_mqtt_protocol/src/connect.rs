@@ -579,7 +579,7 @@ impl Packet for VersionedConnect {
         if protocol_level == 4 {
             if !Flags::Username.flag_set(flags) && Flags::Password.flag_set(flags) {
                 return Err(Error::ProtocolError(
-                    "Username cannot be none while password is some",
+                    "MQTT 3.1.1 requires a User Name when a Password is present",
                 ));
             }
         }
@@ -1112,7 +1112,7 @@ mod test_ser_v3 {
                 Some(Bytes::from_static(b"password")),
             ),
             Err(Error::ProtocolError(
-                "Username cannot be none while password is some"
+                "MQTT 3.1.1 requires a User Name when a Password is present"
             ))
         ));
     }
@@ -2204,7 +2204,7 @@ mod test_de_v3 {
         assert!(matches!(
             VersionedConnect::try_read(header, &mut body),
             Err(Error::ProtocolError(
-                "Username cannot be none while password is some"
+                "MQTT 3.1.1 requires a User Name when a Password is present"
             ))
         ),);
     }

@@ -189,7 +189,13 @@ impl PacketProperties for SubscribeOptions {
                             "SubscriptionIdentifier specified multiple times",
                         ));
                     }
-                    properties.subscription_identifier = Some(read_variable_len_int(data)?);
+                    let id = read_variable_len_int(data)?;
+                    if id == 0 {
+                        return Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO));
+                    } else if id > crate::MAX_SUBSCRIPTION_IDENTIFIER {
+                        return Err(Error::ProtocolError(crate::TOO_LARGE_SUBSCRIPTION_ID_ERROR));
+                    }
+                    properties.subscription_identifier = Some(id);
                 }
                 PropertyIdentifier::UserProperty => {
                     let key = extract_str(data)?.to_string();
@@ -316,20 +322,28 @@ impl Subscribe<MqttV5_0_0> {
         subscriptions: Vec<TopicSubscriptionV5>,
         subscription_identifier: Option<u64>,
         user_property: Vec<UserProperty>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         // Protocol violation if 0
         if subscriptions.is_empty() {
             panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
         }
 
-        Self {
+        if let Some(subscription_identifier) = subscription_identifier {
+            if subscription_identifier == 0 {
+                return Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO));
+            } else if subscription_identifier > crate::MAX_SUBSCRIPTION_IDENTIFIER {
+                return Err(Error::ProtocolError(crate::TOO_LARGE_SUBSCRIPTION_ID_ERROR));
+            }
+        }
+
+        Ok(Self {
             packet_identifier,
             subscriptions,
             options: SubscribeOptions {
                 subscription_identifier,
                 user_property,
             },
-        }
+        })
     }
 
     pub fn subscription_identifier(&self) -> Option<u64> {
@@ -459,7 +473,8 @@ mod test_v5 {
             ],
             None,
             Vec::new(),
-        );
+        )
+        .unwrap();
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -518,7 +533,8 @@ mod test_v5 {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
-        );
+        )
+        .unwrap();
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -576,6 +592,40 @@ mod test_v5 {
     }
 
     #[test]
+    fn serialize_invalid_subscription_identifier() {
+        assert!(matches!(
+            Subscribe::new_with_options(
+                42,
+                vec![TopicSubscriptionV5::new(
+                    "topic1".to_string(),
+                    Qos::ExactlyOnce,
+                    false,
+                    false,
+                    RetainHandling::SendAtSubscribe,
+                )],
+                Some(0),
+                vec![],
+            ),
+            Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO))
+        ));
+        assert!(matches!(
+            Subscribe::new_with_options(
+                42,
+                vec![TopicSubscriptionV5::new(
+                    "topic1".to_string(),
+                    Qos::ExactlyOnce,
+                    false,
+                    false,
+                    RetainHandling::SendAtSubscribe,
+                )],
+                Some(268435455 + 1),
+                vec![],
+            ),
+            Err(Error::ProtocolError(crate::TOO_LARGE_SUBSCRIPTION_ID_ERROR))
+        ));
+    }
+
+    #[test]
     fn serialize_sub_options() {
         let mut buf = Vec::new();
         let msg = Subscribe::new_with_options(
@@ -598,7 +648,8 @@ mod test_v5 {
             ],
             None,
             Vec::new(),
-        );
+        )
+        .unwrap();
         msg.write_to_buf(&mut buf);
         assert_eq!(
             &buf,
@@ -679,7 +730,8 @@ mod test_v5 {
             ],
             None,
             Vec::new(),
-        );
+        )
+        .unwrap();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -693,7 +745,7 @@ mod test_v5 {
             128 | 2,
             43,
             0,
-            42,
+            41,
             // Properties len
             22,
             //  subscription id
@@ -740,7 +792,7 @@ mod test_v5 {
             0,
         ];
         let expected = Subscribe::new_with_options(
-            42,
+            41,
             vec![
                 TopicSubscriptionV5::new(
                     "topic1".to_string(),
@@ -762,7 +814,8 @@ mod test_v5 {
                 key: "property1".into(),
                 value: "value1".into(),
             }],
-        );
+        )
+        .unwrap();
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
@@ -823,6 +876,78 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        assert_eq!(Subscribe::try_read(header, &mut body).unwrap(), expected);
+        assert_eq!(
+            Subscribe::try_read(header, &mut body).unwrap(),
+            expected.unwrap()
+        );
+    }
+
+    #[test]
+    fn deserialize_invalid_subscription_identifier() {
+        let msg = [
+            128 | 2,
+            14,
+            0,
+            42,
+            // Properties len
+            2,
+            //  subscription id
+            11,
+            0,
+            // User property
+            0,
+            6,
+            b't',
+            b'o',
+            b'p',
+            b'i',
+            b'c',
+            b'1',
+            0,
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            Subscribe::<MqttV5_0_0>::try_read(header, &mut body),
+            Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO))
+        ));
+        let msg = [
+            128 | 2,
+            18,
+            0,
+            43,
+            // Properties len
+            5,
+            //  subscription id
+            11,
+            0xff,
+            0xff,
+            0xff,
+            0xff,
+            0x0f,
+            // User property
+            0,
+            6,
+            b't',
+            b'o',
+            b'p',
+            b'i',
+            b'c',
+            b'1',
+            0,
+        ];
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            Subscribe::<MqttV5_0_0>::try_read(header, &mut body),
+            Err(Error::MalformedPacket(MalformedPacket::Generic(
+                "Malformed Variable Byte Integer"
+            )))
+        ));
     }
 }

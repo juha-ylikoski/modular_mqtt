@@ -452,14 +452,10 @@ impl Publish<MqttV5_0_0, Qos> {
         identifiers.sort();
         identifiers.dedup();
         if identifiers.contains(&0) {
-            return Err(Error::ProtocolError(
-                "Publish packet subscription identifier cannot be 0",
-            ));
+            return Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO));
         }
         if identifiers.iter().any(|id| *id > 268435455) {
-            return Err(Error::ProtocolError(
-                "Publish packet cannot contain subscription id > 268435455",
-            ));
+            return Err(Error::ProtocolError(crate::TOO_LARGE_SUBSCRIPTION_ID_ERROR));
         }
         self.properties.subscription_identifier = identifiers;
         Ok(self)
@@ -1355,52 +1351,38 @@ mod test_v5 {
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
             .unwrap();
-        match Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body) {
-            Ok(_) => panic!("Should be protocol error"),
-            Err(Error::ProtocolError(error)) => {
-                assert_eq!(error, "Subscription identifier cannot be 0")
-            }
-            _ => panic!("Should be protocol error"),
-        }
+        assert!(matches!(
+            Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body),
+            Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO))
+        ));
     }
 
     #[test]
     fn serialize_subscription_id_zero() {
-        match Publish::<MqttV5_0_0, Qos>::new(
-            MqttTopic::try_from("topic").unwrap(),
-            Bytes::from_static(b"payload"),
-            Qos::AtMostOnce,
-            false,
-        )
-        .set_subscription_identifier(vec![0, 1])
-        {
-            Ok(_) => panic!("Should be protocol error"),
-            Err(Error::ProtocolError(error)) => {
-                assert_eq!(error, "Publish packet subscription identifier cannot be 0")
-            }
-            _ => panic!("Should be protocol error"),
-        };
+        assert!(matches!(
+            Publish::<MqttV5_0_0, Qos>::new(
+                MqttTopic::try_from("topic").unwrap(),
+                Bytes::from_static(b"payload"),
+                Qos::AtMostOnce,
+                false,
+            )
+            .set_subscription_identifier(vec![0, 1]),
+            Err(Error::ProtocolError(crate::SUBSCRIPTION_IDENTIFIER_ZERO))
+        ));
     }
 
     #[test]
     fn serialize_subscription_id_too_large() {
-        match Publish::<MqttV5_0_0, Qos>::new(
-            MqttTopic::try_from("topic").unwrap(),
-            Bytes::from_static(b"payload"),
-            Qos::AtMostOnce,
-            false,
-        )
-        .set_subscription_identifier(vec![0xffffffffffffffff])
-        {
-            Ok(_) => panic!("Should be protocol error"),
-            Err(Error::ProtocolError(error)) => {
-                assert_eq!(
-                    error,
-                    "Publish packet cannot contain subscription id > 268435455"
-                )
-            }
-            _ => panic!("Should be protocol error"),
-        };
+        assert!(matches!(
+            Publish::<MqttV5_0_0, Qos>::new(
+                MqttTopic::try_from("topic").unwrap(),
+                Bytes::from_static(b"payload"),
+                Qos::AtMostOnce,
+                false,
+            )
+            .set_subscription_identifier(vec![0xffffffffffffffff]),
+            Err(Error::ProtocolError(crate::TOO_LARGE_SUBSCRIPTION_ID_ERROR))
+        ));
     }
 
     #[test]

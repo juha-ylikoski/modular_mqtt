@@ -48,6 +48,10 @@ pub struct MqttV3_1_1;
 pub struct MqttV5_0_0;
 
 pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
+pub const MAX_SUBSCRIPTION_IDENTIFIER: u64 = 268435455;
+const TOO_LARGE_SUBSCRIPTION_ID_ERROR: &'static str =
+    "Subscription id cannot be larger than 268435455";
+const SUBSCRIPTION_IDENTIFIER_ZERO: &'static str = "Subscription identifier cannot be 0";
 
 pub trait Packet: Sized {
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error>;

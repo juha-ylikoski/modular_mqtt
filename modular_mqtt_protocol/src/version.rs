@@ -89,7 +89,7 @@ impl MqttVersion for crate::MqttV3_1_1 {
     ) -> Result<crate::Connect<Self>, Error> {
         if username.is_none() && password.is_some() {
             Err(Error::ProtocolError(
-                "Username cannot be none while password is some",
+                "MQTT 3.1.1 requires a User Name when a Password is present",
             ))
         } else {
             Ok(crate::Connect::new(

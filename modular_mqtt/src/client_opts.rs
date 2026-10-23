@@ -351,7 +351,7 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
         id: u16,
         subs: Vec<<MqttV5_0_0 as MqttVersion>::TopicSubscription>,
     ) -> Subscribe<MqttV5_0_0> {
-        Subscribe::new_with_options(id, subs, None, Vec::new())
+        Subscribe::new_with_options(id, subs, None, Vec::new()).unwrap()
     }
 
     fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<MqttV5_0_0> {
