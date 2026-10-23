@@ -118,10 +118,16 @@ pub struct PubAckData<R: ReasonCode> {
 impl<R: ReasonCode> PacketProperties for PubAckData<R> {
     fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         // If fixed header remaining length == 2 -> reason code = 0x00 and everything is omitted
+        // or                     if length == 3 -> reason code is last byte and no properties
         // (except for unsuback for some reason)
-        if R::can_be_omitted() && !data.has_remaining() {
+        if R::can_be_omitted() && data.remaining() <= 1 {
+            let rc = if data.has_remaining() {
+                data.get_u8()
+            } else {
+                0
+            };
             return Ok(Self {
-                reason_code: R::try_from(0)?,
+                reason_code: R::try_from(rc)?,
                 reason: None,
                 user_property: Vec::new(),
             });
@@ -172,22 +178,32 @@ impl<R: ReasonCode> PacketProperties for PubAckData<R> {
     fn write_properties(&self, buf: &mut impl BufMut) {
         let property_len = self.properties_len();
         // If fixed header remaining length == 2 -> reason code = 0x00 + everything is omitted
+        // or                     if length == 3 -> reason code is last byte and no properties
         // (except for unsuback for some reason)
-        if R::can_be_omitted() && self.reason_code.as_u8() == 0 && property_len == 0 {
-            return;
+        if R::can_be_omitted() && property_len == 0 {
+            if self.reason_code.as_u8() == 0 {
+                // We can skip reason code as it is 0
+            } else {
+                buf.put_u8(self.reason_code.as_u8());
+            }
+        } else {
+            buf.put_u8(self.reason_code.as_u8());
+            write_variable_len_int(property_len as u64, buf);
+            self.reason
+                .serialize(crate::PropertyIdentifier::Reason, buf);
+            self.user_property
+                .serialize(crate::PropertyIdentifier::UserProperty, buf);
         }
-        buf.put_u8(self.reason_code.as_u8());
-        write_variable_len_int(property_len as u64, buf);
-        self.reason
-            .serialize(crate::PropertyIdentifier::Reason, buf);
-        self.user_property
-            .serialize(crate::PropertyIdentifier::UserProperty, buf);
     }
 
     fn properties_block_len(&self) -> usize {
         let l = self.properties_len();
-        if R::can_be_omitted() && l == 0 && self.reason_code.as_u8() == 0 {
-            0
+        if R::can_be_omitted() && l == 0 {
+            if self.reason_code.as_u8() == 0 {
+                0
+            } else {
+                1
+            }
         } else {
             1 + variable_len_int_size(l) + l
         }
@@ -400,22 +416,14 @@ macro_rules! make_tests {
 
                 use bytes::BytesMut;
 
+                const ERROR_CODE: u8 = <$reason_type>::$reason_code as u8;
+
                 #[test]
                 fn serialize() {
                     let mut buf = Vec::new();
                     let msg = $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
                     msg.write_to_buf(&mut buf);
-                    assert_eq!(
-                        &buf,
-                        &[
-                            $test_packet_type,
-                            4,
-                            0,
-                            42,
-                            <$reason_type>::$reason_code as u8,
-                            0
-                        ]
-                    );
+                    assert_eq!(&buf, &[$test_packet_type, 3, 0, 42, ERROR_CODE]);
                 }
 
                 #[test]
@@ -429,6 +437,24 @@ macro_rules! make_tests {
                         assert_eq!(&buf, &[$test_packet_type, 2, 0, 42,]);
                     } else {
                         assert_eq!(&buf, &[$test_packet_type, 4, 0, 42, 0, 0]);
+                    }
+                }
+
+                #[test]
+                fn serialize_short_with_rc() {
+                    let mut buf = Vec::new();
+                    let msg = $name::new_v5(
+                        42,
+                        <$reason_type>::try_from(ERROR_CODE).unwrap(),
+                        None,
+                        Vec::new(),
+                    );
+                    msg.write_to_buf(&mut buf);
+
+                    if <$reason_type>::can_be_omitted() {
+                        assert_eq!(&buf, &[$test_packet_type, 3, 0, 42, ERROR_CODE]);
+                    } else {
+                        assert_eq!(&buf, &[$test_packet_type, 4, 0, 42, 0, ERROR_CODE]);
                     }
                 }
 
@@ -449,7 +475,7 @@ macro_rules! make_tests {
                             11,
                             0,
                             42,
-                            <$reason_type>::$reason_code as u8,
+                            ERROR_CODE,
                             7,
                             31,
                             0,
@@ -481,7 +507,7 @@ macro_rules! make_tests {
                             17,
                             0,
                             42,
-                            <$reason_type>::$reason_code as u8,
+                            ERROR_CODE,
                             13,
                             38,
                             0,
@@ -501,14 +527,7 @@ macro_rules! make_tests {
                 }
                 #[test]
                 fn deserialize() {
-                    let msg = [
-                        $test_packet_type,
-                        4,
-                        0,
-                        42,
-                        <$reason_type>::$reason_code as u8,
-                        0,
-                    ];
+                    let msg = [$test_packet_type, 4, 0, 42, ERROR_CODE, 0];
                     let expected =
                         $name::new_v5(42, <$reason_type>::$reason_code, None, Vec::new());
                     let mut reader = BytesMut::from(&msg[..]);
@@ -543,13 +562,37 @@ macro_rules! make_tests {
                 }
 
                 #[test]
+                fn deserialize_short_with_rc() {
+                    let msg = if <$reason_type>::can_be_omitted() {
+                        &[$test_packet_type, 3, 0, 42, ERROR_CODE][..]
+                    } else {
+                        &[$test_packet_type, 4, 0, 42, 0, ERROR_CODE][..]
+                    };
+                    let expected = $name::new_v5(
+                        42,
+                        <$reason_type>::try_from(ERROR_CODE).unwrap(),
+                        None,
+                        Vec::new(),
+                    );
+                    let mut reader = BytesMut::from(&msg[..]);
+                    let (header, mut body) =
+                        FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(
+                        $name::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
+                        expected
+                    );
+                }
+
+                #[test]
                 fn deserialize_reason() {
                     let msg = [
                         $test_packet_type,
                         11,
                         0,
                         42,
-                        <$reason_type>::$reason_code as u8,
+                        ERROR_CODE,
                         7,
                         31,
                         0,
@@ -582,7 +625,7 @@ macro_rules! make_tests {
                         17,
                         0,
                         42,
-                        <$reason_type>::$reason_code as u8,
+                        ERROR_CODE,
                         13,
                         38,
                         0,
