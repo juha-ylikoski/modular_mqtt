@@ -279,10 +279,12 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
             connect = connect.set_session_expiry_interval(opt);
         }
         if let Some(opt) = self.receive_maximum {
-            connect = connect.set_receive_maximum(opt);
+            // FIXME this should be more graceful
+            connect = connect.set_receive_maximum(opt).unwrap();
         }
         if let Some(opt) = self.maximum_packet_size {
-            connect = connect.set_maximum_packet_size(opt);
+            // FIXME this should be more graceful
+            connect = connect.set_maximum_packet_size(opt).unwrap();
         }
         if let Some(opt) = self.topic_alias_maximum {
             connect = connect.set_topic_alias_maximum(opt);

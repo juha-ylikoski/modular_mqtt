@@ -205,6 +205,17 @@ pub struct ConnackPropertiesV5 {
 }
 
 impl ConnackPropertiesV5 {
+    fn read_u8_to_bool(data: &mut Bytes, error: &'static str) -> Result<bool, Error> {
+        let value = data.try_get_u8()?;
+
+        if value == 1 {
+            Ok(true)
+        } else if value == 0 {
+            Ok(false)
+        } else {
+            Err(Error::ProtocolError(error))
+        }
+    }
     fn read_property(&mut self, data: &mut Bytes) -> Result<(), Error> {
         let property_identifier = read_variable_len_int(data)?;
         let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
@@ -223,13 +234,21 @@ impl ConnackPropertiesV5 {
                         "ReceiveMaximum specified multiple times",
                     ));
                 }
-                self.receive_maximum = Some(data.try_get_u16()?);
+                let max = data.try_get_u16()?;
+                if max == 0 {
+                    return Err(Error::ProtocolError("ReceiveMaximum cannot be 0"));
+                }
+                self.receive_maximum = Some(max);
             }
             PropertyIdentifier::MaximumQos => {
                 if self.maximum_qos.is_some() {
                     return Err(Error::ProtocolError("MaximumQos specified multiple times"));
                 }
-                self.maximum_qos = Some(Qos::try_from(data.try_get_u8()?)?);
+                let max_qos = data.try_get_u8()?;
+                if max_qos != 0 && max_qos != 1 {
+                    return Err(Error::ProtocolError("Invalid MaxQos"));
+                }
+                self.maximum_qos = Some(Qos::try_from(max_qos)?);
             }
             PropertyIdentifier::RetainAvailable => {
                 if self.retain_available.is_some() {
@@ -237,7 +256,10 @@ impl ConnackPropertiesV5 {
                         "RetainAvailable specified multiple times",
                     ));
                 }
-                self.retain_available = Some(data.try_get_u8()? == 1);
+                self.retain_available = Some(Self::read_u8_to_bool(
+                    data,
+                    "Retain available was not 0 or 1",
+                )?);
             }
             PropertyIdentifier::MaximumPacketSize => {
                 if self.maximum_packet_size.is_some() {
@@ -245,7 +267,11 @@ impl ConnackPropertiesV5 {
                         "MaximumPacketSize specified multiple times",
                     ));
                 }
-                self.maximum_packet_size = Some(data.try_get_u32()?);
+                let size = data.try_get_u32()?;
+                if size == 0 {
+                    return Err(Error::ProtocolError("Maximum packet size cannot be 0"));
+                }
+                self.maximum_packet_size = Some(size);
             }
             PropertyIdentifier::AssignedClientIdentifier => {
                 if self.client_identifier.is_some() {
@@ -285,7 +311,10 @@ impl ConnackPropertiesV5 {
                         "WildcardSubscriptionAvailable specified multiple times",
                     ));
                 }
-                self.wildcard_subscription_available = Some(data.try_get_u8()? == 1);
+                self.wildcard_subscription_available = Some(Self::read_u8_to_bool(
+                    data,
+                    "Reserved bit of wildcard subscription available was not 0",
+                )?);
             }
             PropertyIdentifier::SubscriptionIdentifierAvailable => {
                 if self.subscription_identifiers_available.is_some() {
@@ -293,7 +322,10 @@ impl ConnackPropertiesV5 {
                         "SubscriptionIdentifierAvailable specified multiple times",
                     ));
                 }
-                self.subscription_identifiers_available = Some(data.try_get_u8()? == 1);
+                self.subscription_identifiers_available = Some(Self::read_u8_to_bool(
+                    data,
+                    "Reserved bit of subscription identifiers available was not 0",
+                )?);
             }
             PropertyIdentifier::SharedSubscriptionAvailable => {
                 if self.shared_subscription_available.is_some() {
@@ -301,7 +333,10 @@ impl ConnackPropertiesV5 {
                         "SharedSubscriptionAvailable specified multiple times",
                     ));
                 }
-                self.shared_subscription_available = Some(data.try_get_u8()? == 1);
+                self.shared_subscription_available = Some(Self::read_u8_to_bool(
+                    data,
+                    "Reserved bit of shared subscription available was not 0",
+                )?);
             }
             PropertyIdentifier::ServerKeepAlive => {
                 if self.server_keep_alive.is_some() {
@@ -526,15 +561,20 @@ impl ConnAck<MqttV5_0_0> {
     pub fn session_expiry_interval(&self) -> Option<u32> {
         self.properties.session_expiry_interval
     }
-    pub fn set_receive_maximum(mut self, value: u16) -> Self {
+    pub fn set_receive_maximum(mut self, value: u16) -> Result<Self, Error> {
+        if value == 0 {
+            return Err(Error::ProtocolError("ReceiveMaximum cannot be 0"));
+        }
         self.properties.receive_maximum = Some(value);
-        self
+        Ok(self)
     }
     pub fn receive_maximum(&self) -> u16 {
         self.properties.receive_maximum.unwrap_or(0xffff)
     }
     pub fn set_maximum_qos(mut self, value: Qos) -> Self {
-        self.properties.maximum_qos = Some(value);
+        if value != Qos::ExactlyOnce {
+            self.properties.maximum_qos = Some(value);
+        }
         self
     }
     pub fn maximum_qos(&self) -> Qos {
@@ -547,9 +587,12 @@ impl ConnAck<MqttV5_0_0> {
     pub fn retain_available(&self) -> bool {
         self.properties.retain_available.unwrap_or(true)
     }
-    pub fn set_maximum_packet_size(mut self, value: u32) -> Self {
+    pub fn set_maximum_packet_size(mut self, value: u32) -> Result<Self, Error> {
+        if value == 0 {
+            return Err(Error::ProtocolError("Maximum packet size cannot be 0"));
+        }
         self.properties.maximum_packet_size = Some(value);
-        self
+        Ok(self)
     }
     pub fn maximum_packet_size(&self) -> Option<u32> {
         self.properties.maximum_packet_size
@@ -752,9 +795,11 @@ mod test_v5 {
         let msg = ConnAck::new(false, ConnectRcV5::NotAuthorized)
             .set_session_expiry_interval(24)
             .set_receive_maximum(42)
+            .unwrap()
             .set_maximum_qos(Qos::AtLeastOnce)
             .set_retain_available(false)
             .set_maximum_packet_size(100)
+            .unwrap()
             .set_client_identifier("server-assigned".to_string())
             .set_topic_alias_maximum(5)
             .set_reason("arbitrary".to_string())
@@ -824,6 +869,22 @@ mod test_v5 {
                 22, 0, 6, b's', b'e', b'c', b'r', b'e', b't', //
             ]
         );
+    }
+
+    #[test]
+    fn serialize_invalid_maximum_packet_size() {
+        assert!(matches!(
+            ConnAck::new(false, ConnectRcV5::NotAuthorized).set_maximum_packet_size(0),
+            Err(Error::ProtocolError("Maximum packet size cannot be 0"))
+        ));
+    }
+
+    #[test]
+    fn serialize_invalid_receive_maximum() {
+        assert!(matches!(
+            ConnAck::new(false, ConnectRcV5::NotAuthorized).set_receive_maximum(0),
+            Err(Error::ProtocolError("ReceiveMaximum cannot be 0"))
+        ));
     }
 
     #[test]
@@ -916,9 +977,11 @@ mod test_v5 {
         let expected = ConnAck::new(false, ConnectRcV5::NotAuthorized)
             .set_session_expiry_interval(24)
             .set_receive_maximum(42)
+            .unwrap()
             .set_maximum_qos(Qos::AtLeastOnce)
             .set_retain_available(false)
             .set_maximum_packet_size(100)
+            .unwrap()
             .set_client_identifier("server-assigned".to_string())
             .set_topic_alias_maximum(5)
             .set_reason("arbitrary".to_string())
@@ -948,5 +1011,50 @@ mod test_v5 {
             ConnAck::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn deserialize_max_packet_size_0() {
+        let msg = [
+            32, 8, 1, 0, 5, // maximum packet size
+            39, 0, 0, 0, 0, //
+        ];
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ConnAck::<MqttV5_0_0>::try_read(header, &mut body),
+            Err(Error::ProtocolError("Maximum packet size cannot be 0"))
+        ));
+    }
+
+    #[test]
+    fn deserialize_receive_maximum_0() {
+        let msg = [32, 6, 1, 0, 3, 33, 0, 0];
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ConnAck::<MqttV5_0_0>::try_read(header, &mut body),
+            Err(Error::ProtocolError("ReceiveMaximum cannot be 0"))
+        ));
+    }
+
+    #[test]
+    fn deserialize_invalid_max_qos() {
+        let msg = [32, 5, 1, 0, 2, 36, 2];
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ConnAck::<MqttV5_0_0>::try_read(header, &mut body),
+            Err(Error::ProtocolError("Invalid MaxQos"))
+        ));
     }
 }

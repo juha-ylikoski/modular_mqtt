@@ -427,10 +427,11 @@ impl PacketProperties for ConnectProperties {
                             "ReceiveMaximum specified multiple times",
                         ));
                     }
-                    properties.receive_maximum =
-                        Some(data.try_get_u16().map_err(|_| {
-                            MalformedPacket::new("Packet too short to read property")
-                        })?);
+                    let max = data.try_get_u16()?;
+                    if max == 0 {
+                        return Err(Error::ProtocolError("ReceiveMaximum cannot be 0"));
+                    }
+                    properties.receive_maximum = Some(max);
                 }
                 PropertyIdentifier::MaximumPacketSize => {
                     if properties.maximum_packet_size.is_some() {
@@ -438,10 +439,11 @@ impl PacketProperties for ConnectProperties {
                             "MaximumPacketSize specified multiple times",
                         ));
                     }
-                    properties.maximum_packet_size =
-                        Some(data.try_get_u32().map_err(|_| {
-                            MalformedPacket::new("Packet too short to read property")
-                        })?);
+                    let size = data.try_get_u32()?;
+                    if size == 0 {
+                        return Err(Error::ProtocolError("Maximum packet size cannot be 0"));
+                    }
+                    properties.maximum_packet_size = Some(size);
                 }
                 PropertyIdentifier::TopicAliasMaximum => {
                     if properties.topic_alias_maximum.is_some() {
@@ -884,14 +886,20 @@ impl Connect<MqttV5_0_0> {
         self
     }
 
-    pub fn set_receive_maximum(mut self, receive_maximum: u16) -> Self {
+    pub fn set_receive_maximum(mut self, receive_maximum: u16) -> Result<Self, Error> {
+        if receive_maximum == 0 {
+            return Err(Error::ProtocolError("ReceiveMaximum cannot be 0"));
+        }
         self.properties.receive_maximum = Some(receive_maximum);
-        self
+        Ok(self)
     }
 
-    pub fn set_maximum_packet_size(mut self, maximum_packet_size: u32) -> Self {
+    pub fn set_maximum_packet_size(mut self, maximum_packet_size: u32) -> Result<Self, Error> {
+        if maximum_packet_size == 0 {
+            return Err(Error::ProtocolError("Maximum packet size cannot be 0"));
+        }
         self.properties.maximum_packet_size = Some(maximum_packet_size);
-        self
+        Ok(self)
     }
 
     pub fn set_topic_alias_maximum(mut self, topic_alias_maximum: u16) -> Self {
@@ -1835,7 +1843,9 @@ mod test_ser_v5 {
                 .unwrap()
                 .set_session_expiry_interval(42)
                 .set_receive_maximum(24)
+                .unwrap()
                 .set_maximum_packet_size(100)
+                .unwrap()
                 .set_topic_alias_maximum(10)
                 .set_request_response_information(true)
                 .set_request_problem_information(true)
@@ -1880,6 +1890,25 @@ mod test_ser_v5 {
                 0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
             ]
         );
+    }
+
+    #[test]
+    fn invalid_maximum_packet_size() {
+        assert!(matches!(
+            Connect::<MqttV5_0_0>::try_new(false, 1800, "client".to_string(), None, None, None)
+                .unwrap()
+                .set_maximum_packet_size(0),
+            Err(Error::ProtocolError("Maximum packet size cannot be 0"))
+        ));
+    }
+    #[test]
+    fn invalid_receive_maximum() {
+        assert!(matches!(
+            Connect::<MqttV5_0_0>::try_new(false, 1800, "client".to_string(), None, None, None)
+                .unwrap()
+                .set_receive_maximum(0),
+            Err(Error::ProtocolError("ReceiveMaximum cannot be 0"))
+        ));
     }
 }
 
@@ -3069,7 +3098,9 @@ mod test_de_v5 {
                 .unwrap()
                 .set_session_expiry_interval(42)
                 .set_receive_maximum(24)
+                .unwrap()
                 .set_maximum_packet_size(100)
+                .unwrap()
                 .set_topic_alias_maximum(10)
                 .set_request_response_information(true)
                 .set_request_problem_information(true)
@@ -3093,5 +3124,51 @@ mod test_de_v5 {
             VersionedConnect::try_read(header, &mut body).unwrap(),
             VersionedConnect::V5(expected)
         );
+    }
+
+    #[test]
+    fn invalid_maximum_size() {
+        let msg = [
+            16, 24, 0, 4, b'M', b'Q', b'T', b'T', // Protocol name
+            5,    // Protocol level
+            0,    // flags
+            0x07, 0x08, // Keep alive
+            5,    // properties
+            39, 0, 0, 0, 0, // maximum packet size
+            // payload
+            0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
+        ];
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            VersionedConnect::try_read(header, &mut body),
+            Err(Error::ProtocolError("Maximum packet size cannot be 0"))
+        ));
+    }
+
+    #[test]
+    fn invalid_receive_maximum() {
+        let msg = [
+            16, 22, 0, 4, b'M', b'Q', b'T', b'T', // Protocol name
+            5,    // Protocol level
+            0,    // flags
+            0x07, 0x08, // Keep alive
+            3,    // properties
+            33, 0, 0, // receive maximum
+            // payload
+            0, 6, b'c', b'l', b'i', b'e', b'n', b't', // Client identifier
+        ];
+
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            VersionedConnect::try_read(header, &mut body),
+            Err(Error::ProtocolError("ReceiveMaximum cannot be 0"))
+        ));
     }
 }
