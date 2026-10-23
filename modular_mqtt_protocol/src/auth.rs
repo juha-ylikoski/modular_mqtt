@@ -42,7 +42,7 @@ pub struct Auth<V> {
     /// Followed by a UTF-8 Encoded String containing the name of the authentication method. It is a Protocol Error to omit the Authentication Method or to include it more than once. Refer to section 4.12 for more information about extended authentication.
     method: Option<String>,
     /// Followed by Binary Data containing authentication data. It is a Protocol Error to include Authentication Data more than once. The contents of this data are defined by the authentication method. Refer to section 4.12 for more information about extended authentication.
-    auth_data: Bytes,
+    auth_data: Option<Bytes>,
     /// Followed by the UTF-8 Encoded String representing the reason for the disconnect. This Reason String is human readable, designed for diagnostics and SHOULD NOT be parsed by the receiver.
     reason: Option<String>,
     user_property: Vec<UserProperty>,
@@ -98,7 +98,7 @@ impl Packet for Auth<MqttV5_0_0> {
                 protocol_level: PhantomData,
                 reason_code: ReasonCode::Success,
                 method: None,
-                auth_data: Bytes::new(),
+                auth_data: None,
                 reason: None,
                 user_property: Vec::new(),
             });
@@ -163,7 +163,7 @@ impl Packet for Auth<MqttV5_0_0> {
             protocol_level: PhantomData,
             reason_code,
             method,
-            auth_data: auth_data.unwrap_or_default(),
+            auth_data,
             reason,
             user_property,
         })
@@ -181,7 +181,7 @@ impl Auth<MqttV5_0_0> {
             reason_code,
             protocol_level: PhantomData,
             method,
-            auth_data: auth_data.unwrap_or_default(),
+            auth_data,
             reason,
             user_property,
         }
@@ -195,8 +195,8 @@ impl Auth<MqttV5_0_0> {
         self.method.as_ref()
     }
 
-    pub fn auth_data(&self) -> &Bytes {
-        &self.auth_data
+    pub fn auth_data(&self) -> Option<&Bytes> {
+        self.auth_data.as_ref()
     }
 
     pub fn reason(&self) -> Option<&String> {
@@ -235,6 +235,34 @@ mod test_v5 {
         let msg = Auth::new_v5(ReasonCode::Success, None, None, None, Vec::new());
         msg.write_to_buf(&mut buf);
         assert_eq!(&buf[..], &[240, 0]);
+    }
+
+    #[test]
+    fn serialize_empty_auth_data_is_preserved() {
+        let mut buf = BytesMut::new();
+        let msg = Auth::new_v5(
+            ReasonCode::ContinueAuthentication,
+            None,
+            Some(Bytes::new()),
+            None,
+            Vec::new(),
+        );
+        msg.write_to_buf(&mut buf);
+        assert_eq!(
+            &buf[..],
+            &[
+                240, 5, 24, // Remaining length, reason code
+                3,  // Properties length
+                22, 0, 0, // Authentication Data (present, zero length)
+            ]
+        );
+
+        let mut reader = BytesMut::from(&buf[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        let decoded = Auth::<MqttV5_0_0>::try_read(header, &mut body).unwrap();
+        assert_eq!(decoded.auth_data(), Some(&Bytes::new()));
     }
 
     #[test]

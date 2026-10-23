@@ -201,7 +201,7 @@ pub struct ConnackPropertiesV5 {
     /// UTF-8 Encoded String containing the name of the authentication method
     authentication_method: Option<String>,
     /// Binary Data containing authentication data
-    authentication_data: Bytes,
+    authentication_data: Option<Bytes>,
 }
 
 impl ConnackPropertiesV5 {
@@ -336,12 +336,12 @@ impl ConnackPropertiesV5 {
                 self.authentication_method = Some(extract_str(data)?);
             }
             PropertyIdentifier::AuthenticationData => {
-                if !self.authentication_data.is_empty() {
+                if self.authentication_data.is_some() {
                     return Err(Error::ProtocolError(
                         "AuthenticationData specified multiple times",
                     ));
                 }
-                self.authentication_data = extract_bytes(data)?;
+                self.authentication_data = Some(extract_bytes(data)?);
             }
             _ => {
                 return Err(MalformedPacket::new(
@@ -638,10 +638,10 @@ impl ConnAck<MqttV5_0_0> {
         &self.properties.authentication_method
     }
     pub fn set_authentication_data(mut self, value: Bytes) -> Self {
-        self.properties.authentication_data = value;
+        self.properties.authentication_data = Some(value);
         self
     }
-    pub fn authentication_data(&self) -> Bytes {
+    pub fn authentication_data(&self) -> Option<Bytes> {
         self.properties.authentication_data.clone()
     }
 }

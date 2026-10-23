@@ -1181,6 +1181,40 @@ mod test_v5 {
     }
 
     #[test]
+    fn empty_correlation_data_is_preserved() {
+        let topic = MqttTopic::try_from("topic").unwrap();
+        let msg = Publish::new(
+            topic,
+            Bytes::from_static(b"payload"),
+            Qos::AtMostOnce,
+            false,
+        )
+        .set_correlation_data(Bytes::new())
+        .assign_packet_identifier(|| 0, false);
+        let mut buf = Vec::new();
+        msg.write_to_buf(&mut buf);
+        assert_eq!(
+            &buf,
+            &[
+                48, 18, 0, 5, b't', b'o', b'p', b'i', b'c', //
+                // Properties
+                3, // Property Length
+                9, 0, 0, // Correlation Data (present, zero length)
+                // payload
+                b'p', b'a', b'y', b'l', b'o', b'a', b'd'
+            ]
+        );
+
+        let mut reader = BytesMut::from(&buf[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        let decoded =
+            Publish::<MqttV5_0_0, QosPacketIdentifier>::try_read(header, &mut body).unwrap();
+        assert_eq!(decoded.correlation_data(), Some(Bytes::new()));
+    }
+
+    #[test]
     fn serialize_empty_topic_with_topic_alias() {
         let topic = MqttTopic::try_from("topic").unwrap();
         let msg = Publish::new(

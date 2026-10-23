@@ -394,7 +394,7 @@ pub struct ConnectProperties {
     authentication_method: Option<String>,
     /// Binary Data containing authentication data
     /// The contents of this data are defined by the authentication method
-    authentication_data: Bytes,
+    authentication_data: Option<Bytes>,
 }
 
 impl PacketProperties for ConnectProperties {
@@ -488,12 +488,12 @@ impl PacketProperties for ConnectProperties {
                     properties.authentication_method = Some(extract_str(data)?);
                 }
                 PropertyIdentifier::AuthenticationData => {
-                    if !properties.authentication_data.is_empty() {
+                    if properties.authentication_data.is_some() {
                         return Err(Error::ProtocolError(
                             "AuthenticationData specified multiple times",
                         ));
                     }
-                    properties.authentication_data = extract_bytes(data)?;
+                    properties.authentication_data = Some(extract_bytes(data)?);
                 }
                 _ => {
                     return Err(MalformedPacket::new(
@@ -889,8 +889,8 @@ impl Connect<MqttV5_0_0> {
         self
     }
 
-    pub fn set_authentication_data(mut self, authentication_method: Bytes) -> Self {
-        self.properties.authentication_data = authentication_method;
+    pub fn set_authentication_data(mut self, authentication_data: Bytes) -> Self {
+        self.properties.authentication_data = Some(authentication_data);
         self
     }
 
@@ -921,7 +921,7 @@ impl Connect<MqttV5_0_0> {
     pub fn authentication_method(&self) -> &Option<String> {
         &self.properties.authentication_method
     }
-    pub fn authentication_data(&self) -> Bytes {
+    pub fn authentication_data(&self) -> Option<Bytes> {
         self.properties.authentication_data.clone()
     }
 }

@@ -339,21 +339,13 @@ impl Property for Option<String> {
 impl Property for Bytes {
     fn serialize(&self, identifier: crate::PropertyIdentifier, buf: &mut impl BufMut) {
         assert!(self.len() <= 0xffff);
-        let identifier = identifier as u8;
-        if !self.is_empty() {
-            buf.put_u8(identifier);
-            let len = self.len() as u16;
-            buf.put_u16(len);
-            buf.put(&self[..])
-        }
+        buf.put_u8(identifier as u8);
+        buf.put_u16(self.len() as u16);
+        buf.put(&self[..]);
     }
     fn property_len(&self) -> usize {
         assert!(self.len() <= 0xffff);
-        if !self.is_empty() {
-            1 + 2 + self.len()
-        } else {
-            0
-        }
+        1 + 2 + self.len()
     }
 }
 
