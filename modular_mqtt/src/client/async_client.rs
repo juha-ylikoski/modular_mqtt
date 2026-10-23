@@ -194,14 +194,7 @@ where
         self.assert_working().await?;
         let mut write_buf = self.write_buf.lock().await;
 
-        let msg = msg.assign_packet_identifier(
-            || {
-                self.shared
-                    .next_packet_identifier
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            },
-            false,
-        );
+        let msg = msg.assign_packet_identifier(|| self.shared.next_packet_identifier(), false);
         tracing::debug!("Sending message: {msg:?}");
 
         let mut inflight = None;
