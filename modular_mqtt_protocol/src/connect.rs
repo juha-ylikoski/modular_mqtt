@@ -405,8 +405,8 @@ impl PacketProperties for ConnectProperties {
         if data.remaining() < properties_len {
             return Err(MalformedPacket::new("Packet too short to read properties"));
         }
-        let end_of_properties = data.remaining() - properties_len;
-        while data.remaining() > end_of_properties {
+        let data = &mut data.split_to(properties_len);
+        while data.has_remaining() {
             let property_identifier = crate::util::read_variable_len_int(data)?;
             let property_identifier = PropertyIdentifier::try_from(property_identifier)?;
             match property_identifier {
@@ -2353,6 +2353,30 @@ mod test_de_v5 {
             VersionedConnect::try_read(header, &mut body).unwrap(),
             VersionedConnect::V5(expected)
         );
+    }
+    #[test]
+    fn property_value_overruns_property_length() {
+        let msg = [
+            16, 20, 0, 4, b'M', b'Q', b'T', b'T', // Protocol name
+            5,    // Protocol level
+            0,    // flags
+            0, 60, // Keep alive
+            // properties
+            1,  // Property length
+            17, // Session Expiry Interval identifier
+            // value overruns the declared property length and spills into the payload
+            0, 0, 0, 0, //
+            // client identifier
+            0, 2, b'A', b'B',
+        ];
+        let mut reader = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut reader, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            VersionedConnect::try_read(header, &mut body),
+            Err(Error::MalformedPacket(_))
+        ));
     }
     #[test]
     fn will_no_properties() {
