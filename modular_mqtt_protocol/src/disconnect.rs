@@ -130,9 +130,15 @@ pub struct DisconnectData {
 impl PacketProperties for DisconnectData {
     fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
-        if !data.has_remaining() {
+        if data.remaining() < 2 {
+            let reason_code = if data.has_remaining() {
+                DisconnectReasonCode::try_from(data.get_u8())?
+            } else {
+                DisconnectReasonCode::Normal
+            };
+
             return Ok(DisconnectData {
-                reason_code: DisconnectReasonCode::Normal,
+                reason_code,
                 session_expiry_interval: None,
                 reason: None,
                 user_property: Vec::new(),
@@ -211,7 +217,13 @@ impl PacketProperties for DisconnectData {
         let properties_len = self.properties_len();
 
         // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
-        if self.reason_code == DisconnectReasonCode::Normal && properties_len == 0 {
+        // If disconnect fixed header remaining length == 1 -> reason_code + no properties
+        if properties_len == 0 {
+            if self.reason_code == DisconnectReasonCode::Normal {
+                // reason_code == 0
+            } else {
+                buf.put_u8(self.reason_code as u8);
+            }
             return;
         }
 
@@ -230,8 +242,12 @@ impl PacketProperties for DisconnectData {
 
     fn properties_block_len(&self) -> usize {
         let l = self.properties_len();
-        if l == 0 && self.reason_code == DisconnectReasonCode::Normal {
-            0
+        if l == 0 {
+            if self.reason_code == DisconnectReasonCode::Normal {
+                0
+            } else {
+                1
+            }
         } else {
             1 + variable_len_int_size(l) + l
         }
@@ -370,7 +386,7 @@ mod disconnect_v5 {
             None,
         )
         .write_to_buf(&mut buf);
-        assert_eq!(&buf, &[224, 2, 151, 0]);
+        assert_eq!(&buf, &[224, 1, 151]);
     }
 
     #[test]
@@ -379,6 +395,20 @@ mod disconnect_v5 {
         Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None)
             .write_to_buf(&mut buf);
         assert_eq!(&buf, &[224, 0]);
+    }
+
+    #[test]
+    fn serialize_short_with_reason() {
+        let mut buf = Vec::new();
+        Disconnect::new_v5(
+            DisconnectReasonCode::MalformedPacket,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .write_to_buf(&mut buf);
+        assert_eq!(&buf, &[224, 1, 129]);
     }
 
     #[test]
@@ -434,6 +464,26 @@ mod disconnect_v5 {
         let msg = [224, 0];
         let expected =
             Disconnect::new_v5(DisconnectReasonCode::Normal, None, None, Vec::new(), None);
+        let mut buf = BytesMut::from(&msg[..]);
+        let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Disconnect::<MqttV5_0_0>::try_read(header, &mut body).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn deserialize_short_with_reason() {
+        let msg = [224, 1, 129];
+        let expected = Disconnect::new_v5(
+            DisconnectReasonCode::MalformedPacket,
+            None,
+            None,
+            Vec::new(),
+            None,
+        );
         let mut buf = BytesMut::from(&msg[..]);
         let (header, mut body) = FixedHeader::parse(&mut buf, crate::MAX_MQTT_PACKET_SIZE)
             .unwrap()
