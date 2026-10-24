@@ -467,7 +467,14 @@ impl Publish<MqttV5_0_0, Qos> {
         self
     }
 
+    /// Set correlation data for the publish
+    ///
+    /// # Panics
+    /// - `data.len() > 0xffff`
     pub fn set_correlation_data(mut self, data: Bytes) -> Self {
+        if data.len() > crate::MAX_BINARY_PAYLOAD {
+            panic!("{}", crate::MAX_BINARY_TOO_LARGE_ERROR);
+        }
         self.properties.correlation_data = Some(data);
         self
     }

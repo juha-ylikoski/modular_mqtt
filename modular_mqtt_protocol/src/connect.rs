@@ -347,8 +347,15 @@ impl MqttLastWill5_0_0 {
         &self.response_topic
     }
 
-    pub fn set_correlation_data(mut self, new_correlation_data: Bytes) -> Self {
-        self.correlation_data = Some(new_correlation_data);
+    /// Set correlation data for the last will
+    ///
+    /// # Panics
+    /// - `value.len() > 0xffff`
+    pub fn set_correlation_data(mut self, value: Bytes) -> Self {
+        if value.len() > crate::MAX_BINARY_PAYLOAD {
+            panic!("{}", crate::MAX_BINARY_TOO_LARGE_ERROR);
+        }
+        self.correlation_data = Some(value);
         self
     }
     pub fn correlation_data(&self) -> Option<Bytes> {
@@ -743,6 +750,11 @@ impl<V: MqttVersion> Connect<V> {
                 return Err(MalformedPacket::new("Username is not valid string"));
             }
         }
+        if let Some(password) = &password {
+            if password.len() > crate::MAX_BINARY_PAYLOAD {
+                return Err(MalformedPacket::new(crate::MAX_BINARY_TOO_LARGE_ERROR));
+            }
+        }
         V::create_connect(
             clean_session,
             keep_alive,
@@ -975,8 +987,15 @@ impl Connect<MqttV5_0_0> {
         self
     }
 
-    pub fn set_authentication_data(mut self, authentication_data: Bytes) -> Self {
-        self.properties.authentication_data = Some(authentication_data);
+    /// Set authentication data for the Connack
+    ///
+    /// # Panics
+    /// - `value.len() > 0xffff`
+    pub fn set_authentication_data(mut self, value: Bytes) -> Self {
+        if value.len() > crate::MAX_BINARY_PAYLOAD {
+            panic!("{}", crate::MAX_BINARY_TOO_LARGE_ERROR);
+        }
+        self.properties.authentication_data = Some(value);
         self
     }
 
@@ -1007,6 +1026,7 @@ impl Connect<MqttV5_0_0> {
     pub fn authentication_method(&self) -> &Option<String> {
         &self.properties.authentication_method
     }
+
     pub fn authentication_data(&self) -> Option<Bytes> {
         self.properties.authentication_data.clone()
     }

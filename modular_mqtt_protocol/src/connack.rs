@@ -718,7 +718,14 @@ impl ConnAck<MqttV5_0_0> {
     pub fn authentication_method(&self) -> &Option<String> {
         &self.properties.authentication_method
     }
+    /// Set authentication data for the Connack
+    ///
+    /// # Panics
+    /// - `value.len() > 0xffff`
     pub fn set_authentication_data(mut self, value: Bytes) -> Self {
+        if value.len() > crate::MAX_BINARY_PAYLOAD {
+            panic!("{}", crate::MAX_BINARY_TOO_LARGE_ERROR);
+        }
         self.properties.authentication_data = Some(value);
         self
     }

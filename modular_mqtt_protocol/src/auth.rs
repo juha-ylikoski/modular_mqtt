@@ -180,6 +180,7 @@ impl Auth<MqttV5_0_0> {
     /// - if reason string contains \\0 or its length > 0xffff
     /// - if method string does not conform to same specification
     /// - if key or value of user properties do not conform to same specification
+    /// - if `auth_data.len() > 0xffff`
     pub fn new_v5(
         reason_code: ReasonCode,
         method: Option<String>,
@@ -197,6 +198,11 @@ impl Auth<MqttV5_0_0> {
             crate::util::validate_str(&property.key).expect("Property key was not valid string");
             crate::util::validate_str(&property.value)
                 .expect("Property value was not valid string");
+        }
+        if let Some(auth_data) = &auth_data {
+            if auth_data.len() > crate::MAX_BINARY_PAYLOAD {
+                panic!("{}", crate::MAX_BINARY_TOO_LARGE_ERROR);
+            }
         }
         Self {
             reason_code,

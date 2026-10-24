@@ -51,6 +51,8 @@ pub const MAX_MQTT_PACKET_SIZE: usize = 268_435_455 + 5;
 pub const MAX_SUBSCRIPTION_IDENTIFIER: u64 = 268435455;
 const TOO_LARGE_SUBSCRIPTION_ID_ERROR: &str = "Subscription id cannot be larger than 268435455";
 const SUBSCRIPTION_IDENTIFIER_ZERO: &str = "Subscription identifier cannot be 0";
+const MAX_BINARY_PAYLOAD: usize = 0xffff;
+const MAX_BINARY_TOO_LARGE_ERROR: &str = "Max binary data size is 0xffff";
 
 pub trait Packet: Sized {
     fn control_packet_type() -> ControlPacketType;
