@@ -174,9 +174,12 @@ where
                 }
                 InflightMessageState::PubComp(instant) => {
                     PubRel::<V>::new_ok(*mid).write_to_buf(&mut self.write_buf);
-                    *instant = now;
+                    instant.0 = now;
                 }
-                InflightMessageState::Sent => (),
+                InflightMessageState::SentQos1(_)
+                | InflightMessageState::SentQos2(_, _)
+                | InflightMessageState::None
+                | InflightMessageState::ServerRejectedQos2(_) => (),
             }
         }
     }
@@ -188,16 +191,18 @@ where
         let now = Instant::now();
         let mut next_deadline: Option<Instant> = None;
         for (packet_identifier, msg) in self.inflight_msgs.iter() {
-            let state = msg.state.lock().unwrap().clone();
+            let mut lock = msg.state.lock().unwrap();
+            let state = std::mem::replace(&mut *lock, InflightMessageState::None);
             let sent_time = match state {
                 InflightMessageState::PubAck(sent_time) => {
                     if now.saturating_duration_since(sent_time) > self.shared.opts.resend_interval()
                     {
                         tracing::warn!("Resending packet with identifier {}", packet_identifier);
                         msg.msg.write_to_buf_with_opts(&mut self.write_buf, true);
-                        *msg.state.lock().unwrap() = InflightMessageState::PubAck(now);
+                        *lock = InflightMessageState::PubAck(now);
                         now
                     } else {
+                        *lock = state;
                         sent_time
                     }
                 }
@@ -207,24 +212,32 @@ where
                     {
                         tracing::warn!("Resending packet with identifier {}", packet_identifier);
                         msg.msg.write_to_buf_with_opts(&mut self.write_buf, true);
-                        *msg.state.lock().unwrap() = InflightMessageState::PubRec(now);
+                        *lock = InflightMessageState::PubRec(now);
                         now
                     } else {
+                        *lock = state;
                         sent_time
                     }
                 }
-                InflightMessageState::PubComp(sent_time) => {
+                InflightMessageState::PubComp((sent_time, pubrec)) => {
                     if now.saturating_duration_since(sent_time) > self.shared.opts.resend_interval()
                     {
                         tracing::warn!("Resending PubRel with identifier {}", packet_identifier);
                         PubRel::<V>::new_ok(*packet_identifier).write_to_buf(&mut self.write_buf);
-                        *msg.state.lock().unwrap() = InflightMessageState::PubComp(now);
+                        *lock = InflightMessageState::PubComp((now, pubrec));
                         now
                     } else {
+                        *lock = InflightMessageState::PubComp((sent_time, pubrec));
                         sent_time
                     }
                 }
-                InflightMessageState::Sent => continue,
+                InflightMessageState::SentQos1(_)
+                | InflightMessageState::SentQos2(_, _)
+                | InflightMessageState::None
+                | InflightMessageState::ServerRejectedQos2(_) => {
+                    *lock = state;
+                    continue;
+                }
             };
             let deadline = sent_time + self.shared.opts.resend_interval();
             next_deadline = Some(next_deadline.map_or(deadline, |d| d.min(deadline)));
@@ -291,7 +304,7 @@ where
                         InflightMessageState::PubAck(_)
                     ) {
                         tracing::debug!("Received PubAck for mid {}", puback.packet_identifier());
-                        *inflight.state.lock().unwrap() = InflightMessageState::Sent;
+                        *inflight.state.lock().unwrap() = InflightMessageState::SentQos1(puback);
                         return Ok(Action::WakeupClient(inflight));
                     }
                 }
@@ -305,40 +318,54 @@ where
             ControlPacketType::PubRec => {
                 let pubrec = PubRec::<V>::try_read_entire_buf(fixed_header, body)?;
                 if let Some(inflight) = self.inflight_msgs.get_mut(&pubrec.packet_identifier()) {
-                    tracing::debug!(
-                        "Received PubRec for mid {}. Responding with PubComp",
-                        pubrec.packet_identifier()
-                    );
                     if matches!(
                         *inflight.state.lock().unwrap(),
                         InflightMessageState::PubRec(_)
                     ) {
-                        PubRel::<V>::new_ok(pubrec.packet_identifier())
-                            .write_to_buf(&mut self.write_buf);
-                        *inflight.state.lock().unwrap() =
-                            InflightMessageState::PubComp(Instant::now());
-                        return Ok(Action::None);
+                        if O::pub_rec_failed(&pubrec) {
+                            tracing::trace!(
+                                "Received failed PubRec: {pubrec:?}. Not responding to it"
+                            );
+                            let inflight = self
+                                .inflight_msgs
+                                .remove(&pubrec.packet_identifier())
+                                .unwrap();
+                            *inflight.state.lock().unwrap() =
+                                InflightMessageState::ServerRejectedQos2(pubrec);
+                            return Ok(Action::WakeupClient(inflight));
+                        } else {
+                            tracing::debug!(
+                                "Received PubRec for mid {}. Responding with PubComp",
+                                pubrec.packet_identifier()
+                            );
+                            PubRel::<V>::new_ok(pubrec.packet_identifier())
+                                .write_to_buf(&mut self.write_buf);
+                            *inflight.state.lock().unwrap() =
+                                InflightMessageState::PubComp((Instant::now(), pubrec));
+                            return Ok(Action::None);
+                        }
                     }
                 }
-                tracing::warn!(
-                    "Received unexpected PubRec for mid {}.",
-                    pubrec.packet_identifier()
-                );
+                tracing::warn!("Received unexpected PubRec {pubrec:?}");
                 Ok(Action::None)
             }
             ControlPacketType::PubComp => {
                 let pub_comp = PubComp::<V>::try_read_entire_buf(fixed_header, body)?;
                 tracing::trace!("Received PubComp: {pub_comp:?}");
                 if let Some(inflight) = self.inflight_msgs.remove(&pub_comp.packet_identifier()) {
-                    if matches!(
-                        *inflight.state.lock().unwrap(),
-                        InflightMessageState::PubComp(_)
-                    ) {
+                    let mut lock = inflight.state.lock().unwrap();
+                    if matches!(*lock, InflightMessageState::PubComp(_)) {
                         tracing::debug!(
                             "Received PubComp for mid {}",
                             pub_comp.packet_identifier()
                         );
-                        *inflight.state.lock().unwrap() = InflightMessageState::Sent;
+                        let InflightMessageState::PubComp((_, pubrec)) =
+                            std::mem::replace(&mut *lock, InflightMessageState::None)
+                        else {
+                            unreachable!()
+                        };
+                        *lock = InflightMessageState::SentQos2(pubrec, pub_comp);
+                        drop(lock);
                         return Ok(Action::WakeupClient(inflight));
                     }
                 }
@@ -358,6 +385,7 @@ where
                 let pub_rel = PubRel::<V>::try_read_entire_buf(fixed_header, body)?;
                 tracing::trace!("Received PubRel: {pub_rel:?}. Responding with PubComp");
                 PubComp::<V>::new_ok(pub_rel.packet_identifier()).write_to_buf(&mut self.write_buf);
+
                 if let Some(index) = self
                     .receive_inflight
                     .iter()

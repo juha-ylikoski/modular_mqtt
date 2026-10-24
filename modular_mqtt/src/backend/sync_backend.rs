@@ -247,7 +247,7 @@ where
                             return Err(BackendError::Disconnected(dc.maybe_reason_code()));
                         }
                         Action::WakeupClient(msg) => {
-                            msg.mark_delivered();
+                            msg.notify_delivered();
                         }
                     }
                 }

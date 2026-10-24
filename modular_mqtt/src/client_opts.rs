@@ -1,6 +1,7 @@
 use modular_mqtt_protocol::{
     ConnAck, Connect, Disconnect, MqttLastWill3_1_1, MqttLastWill5_0_0, MqttV3_1_1, MqttV5_0_0,
-    MqttVersion, Qos, RetainHandling, Subscribe, Unsubscribe, UserProperty, MAX_MQTT_PACKET_SIZE,
+    MqttVersion, PubRec, Qos, ReasonCode, RetainHandling, Subscribe, Unsubscribe, UserProperty,
+    MAX_MQTT_PACKET_SIZE,
 };
 
 use bytes::Bytes;
@@ -71,6 +72,8 @@ where
     fn unsubscribe_packet(&self, id: u16, topics: Vec<String>) -> Unsubscribe<V>;
     fn disconnect_packet(&self) -> Disconnect<V>;
     fn write_timeout(&self) -> Duration;
+
+    fn pub_rec_failed(pub_rec: &PubRec<V>) -> bool;
 }
 
 pub struct ClientOptsV3 {
@@ -184,6 +187,10 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
     }
     fn write_timeout(&self) -> Duration {
         self.write_timeout
+    }
+
+    fn pub_rec_failed(#[allow(unused)] pub_rec: &PubRec<MqttV3_1_1>) -> bool {
+        false
     }
 }
 
@@ -305,7 +312,7 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
 
     fn broker_max_packet_size(&self, connack: &ConnAck<MqttV5_0_0>) -> usize {
         if let Some(broker_max_packet_size) = connack.maximum_packet_size() {
-            return broker_max_packet_size as usize;
+            broker_max_packet_size as usize
         } else {
             modular_mqtt_protocol::MAX_MQTT_PACKET_SIZE
         }
@@ -379,6 +386,10 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
     }
     fn write_timeout(&self) -> Duration {
         self.write_timeout
+    }
+
+    fn pub_rec_failed(pub_rec: &PubRec<MqttV5_0_0>) -> bool {
+        !pub_rec.reason_code().is_ok()
     }
 }
 

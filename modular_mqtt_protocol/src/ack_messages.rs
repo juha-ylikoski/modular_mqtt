@@ -14,6 +14,7 @@ pub trait ReasonCode:
 {
     fn as_u8(&self) -> u8;
     fn can_be_omitted() -> bool;
+    fn is_ok(&self) -> bool;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -83,6 +84,18 @@ impl ReasonCode for PubAckReasonCode {
     fn can_be_omitted() -> bool {
         true
     }
+    fn is_ok(&self) -> bool {
+        match self {
+            PubAckReasonCode::Success | PubAckReasonCode::NoMatchingSubscribes => true,
+            PubAckReasonCode::UnspecifiedError
+            | PubAckReasonCode::ImplementationSpecificError
+            | PubAckReasonCode::NotAuthorized
+            | PubAckReasonCode::TopicNameInvalid
+            | PubAckReasonCode::PacketIdentifierInUse
+            | PubAckReasonCode::QuotaExceeded
+            | PubAckReasonCode::PayloadFormatInvalid => false,
+        }
+    }
 }
 
 impl TryFrom<u8> for PubRelReasonCode {
@@ -102,6 +115,12 @@ impl ReasonCode for PubRelReasonCode {
     }
     fn can_be_omitted() -> bool {
         true
+    }
+    fn is_ok(&self) -> bool {
+        match self {
+            PubRelReasonCode::Success => true,
+            PubRelReasonCode::PacketIdentifierNotFound => false,
+        }
     }
 }
 

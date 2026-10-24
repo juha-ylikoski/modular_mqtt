@@ -93,7 +93,7 @@ fn mosquitto_publish_v3(
         } else {
             assert!(inflight.is_some());
             let inflight = inflight.unwrap();
-            inflight.wait_until_delivered();
+            inflight.wait_until_complete();
         }
 
         assert_eq!(
@@ -156,7 +156,7 @@ fn mosquitto_publish_v5(
         } else {
             assert!(inflight.is_some());
             let inflight = inflight.unwrap();
-            inflight.wait_until_delivered();
+            inflight.wait_until_complete();
         }
 
         assert_eq!(
@@ -515,7 +515,7 @@ mod async_client {
             } else {
                 assert!(inflight.is_some());
                 let inflight = inflight.unwrap();
-                inflight.wait_until_delivered().await;
+                inflight.wait_until_complete().await;
             }
 
             assert_eq!(
@@ -577,7 +577,7 @@ mod async_client {
             } else {
                 assert!(inflight.is_some());
                 let inflight = inflight.unwrap();
-                inflight.wait_until_delivered().await;
+                inflight.wait_until_complete().await;
             }
 
             assert_eq!(

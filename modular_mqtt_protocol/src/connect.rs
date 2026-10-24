@@ -616,13 +616,12 @@ impl Packet for VersionedConnect {
         let protocol_level = data.try_get_u8()?;
         let flags = data.try_get_u8()?;
 
-        if protocol_level == 4 {
-            if !Flags::Username.flag_set(flags) && Flags::Password.flag_set(flags) {
+        if protocol_level == 4
+            && !Flags::Username.flag_set(flags) && Flags::Password.flag_set(flags) {
                 return Err(Error::ProtocolError(
                     "MQTT 3.1.1 requires a User Name when a Password is present",
                 ));
             }
-        }
 
         if flags & 0b1 != 0 {
             return Err(Error::ProtocolError("Connect reserved flag is not 0"));

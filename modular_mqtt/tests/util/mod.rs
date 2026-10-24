@@ -469,7 +469,7 @@ impl Harness for SyncHarness {
     where
         V: MqttVersion,
     {
-        r.wait_until_delivered();
+        r.wait_until_complete();
     }
 }
 
@@ -564,7 +564,7 @@ impl Harness for AsyncHarness {
     where
         V: MqttVersion,
     {
-        r.wait_until_delivered().await;
+        r.wait_until_complete().await;
     }
 }
 

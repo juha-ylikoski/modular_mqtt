@@ -293,6 +293,12 @@ impl MaybeReasonCode for DisconnectData {
 /// The DISCONNECT Packet is the final Control Packet sent from the Client to the Server. It indicates that the Client is disconnecting cleanly.
 pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
 
+impl<V: MqttVersion> Default for Disconnect<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<V: MqttVersion> Disconnect<V> {
     pub fn maybe_reason_code(&self) -> Option<DisconnectReasonCode> {
         self.0.maybe_reason_code()

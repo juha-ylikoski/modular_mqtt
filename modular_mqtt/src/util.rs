@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use modular_mqtt_protocol::{
-    ConnAck, ControlPacketType, FixedHeader, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, Publish,
-    Qos, QosPacketIdentifier, RetainHandling, TopicSubscription, TopicSubscriptionV3,
-    TopicSubscriptionV5,
+    ConnAck, ControlPacketType, FixedHeader, MqttV3_1_1, MqttV5_0_0, MqttVersion, Packet, PubAck,
+    PubComp, PubRec, Publish, Qos, QosPacketIdentifier, ReasonCode, RetainHandling,
+    TopicSubscription, TopicSubscriptionV3, TopicSubscriptionV5,
 };
 
 use crate::{
@@ -19,11 +19,43 @@ use crate::{
 pub const STREAM_READ_CHUNK_SIZE: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum InflightMessageState {
+pub enum InflightMessageState<V: MqttVersion> {
+    None,
     PubAck(Instant),
     PubRec(Instant),
-    PubComp(Instant),
-    Sent,
+    PubComp((Instant, modular_mqtt_protocol::PubRec<V>)),
+    SentQos1(modular_mqtt_protocol::PubAck<V>),
+    SentQos2(
+        modular_mqtt_protocol::PubRec<V>,
+        modular_mqtt_protocol::PubComp<V>,
+    ),
+    ServerRejectedQos2(modular_mqtt_protocol::PubRec<V>),
+}
+
+impl<V: MqttVersion> InflightMessageState<V> {
+    fn is_done(&self) -> bool {
+        matches!(
+            self,
+            InflightMessageState::SentQos1(_)
+                | InflightMessageState::SentQos2(_, _)
+                | InflightMessageState::ServerRejectedQos2(_)
+        )
+    }
+
+    fn into_delivered(self) -> InflightResult<V> {
+        match self {
+            Self::SentQos1(a) => InflightResult::AtLeastOnce(a),
+            Self::SentQos2(r, c) => InflightResult::ExactlyOnce {
+                pub_rec: r,
+                pub_comp: Some(c),
+            },
+            Self::ServerRejectedQos2(r) => InflightResult::ExactlyOnce {
+                pub_rec: r,
+                pub_comp: None,
+            },
+            _ => unreachable!("only is_done() states reach here"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -47,45 +79,105 @@ impl Notify for Async {
 
 #[derive(Debug)]
 pub struct InflightMessage<V: MqttVersion, R: Notify> {
-    pub state: std::sync::Mutex<InflightMessageState>,
-    pub delivered: R::Notifier,
-    pub packet_identifier: u16,
+    pub(crate) state: std::sync::Mutex<InflightMessageState<V>>,
+    pub(crate) delivered: R::Notifier,
+    pub(crate) packet_identifier: u16,
+    pub(crate) msg: Publish<V, QosPacketIdentifier>,
+}
+
+#[derive(Debug, Clone)]
+pub enum InflightResult<V: MqttVersion> {
+    AtLeastOnce(PubAck<V>),
+    ExactlyOnce {
+        pub_rec: PubRec<V>,
+        pub_comp: Option<PubComp<V>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct DeliveredInflightMessage<V: MqttVersion> {
     pub msg: Publish<V, QosPacketIdentifier>,
+    pub state: InflightResult<V>,
+}
+
+impl DeliveredInflightMessage<MqttV3_1_1> {
+    pub fn is_delivered(&self) -> bool {
+        true
+    }
+}
+
+impl DeliveredInflightMessage<MqttV5_0_0> {
+    pub fn is_delivered(&self) -> bool {
+        match &self.state {
+            InflightResult::AtLeastOnce(pub_ack) => pub_ack.reason_code().is_ok(),
+            InflightResult::ExactlyOnce { pub_rec, pub_comp } => {
+                pub_rec.reason_code().is_ok()
+                    && pub_comp
+                        .as_ref()
+                        .map(|r| r.reason_code().is_ok())
+                        .unwrap_or(false)
+            }
+        }
+    }
 }
 
 impl<V: MqttVersion, R: Notify> InflightMessage<V, R> {
     pub fn packet_identifier(&self) -> u16 {
         self.packet_identifier
     }
+    pub fn msg(&self) -> &Publish<V, QosPacketIdentifier> {
+        &self.msg
+    }
+    pub fn is_complete(&self) -> bool {
+        self.state.lock().unwrap().is_done()
+    }
 }
 
 impl<V: MqttVersion> InflightMessage<V, Sync> {
-    pub fn wait_until_delivered(&self) {
-        let mut state = self.state.lock().unwrap();
-        while InflightMessageState::Sent != *state {
-            state = self.delivered.wait(state).unwrap();
+    pub fn wait_until_complete(&self) -> DeliveredInflightMessage<V> {
+        let mut lock = self.state.lock().unwrap();
+        while !lock.is_done() {
+            lock = self.delivered.wait(lock).unwrap();
+        }
+
+        DeliveredInflightMessage {
+            msg: self.msg.clone(),
+            state: lock.clone().into_delivered(),
         }
     }
-    pub fn mark_delivered(&self) {
-        *self.state.lock().unwrap() = InflightMessageState::Sent;
+    pub fn notify_delivered(&self) {
         self.delivered.notify_all();
     }
 }
 
 #[cfg(feature = "async")]
 impl<V: MqttVersion> InflightMessage<V, Async> {
-    pub async fn wait_until_delivered(&self) {
+    pub async fn wait_until_complete(&self) -> DeliveredInflightMessage<V> {
         // register interest *before* checking, so a mark_delivered between
         // the check and the await is not lost
         let notified = self.delivered.notified();
         tokio::pin!(notified);
         notified.as_mut().enable(); // registers with the Notify now
 
-        if InflightMessageState::Sent == *self.state.lock().unwrap() {
-            return;
+        {
+            let lock = self.state.lock().unwrap();
+            if lock.is_done() {
+                return DeliveredInflightMessage {
+                    msg: self.msg.clone(),
+                    state: lock.clone().into_delivered(),
+                };
+            }
+            drop(lock);
         }
         notified.await;
+
+        let lock = self.state.lock().unwrap();
+        DeliveredInflightMessage {
+            msg: self.msg.clone(),
+            state: lock.clone().into_delivered(),
+        }
     }
+
     pub fn mark_delivered(&self) {
         self.delivered.notify_waiters();
     }

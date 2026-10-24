@@ -6,7 +6,7 @@
 
 pub use ack_messages::{
     PubAck, PubAckReasonCode, PubComp, PubCompReasonCode, PubRec, PubRecReasonCode, PubRel,
-    PubRelReasonCode,
+    PubRelReasonCode, ReasonCode,
 };
 pub use auth::Auth;
 use bytes::{Buf, BufMut, Bytes};

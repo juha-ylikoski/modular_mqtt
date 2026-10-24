@@ -40,7 +40,7 @@ fn main() {
         .unwrap()
         .unwrap();
     tracing::info!("Published!");
-    inflight.wait_until_delivered();
+    inflight.wait_until_complete();
     tracing::info!("Broker received!");
 
     tracing::info!("Publish with qos=2");
@@ -54,7 +54,7 @@ fn main() {
         .unwrap()
         .unwrap();
     tracing::info!("Published!");
-    inflight.wait_until_delivered();
+    inflight.wait_until_complete();
     tracing::info!("Broker received!");
     client.disconnect();
 }
