@@ -127,7 +127,7 @@ impl PacketProperties for PublishProperties {
                             "ResponseTopic specified multiple times",
                         ));
                     }
-                    properties.response_topic = Some(extract_str(data)?);
+                    properties.response_topic = Some(MqttTopic::try_from(extract_str(data)?)?.0);
                 }
                 PropertyIdentifier::CorrelationData => {
                     if properties.correlation_data.is_some() {
@@ -451,7 +451,8 @@ impl Publish<MqttV5_0_0, Qos> {
     ///
     /// # Panics
     /// - if response topic contains \\0 or its length > 0xffff
-    pub fn set_response_topic(mut self, topic: String) -> Self {
+    pub fn set_response_topic(mut self, topic: MqttTopic) -> Self {
+        let topic = topic.0;
         crate::util::validate_str(&topic).expect("Response topic was not valid string");
         self.properties.response_topic = Some(topic);
         self
@@ -1155,7 +1156,7 @@ mod test_v5 {
         )
         .set_payload_format(PayloadFormat::Binary)
         .set_message_expiry_interval(10)
-        .set_response_topic("response".to_string())
+        .set_response_topic(MqttTopic::try_from("response").unwrap())
         .set_correlation_data(Bytes::from_static(b"badcafee"))
         .set_user_property(vec![
             UserProperty {
