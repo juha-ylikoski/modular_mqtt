@@ -174,6 +174,14 @@ pub fn read_variable_len_int(packet: &mut impl bytes::Buf) -> Result<u64, crate:
         }
         let byte = packet.get_u8();
 
+        // enforce:
+        // The encoded value MUST use the minimum number of bytes necessary to represent the value
+        if multiplier != 1 && byte == 0 {
+            return Err(MalformedPacket::new(
+                "Variable len int was not encoded as short as possible",
+            ));
+        }
+
         value += (byte & 127) as u64 * multiplier;
         multiplier *= 128;
 

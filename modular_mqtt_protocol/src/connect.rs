@@ -30,6 +30,14 @@ pub struct MqttLastWill3_1_1 {
     qos: Qos,
 }
 
+fn qos_as_int(flags: u8) -> u8 {
+    (flags & 0b00011000) >> 3
+}
+
+fn qos_from_flag(flags: u8) -> Result<Qos, Error> {
+    Qos::try_from(qos_as_int(flags))
+}
+
 impl MqttLastWill for MqttLastWill3_1_1 {
     fn new(topic: MqttTopic, payload: Bytes, qos: Qos, retain: bool) -> Self {
         Self {
@@ -49,7 +57,7 @@ impl MqttLastWill for MqttLastWill3_1_1 {
             topic,
             payload,
             retain: Flags::WillRetain.flag_set(flags),
-            qos: Qos::try_from((flags & 0b00011000) >> 3)?,
+            qos: qos_from_flag(flags)?,
         })
     }
 
@@ -236,7 +244,7 @@ impl MqttLastWill for MqttLastWill5_0_0 {
             topic,
             payload,
             retain: Flags::WillRetain.flag_set(flags),
-            qos: Qos::try_from((flags & 0b00011000) >> 3)?,
+            qos: qos_from_flag(flags)?,
             delay_interval,
             payload_format,
             message_expiry_interval,
@@ -606,6 +614,18 @@ impl Packet for VersionedConnect {
             }
         }
 
+        if flags & 0b1 != 0 {
+            return Err(Error::ProtocolError("Connect reserved flag is not 0"));
+        }
+
+        if Flags::Will.flag_not_set(flags)
+            && (Flags::WillRetain.flag_set(flags) || qos_as_int(flags) != 0)
+        {
+            return Err(Error::ProtocolError(
+                "Cannot have will disabled while will retain or qos is non 0",
+            ));
+        }
+
         match protocol_level {
             4 => Connect::<MqttV3_1_1>::try_read_after_level(header, data, flags).map(Self::V3),
             5 => Connect::<MqttV5_0_0>::try_read_after_level(header, data, flags).map(Self::V5),
@@ -689,6 +709,9 @@ enum Flags {
 impl Flags {
     fn flag_set(self, flags: u8) -> bool {
         flags & (self as u8) != 0
+    }
+    fn flag_not_set(self, flags: u8) -> bool {
+        !self.flag_set(flags)
     }
 }
 impl From<Flags> for u8 {
