@@ -89,9 +89,9 @@ where
     }
 
     fn check_write_buf_size(&self, write_buf: &mut BytesMut) -> Result<(), ClientError> {
-        if write_buf.len() > self.shared.max_packet_size() {
+        if write_buf.len() > self.shared.broker_max_packet_size() {
             let e = ClientError::TooLargeMessage {
-                broker_max: self.shared.max_packet_size(),
+                broker_max: self.shared.broker_max_packet_size(),
                 msg_size: write_buf.len(),
             };
             write_buf.clear();
@@ -148,7 +148,7 @@ where
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
-            max_packet_size: RwLock::new(opts.max_packet_size(Some(&connack))),
+            broker_max_packet_size: RwLock::new(opts.broker_max_packet_size(&connack)),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),

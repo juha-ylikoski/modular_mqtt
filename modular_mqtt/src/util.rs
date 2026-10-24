@@ -237,7 +237,7 @@ where
 
     let (header, mut body) = loop {
         read_into_buf(reader, read_buf)?;
-        match FixedHeader::parse(read_buf, opts.max_packet_size(None)) {
+        match FixedHeader::parse(read_buf, opts.client_max_packet_size()) {
             Ok(Some((header, body))) => {
                 if header.control_packet_type != ControlPacketType::ConnAck {
                     return Err(ConnectError::UnexpectedPacket {
@@ -302,7 +302,7 @@ where
                 "Timed out waiting for connack",
             ))?,
         };
-        match FixedHeader::parse(read_buf, opts.max_packet_size(None)) {
+        match FixedHeader::parse(read_buf, opts.client_max_packet_size()) {
             Ok(Some((header, body))) => {
                 if header.control_packet_type != ControlPacketType::ConnAck {
                     return Err(ConnectError::UnexpectedPacket {

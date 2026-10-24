@@ -142,7 +142,7 @@ where
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
-            max_packet_size: RwLock::new(opts.max_packet_size(Some(&connack))),
+            broker_max_packet_size: RwLock::new(opts.broker_max_packet_size(&connack)),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),
