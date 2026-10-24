@@ -84,8 +84,12 @@ impl<V: MqttVersion> Packet for Unsubscribe<V> {
         }
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Unsubscribe
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::Unsubscribe);
+        Self::validate_control_packet_type(&header)?;
         let packet_identifier = data.try_get_u16()?;
 
         let properties = V::UnsubscribeProperties::try_read(data)?;

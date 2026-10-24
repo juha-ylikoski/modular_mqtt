@@ -259,8 +259,12 @@ impl<V: MqttVersion> Packet for SubAck<V> {
         self.data.write_properties(buf);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::SubAck
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::SubAck);
+        Self::validate_control_packet_type(&header)?;
         let packet_identifier = data.try_get_u16()?;
 
         let packet = Self {

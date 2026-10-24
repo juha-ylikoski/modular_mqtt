@@ -164,11 +164,12 @@ impl<V: MqttVersion> Packet for UnsubAck<V> {
         self.properties.write_properties(buf);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::UnsubscribeAck
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(
-            header.control_packet_type,
-            ControlPacketType::UnsubscribeAck
-        );
+        Self::validate_control_packet_type(&header)?;
         let packet_identifier = data.try_get_u16()?;
 
         let properties = V::UnSubAckProperties::try_read(data)?;

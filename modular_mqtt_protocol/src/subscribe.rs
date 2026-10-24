@@ -271,8 +271,12 @@ impl<V: MqttVersion> Packet for Subscribe<V> {
         self.subscriptions.write_properties(buf);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Subscribe
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::Subscribe);
+        Self::validate_control_packet_type(&header)?;
 
         if data.len() < 3 {
             return Err(MalformedPacket::new("Packet too short to parse"));

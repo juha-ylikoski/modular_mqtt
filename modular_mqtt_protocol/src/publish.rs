@@ -293,11 +293,20 @@ impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
         self.write_to_buf_with_opts(buf, self.dup);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Publish {
+            dup: false,
+            qos: Qos::AtMostOnce,
+            retain: false,
+        }
+    }
+
+    fn control_packet_type_matches(other: ControlPacketType) -> bool {
+        matches!(other, ControlPacketType::Publish { .. })
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert!(matches!(
-            header.control_packet_type,
-            ControlPacketType::Publish { .. }
-        ));
+        Self::validate_control_packet_type(&header)?;
 
         let topic = extract_str(data)?.to_string();
 

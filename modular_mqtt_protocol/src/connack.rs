@@ -507,8 +507,12 @@ impl<V: MqttVersion> Packet for ConnAck<V> {
         self.properties.write_properties(buf);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::ConnAck
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::ConnAck);
+        Self::validate_control_packet_type(&header)?;
         let flags = data.try_get_u8()?;
         let connect_rc: V::ConnackRc = data.try_get_u8()?.try_into()?;
         if flags & (!1) != 0 {

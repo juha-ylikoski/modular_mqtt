@@ -90,8 +90,12 @@ impl Packet for Auth<MqttV5_0_0> {
             .serialize(PropertyIdentifier::UserProperty, buf);
     }
 
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Auth
+    }
+
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::Auth);
+        Self::validate_control_packet_type(&header)?;
 
         if header.remaining_length == 0 {
             return Ok(Self {

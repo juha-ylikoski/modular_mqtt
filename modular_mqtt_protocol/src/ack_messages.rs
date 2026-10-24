@@ -323,11 +323,11 @@ macro_rules! create_pub_ack_type {
         }
 
         impl<V: MqttVersion> Packet for $name<V> {
+            fn control_packet_type() -> ControlPacketType {
+                ControlPacketType::$control_packet_type
+            }
             fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, crate::Error> {
-                assert_eq!(
-                    header.control_packet_type,
-                    ControlPacketType::$control_packet_type
-                );
+                Self::validate_control_packet_type(&header)?;
                 PubAckType::try_read(header, data).map(Self)
             }
             fn write_to_buf(&self, buf: &mut impl BufMut) {

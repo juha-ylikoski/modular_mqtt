@@ -293,8 +293,11 @@ impl<V: MqttVersion> Packet for Disconnect<V> {
         header.write_to_buf(buf);
         self.0.write_properties(buf);
     }
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Disconnect
+    }
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::Disconnect);
+        Self::validate_control_packet_type(&header)?;
         V::DisconnectData::try_read(data).map(Self)
     }
 }

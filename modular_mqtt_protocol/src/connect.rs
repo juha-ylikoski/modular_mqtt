@@ -591,8 +591,11 @@ impl From<Connect<MqttV5_0_0>> for VersionedConnect {
 }
 
 impl Packet for VersionedConnect {
+    fn control_packet_type() -> ControlPacketType {
+        ControlPacketType::Connect
+    }
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
-        assert_eq!(header.control_packet_type, ControlPacketType::Connect);
+        Self::validate_control_packet_type(&header)?;
         let protocol_length = data.try_get_u16()? as usize;
         if data.remaining() < protocol_length {
             return Err(MalformedPacket::new("Packet too short to read property"));

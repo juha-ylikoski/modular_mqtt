@@ -17,8 +17,11 @@ macro_rules! create_ping_package {
         }
 
         impl Packet for $name {
+            fn control_packet_type() -> ControlPacketType {
+                $packet_type
+            }
             fn try_read(header: FixedHeader, _buf: &mut Bytes) -> Result<Self, Error> {
-                assert_eq!(header.control_packet_type, $packet_type);
+                Self::validate_control_packet_type(&header)?;
                 Ok(Self)
             }
             fn write_to_buf(&self, buf: &mut impl BufMut) {

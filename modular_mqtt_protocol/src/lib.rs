@@ -53,6 +53,19 @@ const TOO_LARGE_SUBSCRIPTION_ID_ERROR: &str = "Subscription id cannot be larger 
 const SUBSCRIPTION_IDENTIFIER_ZERO: &str = "Subscription identifier cannot be 0";
 
 pub trait Packet: Sized {
+    fn control_packet_type() -> ControlPacketType;
+    fn control_packet_type_matches(other: ControlPacketType) -> bool {
+        Self::control_packet_type() == other
+    }
+    fn validate_control_packet_type(header: &FixedHeader) -> Result<(), Error> {
+        if Self::control_packet_type_matches(header.control_packet_type) {
+            Ok(())
+        } else {
+            Err(Error::MalformedPacket(
+                MalformedPacket::InvalidControlPacketType,
+            ))
+        }
+    }
     fn try_read(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error>;
     fn try_read_entire_buf(header: FixedHeader, data: &mut Bytes) -> Result<Self, Error> {
         let res = Self::try_read(header, data)?;
@@ -96,6 +109,7 @@ pub enum MalformedPacket {
     InvalidFlags(u8, ControlPacketType),
     InvalidMqttTopic,
     TrailingBytes(Bytes),
+    InvalidControlPacketType,
 }
 
 impl MalformedPacket {
