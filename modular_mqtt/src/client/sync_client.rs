@@ -323,18 +323,20 @@ where
             }
         }
 
+        let online = self.online();
+
         if self.backend.lock().unwrap().is_none() {
             return;
         }
 
         let mut write_buf = self.write_buf.lock().unwrap();
         let mut stream = self.writer.lock().unwrap();
-        let old_stream = std::mem::replace(&mut *stream, SyncWriter::Disconnected);
+        let mut old_stream = std::mem::replace(&mut *stream, SyncWriter::Disconnected);
         drop(stream);
         let mut backend = self.backend.lock().unwrap();
         let backend = backend.take();
 
-        if self.online() {
+        if online {
             tracing::debug!("Sending Disconnect");
             self.kill_bg_thread();
 
@@ -342,7 +344,8 @@ where
                 .opts
                 .disconnect_packet()
                 .write_to_buf(&mut *write_buf);
-            let _ = self.flush(&mut write_buf);
+            let _ = old_stream.write_all(&write_buf[..]);
+            let _ = old_stream.flush();
 
             shutdown_stream(old_stream);
 

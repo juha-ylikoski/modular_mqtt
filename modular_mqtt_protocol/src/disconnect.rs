@@ -127,6 +127,18 @@ pub struct DisconnectData {
     server_reference: Option<String>,
 }
 
+impl Default for DisconnectData {
+    fn default() -> Self {
+        Self {
+            reason_code: DisconnectReasonCode::Normal,
+            session_expiry_interval: None,
+            reason: None,
+            user_property: Vec::new(),
+            server_reference: None,
+        }
+    }
+}
+
 impl PacketProperties for DisconnectData {
     fn try_read(data: &mut Bytes) -> Result<Self, Error> {
         // If disconnect fixed header remaining length == 0 -> reason_code == 0x00 + no properties
@@ -261,7 +273,7 @@ impl PacketProperties for DisconnectData {
     }
 }
 
-pub trait MaybeReasonCode {
+pub trait MaybeReasonCode: Default {
     fn maybe_reason_code(&self) -> Option<DisconnectReasonCode>;
 }
 
@@ -284,6 +296,9 @@ pub struct Disconnect<V: MqttVersion>(V::DisconnectData);
 impl<V: MqttVersion> Disconnect<V> {
     pub fn maybe_reason_code(&self) -> Option<DisconnectReasonCode> {
         self.0.maybe_reason_code()
+    }
+    pub fn new() -> Self {
+        Self(V::DisconnectData::default())
     }
 }
 

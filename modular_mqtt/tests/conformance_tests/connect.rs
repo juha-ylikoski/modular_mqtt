@@ -56,6 +56,11 @@ where
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
             .await;
+
+        let (header, mut data) = stream.read_packet().await;
+        let dc = Disconnect::<V>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(dc, Disconnect::<V>::new());
+
         rx_close.recv().await;
     });
 
@@ -113,6 +118,11 @@ where
         stream
             .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
             .await;
+
+        let (header, mut data) = stream.read_packet().await;
+        let dc = Disconnect::<V>::try_read_entire_buf(header, &mut data).unwrap();
+        assert_eq!(dc, Disconnect::<V>::new());
+
         rx_close.recv().await;
     });
 
