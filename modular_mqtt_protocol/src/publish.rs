@@ -435,7 +435,12 @@ impl Publish<MqttV5_0_0, Qos> {
         self
     }
 
+    /// Set response topic for the Connect
+    ///
+    /// # Panics
+    /// - if response topic contains \\0 or its length > 0xffff
     pub fn set_response_topic(mut self, topic: String) -> Self {
+        crate::util::validate_str(&topic).expect("Response topic was not valid string");
         self.properties.response_topic = Some(topic);
         self
     }
@@ -444,7 +449,16 @@ impl Publish<MqttV5_0_0, Qos> {
         self.properties.correlation_data = Some(data);
         self
     }
+    /// Set user properties for the PubAck
+    ///
+    /// # Panics
+    /// - if key or value of user properties contains \\0 or its length > 0xffff
     pub fn set_user_property(mut self, user_properties: Vec<UserProperty>) -> Self {
+        for property in &user_properties {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
         self.properties.user_property = user_properties;
         self
     }
@@ -460,7 +474,12 @@ impl Publish<MqttV5_0_0, Qos> {
         self.properties.subscription_identifier = identifiers;
         Ok(self)
     }
+    /// Set content type for the Connect
+    ///
+    /// # Panics
+    /// - if content type contains \\0 or its length > 0xffff
     pub fn set_content_type(mut self, content_type: String) -> Self {
+        crate::util::validate_str(&content_type).expect("Content type was not valid string");
         self.properties.content_type = Some(content_type);
         self
     }

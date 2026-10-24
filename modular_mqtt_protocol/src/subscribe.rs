@@ -13,6 +13,10 @@ use super::{
 };
 
 pub trait TopicSubscription: Sized + std::fmt::Debug + PartialEq + Send + Sync + Clone {
+    /// Create new mqtt topic subscription
+    ///
+    /// # Panics
+    /// - if topic contains \\0 or its length > 0xffff
     fn new(topic: String, qos: Qos) -> Self;
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error>;
     fn topic(&self) -> &str;
@@ -27,6 +31,7 @@ pub struct TopicSubscriptionV3 {
 
 impl TopicSubscription for TopicSubscriptionV3 {
     fn new(topic: String, qos: Qos) -> Self {
+        crate::util::validate_str(&topic).expect("Topic was not valid string");
         Self { topic, qos }
     }
     fn try_from_byte(topic: String, options: u8) -> Result<Self, Error> {
@@ -53,6 +58,10 @@ pub struct TopicSubscriptionV5 {
 }
 
 impl TopicSubscriptionV5 {
+    /// Create new mqtt v5 topic subscription
+    ///
+    /// # Panics
+    /// - if topic contains \\0 or its length > 0xffff
     pub fn new(
         topic: String,
         qos: Qos,
@@ -60,6 +69,7 @@ impl TopicSubscriptionV5 {
         keep_retain: bool,
         retain_handling: RetainHandling,
     ) -> Self {
+        crate::util::validate_str(&topic).expect("Topic was not valid string");
         Self {
             qos,
             no_local,
@@ -72,6 +82,7 @@ impl TopicSubscriptionV5 {
 
 impl TopicSubscription for TopicSubscriptionV5 {
     fn new(topic: String, qos: Qos) -> Self {
+        crate::util::validate_str(&topic).expect("Topic was not valid string");
         Self {
             qos,
             no_local: true,
@@ -321,9 +332,6 @@ impl<V: MqttVersion> Subscribe<V> {
 
 impl Subscribe<MqttV5_0_0> {
     /// Create new subscribe package
-    ///
-    /// # Panics
-    /// - If `subscriptions.len() == 0`
     pub fn new_with_options(
         packet_identifier: u16,
         subscriptions: Vec<TopicSubscriptionV5>,
@@ -332,7 +340,17 @@ impl Subscribe<MqttV5_0_0> {
     ) -> Result<Self, Error> {
         // Protocol violation if 0
         if subscriptions.is_empty() {
-            panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.");
+            return Err(MalformedPacket::new(
+                "Protocol violation. Cannot create MQTT subscribe-packet with 0 subscriptions.",
+            ));
+        }
+        for property in &user_property {
+            if crate::util::validate_str(&property.key).is_err() {
+                return Err(MalformedPacket::new("Property key was not valid string"));
+            }
+            if crate::util::validate_str(&property.value).is_err() {
+                return Err(MalformedPacket::new("Property value was not valid string"));
+            }
         }
 
         if let Some(subscription_identifier) = subscription_identifier {

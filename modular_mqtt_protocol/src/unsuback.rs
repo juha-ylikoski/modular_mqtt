@@ -46,6 +46,7 @@ pub trait ValidUnsubAckData {
     fn is_valid(&self) -> bool {
         true
     }
+    fn assert_strings_are_valid(&self) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +132,16 @@ impl ValidUnsubAckData for UnSubAckDataV5 {
     fn is_valid(&self) -> bool {
         !self.reason_code.is_empty()
     }
+    fn assert_strings_are_valid(&self) {
+        if let Some(reason) = &self.reason {
+            crate::util::validate_str(reason).expect("Reason was not valid string");
+        }
+        for property in &self.user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
+    }
 }
 
 impl ValidUnsubAckData for () {}
@@ -173,14 +184,17 @@ impl<V: MqttVersion> UnsubAck<V> {
         self.packet_identifier
     }
 
-    /// Create new suback package
+    /// Create new unsuback package
     ///
     /// # Panics
     /// - If `properties.reason_code.len() == 0`
+    /// - if reason contains \\0 or its length > 0xffff
+    /// - if key or value of user properties do not conform to same specification
     pub fn new(packet_identifier: u16, properties: V::UnSubAckProperties) -> Self {
         if !properties.is_valid() {
             panic!("Protocol violation. Cannot create MQTT unsuback-packet with 0 return codes.")
         }
+        properties.assert_strings_are_valid();
         Self {
             packet_identifier,
             properties,

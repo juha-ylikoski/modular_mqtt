@@ -202,6 +202,7 @@ impl PacketProperties for SubAckDataV5 {
 pub trait SubAckRcs {
     fn succeeded(&self) -> Vec<bool>;
     fn is_empty(&self) -> bool;
+    fn assert_strings_are_valid(&self) {}
 }
 
 impl SubAckRcs for Vec<SubRcV3> {
@@ -226,6 +227,16 @@ impl SubAckRcs for SubAckDataV5 {
     }
     fn is_empty(&self) -> bool {
         self.return_codes.is_empty()
+    }
+    fn assert_strings_are_valid(&self) {
+        if let Some(reason) = &self.reason {
+            crate::util::validate_str(reason).expect("Reason was not valid string")
+        }
+        for property in &self.user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
     }
 }
 
@@ -274,10 +285,14 @@ impl<V: MqttVersion> SubAck<V> {
     ///
     /// # Panics
     /// - If `data.len() == 0`
+    /// - if key or value of user properties contains \\0 or its length > 0xffff
+    /// - if reason contains does not conform to same specification
     pub fn new(packet_identifier: u16, data: V::SubAckData) -> Self {
         if data.is_empty() {
             panic!("Protocol violation. Cannot create MQTT subscribe-packet with 0 return codes.")
         }
+        data.assert_strings_are_valid();
+
         Self {
             packet_identifier,
             data,

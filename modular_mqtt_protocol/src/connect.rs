@@ -312,7 +312,12 @@ impl MqttLastWill5_0_0 {
         self.message_expiry_interval
     }
 
+    /// Set content type for the Connect
+    ///
+    /// # Panics
+    /// - if content type contains \\0 or its length > 0xffff
     pub fn set_content_type(mut self, new_content_type: String) -> Self {
+        crate::util::validate_str(&new_content_type).expect("Content type was not valid string");
         self.content_type = Some(new_content_type);
         self
     }
@@ -320,7 +325,13 @@ impl MqttLastWill5_0_0 {
         &self.content_type
     }
 
+    /// Set response topic for the Connect
+    ///
+    /// # Panics
+    /// - if response topic contains \\0 or its length > 0xffff
     pub fn set_response_topic(mut self, new_response_topic: String) -> Self {
+        crate::util::validate_str(&new_response_topic)
+            .expect("Response topic was not valid string");
         self.response_topic = Some(new_response_topic);
         self
     }
@@ -336,7 +347,16 @@ impl MqttLastWill5_0_0 {
         self.correlation_data.clone()
     }
 
+    /// Set user properties for the PubAck
+    ///
+    /// # Panics
+    /// - if key or value of user properties contains \\0 or its length > 0xffff
     pub fn set_user_property(mut self, new_user_property: Vec<UserProperty>) -> Self {
+        for property in &new_user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
         self.user_property = new_user_property;
         self
     }
@@ -678,6 +698,7 @@ impl From<Flags> for u8 {
 }
 
 impl<V: MqttVersion> Connect<V> {
+    /// Try to create a new Connect message
     pub fn try_new(
         clean_session: bool,
         keep_alive: u16,
@@ -686,6 +707,16 @@ impl<V: MqttVersion> Connect<V> {
         username: Option<String>,
         password: Option<Bytes>,
     ) -> Result<Self, Error> {
+        if crate::util::validate_str(&client_identifier).is_err() {
+            return Err(MalformedPacket::new(
+                "Client identifier is not valid string",
+            ));
+        }
+        if let Some(username) = &username {
+            if crate::util::validate_str(username).is_err() {
+                return Err(MalformedPacket::new("Username is not valid string"));
+            }
+        }
         V::create_connect(
             clean_session,
             keep_alive,
@@ -831,48 +862,24 @@ impl<V: MqttVersion> Connect<V> {
         }
     }
 
-    pub fn set_clean_session(&mut self, clean_session: bool) {
-        self.clean_session = clean_session;
-    }
-
     pub fn clean_session(&self) -> bool {
         self.clean_session
-    }
-
-    pub fn set_keep_alive(&mut self, keep_alive: u16) {
-        self.keep_alive = keep_alive;
     }
 
     pub fn keep_alive(&self) -> u16 {
         self.keep_alive
     }
 
-    pub fn set_will(&mut self, will: Option<V::LastWill>) {
-        self.will = will;
-    }
-
     pub fn will(&self) -> Option<&V::LastWill> {
         self.will.as_ref()
-    }
-
-    pub fn set_client_identifier(&mut self, client_identifier: String) {
-        self.client_identifier = client_identifier;
     }
 
     pub fn client_identifier(&self) -> &str {
         &self.client_identifier
     }
 
-    pub fn set_username(&mut self, username: Option<String>) {
-        self.username = username;
-    }
-
     pub fn username(&self) -> Option<&String> {
         self.username.as_ref()
-    }
-
-    pub fn set_password(&mut self, password: Option<Bytes>) {
-        self.password = password;
     }
 
     pub fn password(&self) -> Option<&Bytes> {
@@ -917,12 +924,27 @@ impl Connect<MqttV5_0_0> {
         self
     }
 
+    /// Set user properties for the PubAck
+    ///
+    /// # Panics
+    /// - if key or value of user properties contains \\0 or its length > 0xffff
     pub fn set_user_property(mut self, user_property: Vec<UserProperty>) -> Self {
+        for property in &user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
         self.properties.user_property = user_property;
         self
     }
 
+    /// Set authentication method for the PubAck
+    ///
+    /// # Panics
+    /// - if authentication method contains \\0 or its length > 0xffff
     pub fn set_authentication_method(mut self, authentication_method: String) -> Self {
+        crate::util::validate_str(&authentication_method)
+            .expect("Response information was not valid string");
         self.properties.authentication_method = Some(authentication_method);
         self
     }

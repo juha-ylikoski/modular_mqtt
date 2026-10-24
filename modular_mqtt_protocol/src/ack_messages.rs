@@ -1,7 +1,9 @@
 use bytes::{Buf, BufMut, Bytes};
 
 use crate::{
-    util::{extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int},
+    util::{
+        self, extract_str, read_variable_len_int, variable_len_int_size, write_variable_len_int,
+    },
     version::PacketProperties,
     ControlPacketType, Error, FixedHeader, MalformedPacket, MqttV5_0_0, MqttVersion, Packet,
     Property, PropertyIdentifier, UserProperty,
@@ -268,6 +270,11 @@ impl<R: ReasonCode> PubAckType<MqttV5_0_0, R>
 where
     crate::Error: From<<R as TryFrom<u8>>::Error>,
 {
+    /// Create new PubAckType
+    ///
+    /// # Panics
+    /// - if reason string contains \\0 or its length > 0xffff
+    /// - if key or value of user properties do not conform to same specification
     fn new_v5(
         packet_type: ControlPacketType,
         packet_identifier: u16,
@@ -275,6 +282,14 @@ where
         reason: Option<String>,
         user_property: Vec<UserProperty>,
     ) -> Self {
+        if let Some(reason) = &reason {
+            util::validate_str(reason).expect("Reason was not valid string");
+        }
+        for property in &user_property {
+            util::validate_str(&property.key).expect("Property key was not valid string");
+            util::validate_str(&property.value).expect("Property value was not valid string");
+        }
+
         let properties = PubAckData {
             reason_code,
             reason,
@@ -321,6 +336,11 @@ macro_rules! create_pub_ack_type {
         }
 
         impl $name<MqttV5_0_0> {
+            /// Create new PubAckType
+            ///
+            /// # Panics
+            /// - if reason string contains \\0 or its length > 0xffff
+            /// - if key or value of user properties do not conform to same specification
             pub fn new_v5(
                 packet_identifier: u16,
                 reason_code: $reason_code,

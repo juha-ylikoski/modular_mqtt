@@ -306,6 +306,12 @@ impl Disconnect<MqttV3_1_1> {
 }
 
 impl Disconnect<MqttV5_0_0> {
+    /// Create new disconnect packet
+    ///
+    /// # Panics
+    /// - if reason contains \\0 or its length > 0xffff
+    /// - if key or value of user properties do not conform to same specification
+    /// - if server reference does not conform to same specification
     pub fn new_v5(
         reason_code: DisconnectReasonCode,
         session_expiry_interval: Option<u32>,
@@ -313,6 +319,17 @@ impl Disconnect<MqttV5_0_0> {
         user_property: Vec<UserProperty>,
         server_reference: Option<String>,
     ) -> Self {
+        if let Some(reason) = &reason {
+            crate::util::validate_str(reason).expect("Reason was not valid string");
+        }
+        for property in &user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
+        if let Some(reference) = &server_reference {
+            crate::util::validate_str(reference).expect("Server reference was not valid string");
+        }
         Self(DisconnectData {
             reason_code,
             session_expiry_interval,

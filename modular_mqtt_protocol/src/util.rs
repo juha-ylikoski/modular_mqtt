@@ -46,11 +46,25 @@ pub struct MqttTopic(pub(crate) String);
 
 impl MqttTopic {
     fn check_topic(topic: &str) -> Result<(), Error> {
-        if topic.is_empty() || topic.contains('#') || topic.contains('+') {
+        if topic.is_empty()
+            || topic.contains('#')
+            || topic.contains('+')
+            || validate_str(topic).is_err()
+        {
             Err(MalformedPacket::InvalidMqttTopic.into())
         } else {
             Ok(())
         }
+    }
+}
+
+pub fn validate_str(s: &str) -> Result<(), Error> {
+    if s.contains("\0") {
+        Err(MalformedPacket::new("String cannot contain null byte \\0"))
+    } else if s.len() > 0xffff {
+        Err(MalformedPacket::new("String cannot be longer than 0xffff"))
+    } else {
+        Ok(())
     }
 }
 
@@ -87,12 +101,17 @@ pub fn extract_str(data: &mut Bytes) -> Result<String, Error> {
             Err(e) => Err(MalformedPacket::Utf8Error(e).into()),
         };
         data.advance(length);
-        out
+        if let Ok(s) = out {
+            validate_str(&s)?;
+            Ok(s)
+        } else {
+            out
+        }
     }
 }
 
 pub fn write_str(string: &str, buf: &mut impl BufMut) {
-    assert!(string.len() <= 0xffff);
+    validate_str(string).expect("Tried to serialize invalid string");
     let length = string.len();
     buf.put_u16(length as u16);
     buf.put(string.as_bytes());

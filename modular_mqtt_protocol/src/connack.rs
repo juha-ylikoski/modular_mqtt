@@ -597,7 +597,12 @@ impl ConnAck<MqttV5_0_0> {
     pub fn maximum_packet_size(&self) -> Option<u32> {
         self.properties.maximum_packet_size
     }
+    /// Set client identifier for the Connack
+    ///
+    /// # Panics
+    /// - if identifier contains \\0 or its length > 0xffff
     pub fn set_client_identifier(mut self, value: String) -> Self {
+        crate::util::validate_str(&value).expect("Client identifier was not valid string");
         self.properties.client_identifier = Some(value);
         self
     }
@@ -611,14 +616,28 @@ impl ConnAck<MqttV5_0_0> {
     pub fn topic_alias_maximum(&self) -> u16 {
         self.properties.topic_alias_maximum.unwrap_or_default()
     }
+    /// Set reason for the Connack
+    ///
+    /// # Panics
+    /// - if reason contains \\0 or its length > 0xffff
     pub fn set_reason(mut self, value: String) -> Self {
+        crate::util::validate_str(&value).expect("Reason was not valid string");
         self.properties.reason = Some(value);
         self
     }
     pub fn reason(&self) -> &Option<String> {
         &self.properties.reason
     }
+    /// Set user properties for the Connack
+    ///
+    /// # Panics
+    /// - if key or value of user properties contains \\0 or its length > 0xffff
     pub fn set_user_property(mut self, value: Vec<UserProperty>) -> Self {
+        for property in &value {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
+        }
         self.properties.user_property = value;
         self
     }
@@ -659,21 +678,36 @@ impl ConnAck<MqttV5_0_0> {
     pub fn server_keep_alive(&self) -> Option<u16> {
         self.properties.server_keep_alive
     }
+    /// Set response information for the Connack
+    ///
+    /// # Panics
+    /// - if response information contains \\0 or its length > 0xffff
     pub fn set_response_information(mut self, value: String) -> Self {
+        crate::util::validate_str(&value).expect("Response information was not valid string");
         self.properties.response_information = Some(value);
         self
     }
     pub fn response_information(&self) -> &Option<String> {
         &self.properties.response_information
     }
+    /// Set server reference for the Connack
+    ///
+    /// # Panics
+    /// - if server reference contains \\0 or its length > 0xffff
     pub fn set_server_reference(mut self, value: String) -> Self {
+        crate::util::validate_str(&value).expect("Server reference was not valid string");
         self.properties.server_reference = Some(value);
         self
     }
     pub fn server_reference(&self) -> &Option<String> {
         &self.properties.server_reference
     }
+    /// Set authentication method for the Connack
+    ///
+    /// # Panics
+    /// - if authentication method contains \\0 or its length > 0xffff
     pub fn set_authentication_method(mut self, value: String) -> Self {
+        crate::util::validate_str(&value).expect("Authentication method was not valid string");
         self.properties.authentication_method = Some(value);
         self
     }

@@ -124,9 +124,13 @@ impl Unsubscribe<MqttV3_1_1> {
     ///
     /// # Panics
     /// - If `topics.len() == 0`
+    /// - if topic contains \\0 or its length > 0xffff
     pub fn new_v3(packet_identifier: u16, topics: Vec<String>) -> Self {
         if topics.is_empty() {
             panic!("Protocol violation. Cannot create MQTT unsubscribe-packet with 0 topics.");
+        }
+        for topic in &topics {
+            crate::util::validate_str(topic).expect("Topic was not valid string");
         }
         Self {
             packet_identifier,
@@ -141,6 +145,8 @@ impl Unsubscribe<MqttV5_0_0> {
     ///
     /// # Panics
     /// - If `topics.len() == 0`
+    /// - if topic contains \\0 or its length > 0xffff
+    /// - if key or value of user properties do not conform to same specification
     pub fn new_v5(
         packet_identifier: u16,
         topics: Vec<String>,
@@ -148,6 +154,14 @@ impl Unsubscribe<MqttV5_0_0> {
     ) -> Self {
         if topics.is_empty() {
             panic!("Protocol violation. Cannot create MQTT unsubscribe-packet with 0 topics.");
+        }
+        for topic in &topics {
+            crate::util::validate_str(topic).expect("Topic was not valid string");
+        }
+        for property in &user_property {
+            crate::util::validate_str(&property.key).expect("Property key was not valid string");
+            crate::util::validate_str(&property.value)
+                .expect("Property value was not valid string");
         }
         Self {
             packet_identifier,
