@@ -308,8 +308,20 @@ impl<V: MqttVersion> Packet for Publish<V, QosPacketIdentifier> {
 
         let qos = match qos {
             Qos::AtMostOnce => QosPacketIdentifier::AtMostOnce,
-            Qos::AtLeastOnce => QosPacketIdentifier::AtLeastOnce(data.try_get_u16()?),
-            Qos::ExactlyOnce => QosPacketIdentifier::ExactlyOnce(data.try_get_u16()?),
+            Qos::AtLeastOnce => {
+                let id = data.try_get_u16()?;
+                if id == 0 {
+                    return Err(Error::ProtocolError("packet identifier cannot be 0"));
+                }
+                QosPacketIdentifier::AtLeastOnce(id)
+            }
+            Qos::ExactlyOnce => {
+                let id = data.try_get_u16()?;
+                if id == 0 {
+                    return Err(Error::ProtocolError("packet identifier cannot be 0"));
+                }
+                QosPacketIdentifier::ExactlyOnce(id)
+            }
         };
 
         let properties = V::PublishProperties::try_read(data)?;
