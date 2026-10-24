@@ -25,24 +25,19 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::<V>::try_new(true, 2, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 2, "client-id".to_string(), None, None, None)
+                    .unwrap()
+                    .into(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        assert_eq!(data.len(), 0);
-        let ping = PingReq::try_read(header, &mut data).unwrap();
-        assert_eq!(ping, PingReq);
-
-        stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+        stream.read_and_compare_msg(PingReq).await;
+        stream.write_packet(PingResp).await;
         rx_close.recv().await;
     });
 
@@ -87,10 +82,13 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 2, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
         let started = std::time::Instant::now();
@@ -101,7 +99,7 @@ where
                 Some((header, _)) => {
                     assert_eq!(header.control_packet_type, ControlPacketType::PingReq);
                     pings += 1;
-                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+                    stream.write_packet(PingResp).await;
                 }
             }
         }
@@ -167,20 +165,19 @@ where
         );
 
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
         stream
-            .write_packet(|buf| {
+            .write_packet(
                 Publish::<V, Qos>::new(
                     MqttTopic::try_from("t/ka0").unwrap(),
                     b"hello",
                     Qos::AtMostOnce,
                     false,
                 )
-                .assign_packet_identifier(|| 1, false)
-                .write_to_buf(buf)
-            })
+                .assign_packet_identifier(|| 1, false),
+            )
             .await;
 
         // Sized for a tight loop (the broken behaviour pinged per iteration, ~400 in this

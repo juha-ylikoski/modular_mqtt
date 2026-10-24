@@ -1,4 +1,4 @@
-use crate::util::{self, GenericClientOpts, Harness};
+use crate::util::{self, GenericClientOpts, Harness, START_MID};
 
 use std::time::{Duration, Instant};
 
@@ -24,31 +24,26 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_msg =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            recv_msg,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::AtMostOnce,
-                false
+        stream
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::AtMostOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| 1, false),
             )
-            .assign_packet_identifier(|| 1, false)
-        );
+            .await;
         rx_close.recv().await;
     });
 
@@ -101,39 +96,29 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_msg =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(recv_msg.packet_identifier().is_some());
-
         let expected_packet_identifier = recv.recv().await;
-
-        assert_eq!(
-            recv_msg,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::AtLeastOnce,
-                false
-            )
-            .assign_packet_identifier(|| expected_packet_identifier, false)
-        );
         stream
-            .write_packet(|buf| {
-                PubAck::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::AtLeastOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| expected_packet_identifier, false),
+            )
+            .await;
+        stream
+            .write_packet(PubAck::<V>::new_ok(expected_packet_identifier))
             .await;
         rx_close.recv().await;
     });
@@ -190,46 +175,36 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_pub =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().await;
-        assert_eq!(
-            recv_pub,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::ExactlyOnce,
-                false
-            )
-            .assign_packet_identifier(|| expected_packet_identifier, false)
-        );
         stream
-            .write_packet(|buf| {
-                PubRec::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::ExactlyOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| expected_packet_identifier, false),
+            )
+            .await;
+        stream
+            .write_packet(PubRec::<V>::new_ok(expected_packet_identifier))
             .await;
 
         let (header, mut data) = stream.read_packet().await;
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
         stream
-            .write_packet(|buf| {
-                PubComp::<V>::new_ok(recv_pub.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .write_packet(PubComp::<V>::new_ok(expected_packet_identifier))
             .await;
         rx_close.recv().await;
     });
@@ -289,33 +264,27 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 1, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 1, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_pub =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().await;
-        assert_eq!(
-            recv_pub,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::AtLeastOnce,
-                false
+        stream
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::AtLeastOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| expected_packet_identifier, false),
             )
-            .assign_packet_identifier(|| expected_packet_identifier, false)
-        );
+            .await;
         let (header, mut data) = loop {
             let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
@@ -324,7 +293,7 @@ where
                     let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(ping_req, PingReq);
 
-                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+                    stream.write_packet(PingResp).await;
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -348,9 +317,7 @@ where
         );
 
         stream
-            .write_packet(|buf| {
-                PubAck::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .write_packet(PubAck::<V>::new_ok(recv_pub2.packet_identifier().unwrap()))
             .await;
         rx_close.recv().await;
     });
@@ -408,33 +375,27 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 1, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 1, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_pub =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(recv_pub.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().await;
-        assert_eq!(
-            recv_pub,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::ExactlyOnce,
-                false
+        stream
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::ExactlyOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| expected_packet_identifier, false),
             )
-            .assign_packet_identifier(|| recv_pub.packet_identifier().unwrap(), false)
-        );
+            .await;
         let (header, mut data) = loop {
             let (header, mut data) = stream.read_packet().await;
             match &header.control_packet_type {
@@ -443,11 +404,7 @@ where
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(connect, PingReq);
 
-                    stream
-                        .write_packet(|buf| {
-                            PingResp.write_to_buf(buf);
-                        })
-                        .await;
+                    stream.write_packet(PingResp).await;
                 }
                 ControlPacketType::Publish { .. } => {
                     break (header, data);
@@ -471,18 +428,14 @@ where
         );
 
         stream
-            .write_packet(|buf| {
-                PubRec::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .write_packet(PubRec::<V>::new_ok(recv_pub2.packet_identifier().unwrap()))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
         stream
-            .write_packet(|buf| {
-                PubComp::<V>::new_ok(recv_pub2.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .read_and_compare_msg(PubRel::<V>::new_ok(expected_packet_identifier))
+            .await;
+        stream
+            .write_packet(PubComp::<V>::new_ok(recv_pub2.packet_identifier().unwrap()))
             .await;
         rx_close.recv().await;
     });
@@ -540,38 +493,30 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::<V>::try_new(true, 1, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 1, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = stream.read_packet().await;
-        let recv_msg =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(recv_msg.packet_identifier().is_some());
         let expected_packet_identifier = recv.recv().await;
-        assert_eq!(
-            recv_msg,
-            Publish::new(
-                MqttTopic::try_from("topic").unwrap(),
-                b"payload",
-                Qos::ExactlyOnce,
-                false
+        stream
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::ExactlyOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| expected_packet_identifier, false),
             )
-            .assign_packet_identifier(|| expected_packet_identifier, false),
-        );
+            .await;
 
         stream
-            .write_packet(|buf| {
-                PubRec::<V>::new_ok(recv_msg.packet_identifier().unwrap()).write_to_buf(buf)
-            })
+            .write_packet(PubRec::<V>::new_ok(expected_packet_identifier))
             .await;
 
         let (header, mut data) = loop {
@@ -582,7 +527,7 @@ where
                     let ping_req = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(ping_req, PingReq);
 
-                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+                    stream.write_packet(PingResp).await;
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -591,14 +536,8 @@ where
             }
         };
         let pub_rel = PubRel::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            recv_msg.packet_identifier().unwrap(),
-            pub_rel.packet_identifier()
-        );
-        assert_eq!(
-            pub_rel,
-            PubRel::<V>::new_ok(recv_msg.packet_identifier().unwrap())
-        );
+        assert_eq!(expected_packet_identifier, pub_rel.packet_identifier());
+        assert_eq!(pub_rel, PubRel::<V>::new_ok(expected_packet_identifier));
 
         let (header, mut data) = loop {
             let (header, mut data) = stream.read_packet().await;
@@ -608,7 +547,7 @@ where
                     let connect = PingReq::try_read_entire_buf(header, &mut data).unwrap();
                     assert_eq!(connect, PingReq);
 
-                    stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+                    stream.write_packet(PingResp).await;
                 }
                 ControlPacketType::PubRel => {
                     break (header, data);
@@ -619,7 +558,7 @@ where
         let pub_rel2 = PubRel::try_read_entire_buf(header, &mut data).unwrap();
         assert_eq!(pub_rel2, PubRel::<V>::new_ok(pub_rel2.packet_identifier()));
         stream
-            .write_packet(|buf| PubComp::<V>::new_ok(expected_packet_identifier).write_to_buf(buf))
+            .write_packet(PubComp::<V>::new_ok(expected_packet_identifier))
             .await;
         rx_close.recv().await;
     });
@@ -691,40 +630,52 @@ where
     let handle = H::spawn(async move {
         // First connection: handshake, take the PUBLISH, then hang up unacknowledged.
         let mut first = broker.accept().await;
-        let (header, mut data) = first.read_packet().await;
-        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         first
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        first
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = first.read_packet().await;
-        let first_pub =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert!(!first_pub.dup(), "first delivery must not set DUP");
-        let mid = first_pub.packet_identifier().unwrap();
+        first
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::AtLeastOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| START_MID, false),
+            )
+            .await;
         drop(first); // close the socket without sending a PUBACK
 
         // Second connection: the client must retransmit with DUP set.
         let mut second = broker.accept().await;
-        let (header, mut data) = second.read_packet().await;
-        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         second
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        second
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
-        let (header, mut data) = second.read_packet().await;
-        let resent =
-            Publish::<V, QosPacketIdentifier>::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            resent.packet_identifier(),
-            Some(mid),
-            "same packet identifier"
-        );
-        assert!(resent.dup(), "re-delivery after reconnect must set DUP");
-
         second
-            .write_packet(|buf| PubAck::<V>::new_ok(mid).write_to_buf(buf))
+            .read_and_compare_msg(
+                Publish::<V, Qos>::new(
+                    MqttTopic::try_from("topic").unwrap(),
+                    b"payload",
+                    Qos::AtLeastOnce,
+                    false,
+                )
+                .assign_packet_identifier(|| START_MID, true),
+            )
             .await;
+
+        second.write_packet(PubAck::<V>::new_ok(START_MID)).await;
         tx_done.send(()).await;
         rx_close.recv().await;
     });
@@ -804,16 +755,13 @@ where
         let test_finished = test_finished.clone();
         H::spawn(async move {
             let mut stream = broker.accept().await;
-            let (header, mut data) = stream.read_packet().await;
-            let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-            assert_eq!(
-                connect,
-                Connect::try_new(true, 1, "client-id".to_string(), None, None, None)
-                    .unwrap()
-                    .into()
-            );
             stream
-                .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+                .read_connect_and_compare(
+                    Connect::try_new(true, 1, "client-id".to_string(), None, None, None).unwrap(),
+                )
+                .await;
+            stream
+                .write_packet(ConnAck::<V>::new(false, connack_rc))
                 .await;
 
             // Ack every PUBLISH we receive and keep listening afterwards, so a client that
@@ -852,9 +800,7 @@ where
                 );
                 publishes += 1;
                 stream
-                    .write_packet(|buf| {
-                        PubAck::<V>::new_ok(msg.packet_identifier().unwrap()).write_to_buf(buf)
-                    })
+                    .write_packet({ PubAck::<V>::new_ok(msg.packet_identifier().unwrap()) })
                     .await;
             }
             // Tolerate a failed assertion in the test body: it drops the receiver, and the
@@ -938,10 +884,13 @@ where
         let payload = _payload;
 
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connack_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 2, "client-id".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connack_rc))
             .await;
 
         let id = || 100;
@@ -964,7 +913,7 @@ where
         for chunk in packet.chunks(500) {
             H::sleep(Duration::from_millis(300)).await;
             stream
-                .write_packet(|buf| buf.extend_from_slice(chunk))
+                .write_packet_partial(|buf| buf.extend_from_slice(chunk))
                 .await;
 
             if let Some((fixed_header, mut data)) =
@@ -985,7 +934,7 @@ where
             assert_eq!(ping, PingReq);
         }
 
-        stream.write_packet(|buf| PingResp.write_to_buf(buf)).await;
+        stream.write_packet(PingResp).await;
 
         tx_disconnect.send(()).await;
         rx_close.recv().await;

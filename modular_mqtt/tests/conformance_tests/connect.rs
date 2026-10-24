@@ -45,22 +45,15 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::<V>::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
             .await;
-
-        let (header, mut data) = stream.read_packet().await;
-        let dc = Disconnect::<V>::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(dc, Disconnect::<V>::new());
-
+        stream
+            .write_packet(ConnAck::<V>::new(false, connact_rc))
+            .await;
+        stream.read_and_compare_msg(Disconnect::<V>::new()).await;
         rx_close.recv().await;
     });
 
@@ -100,29 +93,23 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(
-                true,
-                30,
-                "".to_string(),
-                None,
-                Some("username".to_string()),
-                Some(Bytes::from_static(b"password"))
-            )
-            .unwrap()
-            .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(
+                    true,
+                    30,
+                    "".to_string(),
+                    None,
+                    Some("username".to_string()),
+                    Some(Bytes::from_static(b"password")),
+                )
+                .unwrap(),
+            )
             .await;
-
-        let (header, mut data) = stream.read_packet().await;
-        let dc = Disconnect::<V>::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(dc, Disconnect::<V>::new());
-
+        stream
+            .write_packet(ConnAck::<V>::new(false, connact_rc))
+            .await;
+        stream.read_and_compare_msg(Disconnect::<V>::new()).await;
         rx_close.recv().await;
     });
 
@@ -165,28 +152,26 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(
-                true,
-                30,
-                "".to_string(),
-                Some(V::LastWill::new(
-                    MqttTopic::try_from("last-will-topic").unwrap(),
-                    Bytes::from_static(b"payload"),
-                    Qos::AtMostOnce,
-                    false,
-                )),
-                None,
-                None,
-            )
-            .unwrap()
-            .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(
+                    true,
+                    30,
+                    "".to_string(),
+                    Some(V::LastWill::new(
+                        MqttTopic::try_from("last-will-topic").unwrap(),
+                        Bytes::from_static(b"payload"),
+                        Qos::AtMostOnce,
+                        false,
+                    )),
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connact_rc))
             .await;
         rx_close.recv().await;
     });
@@ -232,16 +217,13 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 30, "".to_string(), None, None, None,)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| ConnAck::<V>::new(false, connact_rc).write_to_buf(buf))
+            .read_connect_and_compare(
+                Connect::try_new(true, 30, "".to_string(), None, None, None).unwrap(),
+            )
+            .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connact_rc))
             .await;
     });
 
@@ -291,20 +273,15 @@ where
 
     let handle = H::spawn(async move {
         let mut stream = broker.accept().await;
-        let (header, mut data) = stream.read_packet().await;
-        let connect = VersionedConnect::try_read_entire_buf(header, &mut data).unwrap();
-        assert_eq!(
-            connect,
-            Connect::try_new(true, 30, "client-id".to_string(), None, None, None)
-                .unwrap()
-                .into()
-        );
         stream
-            .write_packet(|buf| {
-                ConnAck::<V>::new(false, connact_rc).write_to_buf(buf);
-                disconnect.write_to_buf(buf);
-            })
+            .read_connect_and_compare(
+                Connect::try_new(true, 30, "client-id".to_string(), None, None, None).unwrap(),
+            )
             .await;
+        stream
+            .write_packet(ConnAck::<V>::new(false, connact_rc))
+            .await;
+        stream.write_packet(disconnect).await;
     });
 
     let (_, client) = H::connect::<V, O>(

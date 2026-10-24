@@ -12,13 +12,16 @@ use modular_mqtt::{
     ClientOpts, ClientOptsV3, ClientOptsV5, SyncClient,
 };
 use modular_mqtt_protocol::{
-    FixedHeader, MqttLastWill, MqttLastWill3_1_1, MqttTopic, MqttVersion, Publish, Qos,
+    FixedHeader, MqttLastWill, MqttLastWill3_1_1, MqttTopic, MqttVersion, Packet, Publish, Qos,
     QosPacketIdentifier, SubAck,
 };
 
 /// Socket buffer size used when reading packets. Only affects how many packets can be
 /// picked up per read, never correctness.
 const CHUNK: usize = 4096;
+
+#[allow(unused)]
+pub const START_MID: u16 = 1;
 
 #[derive(Default)]
 pub struct GenericClientOpts(pub ClientOptsV5);
@@ -186,6 +189,29 @@ fn extend(buf: &mut BytesMut, chunk: &[u8]) {
 
 #[allow(unused)]
 impl Stream {
+    pub async fn read_and_compare_msg<T: Packet + PartialEq + std::fmt::Debug>(&mut self, m: T) {
+        tracing::info!("Wait for next message. Compare it to {m:?}");
+        let (header, mut data) = self.read_packet().await;
+        let rec = T::try_read_entire_buf(header, &mut data).unwrap();
+        tracing::info!("Received message: {rec:?}");
+        assert_eq!(rec, m);
+    }
+
+    pub async fn read_connect_and_compare<V: MqttVersion>(
+        &mut self,
+        connect: modular_mqtt_protocol::Connect<V>,
+    ) where
+        modular_mqtt_protocol::VersionedConnect: From<modular_mqtt_protocol::Connect<V>>,
+    {
+        tracing::info!("Wait for connect. Compare it to {connect:?}");
+        let (header, mut data) = self.read_packet().await;
+        let received =
+            modular_mqtt_protocol::VersionedConnect::try_read_entire_buf(header, &mut data)
+                .unwrap();
+        tracing::info!("Received connect: {received:?}");
+        assert_eq!(received, connect.into());
+    }
+
     /// Read the next packet, waiting as long as it takes.
     ///
     /// # Panics
@@ -198,6 +224,7 @@ impl Stream {
                 stream.set_read_timeout(None).unwrap();
                 loop {
                     if let Some(packet) = take_packet(buf) {
+                        tracing::info!("Server got packet {packet:?}");
                         return packet;
                     }
                     let mut chunk = [0u8; CHUNK];
@@ -259,8 +286,23 @@ impl Stream {
     }
 
     /// Encode one packet with `f` and send it.
-    pub async fn write_packet(&mut self, f: impl FnOnce(&mut BytesMut)) {
+    pub async fn write_packet<T: Packet + std::fmt::Debug>(&mut self, m: T) {
         let mut buf = BytesMut::with_capacity(CHUNK);
+        tracing::info!("Send {m:?}");
+        m.write_to_buf(&mut buf);
+        match self {
+            Stream::Sync { stream, .. } => stream.write_all(&buf).unwrap(),
+            #[cfg(feature = "async")]
+            Stream::Async { stream, .. } => {
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(&buf).await.unwrap()
+            }
+        }
+    }
+
+    pub async fn write_packet_partial(&mut self, f: impl FnOnce(&mut BytesMut)) {
+        let mut buf = BytesMut::with_capacity(CHUNK);
+        tracing::info!("Write chunk to stream");
         f(&mut buf);
         match self {
             Stream::Sync { stream, .. } => stream.write_all(&buf).unwrap(),

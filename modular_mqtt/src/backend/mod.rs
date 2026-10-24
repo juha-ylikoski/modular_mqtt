@@ -258,21 +258,30 @@ where
             ControlPacketType::Publish { .. } => {
                 let msg = Publish::try_read_entire_buf(fixed_header, body)?;
                 tracing::debug!("Received msg: {:?}", msg);
+                let mut dup = false;
                 match (msg.qos(), msg.packet_identifier()) {
                     (Qos::AtMostOnce, _) => (),
                     (Qos::AtLeastOnce, Some(packet_identifier)) => {
                         tracing::trace!("Respond with PubAck (mid={packet_identifier})");
-                        self.receive_inflight.push(packet_identifier);
                         PubAck::<V>::new_ok(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::ExactlyOnce, Some(packet_identifier)) => {
+                        if self.receive_inflight.contains(&packet_identifier) {
+                            tracing::debug!("Got dup mid {packet_identifier}");
+                            dup = true;
+                        } else {
+                            self.receive_inflight.push(packet_identifier);
+                        }
                         tracing::trace!("Respond with PubRec (mid={packet_identifier})");
-                        self.receive_inflight.push(packet_identifier);
                         PubRec::<V>::new_ok(packet_identifier).write_to_buf(&mut self.write_buf);
                     }
                     (Qos::AtLeastOnce, None) | (Qos::ExactlyOnce, None) => unreachable!(),
                 }
-                Ok(Action::ReceiveMsg(msg))
+                if !dup {
+                    Ok(Action::ReceiveMsg(msg))
+                } else {
+                    Ok(Action::None)
+                }
             }
             ControlPacketType::PubAck => {
                 let puback = PubAck::<V>::try_read_entire_buf(fixed_header, body)?;
@@ -348,13 +357,12 @@ where
             ControlPacketType::PubRel => {
                 let pub_rel = PubRel::<V>::try_read_entire_buf(fixed_header, body)?;
                 tracing::trace!("Received PubRel: {pub_rel:?}. Responding with PubComp");
+                PubComp::<V>::new_ok(pub_rel.packet_identifier()).write_to_buf(&mut self.write_buf);
                 if let Some(index) = self
                     .receive_inflight
                     .iter()
                     .position(|item| *item == pub_rel.packet_identifier())
                 {
-                    PubComp::<V>::new_ok(pub_rel.packet_identifier())
-                        .write_to_buf(&mut self.write_buf);
                     self.receive_inflight.remove(index);
                 } else {
                     tracing::warn!(

@@ -160,6 +160,9 @@ impl FixedHeader {
     /// Parse mqtt fixed header and return it along as well as variable header and payload for
     /// the packet
     ///
+    /// **Advances buf only if can read entire valid packet** and if requires more data to be in
+    /// buffer before entire message can be read, will return Ok(None)
+    ///
     /// `max_packet_size` parameter has to be lesser or equal to [`crate::MAX_MQTT_PACKET_SIZE`]
     ///
     /// If this function returns Err(Error::PacketTooLarge), have you tried to parse a packet
