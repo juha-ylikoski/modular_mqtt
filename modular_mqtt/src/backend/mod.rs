@@ -67,7 +67,7 @@ where
     }
 
     pub fn set_broker_max_packet_size(&self, connack: &ConnAck<V>) {
-        let max_packet_size = self.opts.broker_max_packet_size(connack);
+        let max_packet_size = self.opts.server_max_packet_size(connack);
         *self.broker_max_packet_size.write().unwrap() = max_packet_size;
     }
 
@@ -102,6 +102,7 @@ where
     O: ClientOpts<V>,
     R: crate::util::Notify,
 {
+    pub effective_keep_alive: Option<u16>,
     pub version: PhantomData<V>,
     pub receive_inflight: Vec<u16>,
     pub write_buf: BytesMut,
@@ -139,7 +140,7 @@ where
 
     /// How long the next blocking read may wait:
     fn next_read_timeout(&self, packet_pending: bool) -> Option<Instant> {
-        let mut timeout = match (self.next_resend_deadline, self.shared.opts.keep_alive()) {
+        let mut timeout = match (self.next_resend_deadline, self.effective_keep_alive) {
             (Some(resend), Some(keep_alive)) => {
                 resend.min(self.last_write + Self::ping_cadence(keep_alive))
             }

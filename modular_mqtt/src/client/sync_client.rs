@@ -145,10 +145,19 @@ where
             &mut writer,
         )?;
 
+        let server_keep_alive = O::server_keep_alive(&connack);
+        if let Some(keep_alive) = server_keep_alive {
+            if keep_alive != 0 {
+                reader.set_read_timeout(Some(Duration::from_secs(keep_alive.into())))?;
+            } else {
+                reader.set_read_timeout(None)?;
+            }
+        }
+
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
-            broker_max_packet_size: RwLock::new(opts.broker_max_packet_size(&connack)),
+            broker_max_packet_size: RwLock::new(opts.server_max_packet_size(&connack)),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),
@@ -170,6 +179,10 @@ where
                 retry_count: 0,
                 backend_killer: backend_killer.clone(),
                 state_machine: crate::backend::BackendStateMachine {
+                    effective_keep_alive: server_keep_alive
+                        .or(shared.opts.keep_alive())
+                        .map(|ka| if ka == 0 { None } else { Some(ka) })
+                        .flatten(),
                     version: std::marker::PhantomData,
                     receive_inflight: Vec::new(),
                     write_buf,

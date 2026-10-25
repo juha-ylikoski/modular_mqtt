@@ -139,10 +139,12 @@ where
             ))),
         }?;
 
+        let server_keep_alive = O::server_keep_alive(&connack);
+
         let writer = Arc::new(Mutex::new(writer));
 
         let shared = Arc::new(Shared {
-            broker_max_packet_size: RwLock::new(opts.broker_max_packet_size(&connack)),
+            broker_max_packet_size: RwLock::new(opts.server_max_packet_size(&connack)),
             broker_addr: broker,
             opts,
             online: RwLock::new(true),
@@ -161,6 +163,10 @@ where
                 inflight_ch: inflight_receiver,
                 retry_count: 0,
                 state_machine: crate::backend::BackendStateMachine {
+                    effective_keep_alive: server_keep_alive
+                        .or(shared.opts.keep_alive())
+                        .map(|ka| if ka == 0 { None } else { Some(ka) })
+                        .flatten(),
                     version: std::marker::PhantomData,
                     receive_inflight: Vec::new(),
                     write_buf,

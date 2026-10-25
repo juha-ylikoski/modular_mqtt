@@ -50,7 +50,7 @@ where
 {
     fn connect_error(connack: &ConnAck<V>) -> ConnectError;
     fn connect_msg(&self) -> Connect<V>;
-    fn broker_max_packet_size(&self, connack: &ConnAck<V>) -> usize;
+    fn server_max_packet_size(&self, connack: &ConnAck<V>) -> usize;
     fn client_max_packet_size(&self) -> usize;
     fn keep_alive(&self) -> Option<u16>;
     fn ack_retention(&self) -> Duration;
@@ -74,6 +74,7 @@ where
     fn write_timeout(&self) -> Duration;
 
     fn pub_rec_failed(pub_rec: &PubRec<V>) -> bool;
+    fn server_keep_alive(connack: &ConnAck<V>) -> Option<u16>;
 }
 
 pub struct ClientOptsV3 {
@@ -126,7 +127,7 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
         )
         .expect("Failed to create mqttv3 connect")
     }
-    fn broker_max_packet_size(&self, #[allow(unused)] connack: &ConnAck<MqttV3_1_1>) -> usize {
+    fn server_max_packet_size(&self, #[allow(unused)] connack: &ConnAck<MqttV3_1_1>) -> usize {
         modular_mqtt_protocol::MAX_MQTT_PACKET_SIZE
     }
 
@@ -191,6 +192,9 @@ impl ClientOpts<MqttV3_1_1> for ClientOptsV3 {
 
     fn pub_rec_failed(#[allow(unused)] pub_rec: &PubRec<MqttV3_1_1>) -> bool {
         false
+    }
+    fn server_keep_alive(#[allow(unused)] connack: &ConnAck<MqttV3_1_1>) -> Option<u16> {
+        None
     }
 }
 
@@ -310,7 +314,7 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
         connect.set_user_property(self.user_property.clone())
     }
 
-    fn broker_max_packet_size(&self, connack: &ConnAck<MqttV5_0_0>) -> usize {
+    fn server_max_packet_size(&self, connack: &ConnAck<MqttV5_0_0>) -> usize {
         if let Some(broker_max_packet_size) = connack.maximum_packet_size() {
             broker_max_packet_size as usize
         } else {
@@ -390,6 +394,9 @@ impl ClientOpts<MqttV5_0_0> for ClientOptsV5 {
 
     fn pub_rec_failed(pub_rec: &PubRec<MqttV5_0_0>) -> bool {
         !pub_rec.reason_code().is_ok()
+    }
+    fn server_keep_alive(connack: &ConnAck<MqttV5_0_0>) -> Option<u16> {
+        connack.server_keep_alive()
     }
 }
 

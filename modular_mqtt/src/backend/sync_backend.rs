@@ -132,13 +132,12 @@ where
         self.read_buf.clear();
         self.state_machine.write_buf.clear();
         self.state_machine.ping_sent = None;
+        self.state_machine.effective_keep_alive = self.state_machine.shared.opts.keep_alive();
         let stream = TcpStream::connect(&self.state_machine.shared.broker_addr)?;
         let mut reader = SyncReader::Tcp(stream.try_clone().unwrap());
         reader.set_read_timeout(Some(
             self.state_machine
-                .shared
-                .opts
-                .keep_alive()
+                .effective_keep_alive
                 .map(|v| Duration::from_secs(v.into()))
                 .unwrap_or(CONNECTION_TIMEOUT),
         ))?;
@@ -163,6 +162,16 @@ where
 
         if !connack.rc_is_success() {
             return Err(BackendError::ReconnectError(O::connect_error(&connack)));
+        }
+
+        if let Some(keep_alive) = O::server_keep_alive(&connack) {
+            if keep_alive != 0 {
+                self.state_machine.effective_keep_alive = Some(keep_alive);
+            } else {
+                self.state_machine.effective_keep_alive = None;
+            }
+        } else {
+            self.state_machine.effective_keep_alive = self.state_machine.shared.opts.keep_alive();
         }
 
         self.state_machine
@@ -259,9 +268,7 @@ where
                         if Instant::now().saturating_duration_since(self.state_machine.last_read)
                             > self
                                 .state_machine
-                                .shared
-                                .opts
-                                .keep_alive()
+                                .effective_keep_alive
                                 .map(|v| Duration::from_secs(v.into()))
                                 .unwrap_or(PACKET_TIMEOUT)
                         {
@@ -272,7 +279,7 @@ where
                                 "Broker stalled mid-packet",
                             )));
                         }
-                    } else if self.state_machine.shared.opts.keep_alive().is_some() {
+                    } else if self.state_machine.effective_keep_alive.is_some() {
                         // We should never eny here with Some() if ping was responded
                         if self.state_machine.ping_sent.is_some() {
                             return self.disconnect();
